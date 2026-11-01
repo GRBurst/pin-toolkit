@@ -80,8 +80,24 @@ mod tests {
     #[test]
     fn human_render_exact() {
         let r = Report::new(vec![
-            RefResult { file: "ci/.gitlab-ci.yml".into(), line: 2, reference: "alpine:3.20".into(), old: "alpine:3.20".into(), new: Some("alpine:3.20@sha256:abc".into()), status: "pinned".into(), reason: None },
-            RefResult { file: "ci/.gitlab-ci.yml".into(), line: 5, reference: "ghcr.io/o/i:v1".into(), old: "ghcr.io/o/i:v1".into(), new: None, status: "skipped".into(), reason: Some("registry not enabled: ghcr.io".into()) },
+            RefResult {
+                file: "ci/.gitlab-ci.yml".into(),
+                line: 2,
+                reference: "alpine:3.20".into(),
+                old: "alpine:3.20".into(),
+                new: Some("alpine:3.20@sha256:abc".into()),
+                status: "pinned".into(),
+                reason: None,
+            },
+            RefResult {
+                file: "ci/.gitlab-ci.yml".into(),
+                line: 5,
+                reference: "ghcr.io/o/i:v1".into(),
+                old: "ghcr.io/o/i:v1".into(),
+                new: None,
+                status: "skipped".into(),
+                reason: Some("registry not enabled: ghcr.io".into()),
+            },
         ]);
         let expected = "ci/.gitlab-ci.yml:2  pinned  alpine:3.20 -> alpine:3.20@sha256:abc  # alpine:3.20\n\
                     ci/.gitlab-ci.yml:5  skipped (registry not enabled: ghcr.io)  ghcr.io/o/i:v1 -> -  # ghcr.io/o/i:v1\n\
@@ -91,7 +107,15 @@ mod tests {
 
     #[test]
     fn json_render_roundtrip() {
-        let r = Report::new(vec![RefResult { file: "f".into(), line: 1, reference: "x".into(), old: "x".into(), new: None, status: "unresolved".into(), reason: Some("boom".into()) }]);
+        let r = Report::new(vec![RefResult {
+            file: "f".into(),
+            line: 1,
+            reference: "x".into(),
+            old: "x".into(),
+            new: None,
+            status: "unresolved".into(),
+            reason: Some("boom".into()),
+        }]);
         let v: serde_json::Value = serde_json::from_str(&r.to_json()).unwrap();
         assert_eq!(v["summary"]["unresolved"], 1);
         assert_eq!(v["results"][0]["reason"], "boom");

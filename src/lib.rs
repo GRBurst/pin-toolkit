@@ -6,14 +6,14 @@ pub mod report;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::future::{poll_fn, Future};
+use std::future::{Future, poll_fn};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::task::Poll;
 
 use tokio::sync::Semaphore;
 
-use crate::discover::{discover, Target};
+use crate::discover::{Target, discover};
 use crate::image_ref::ImageRef;
 use crate::registry::{Creds, RegError};
 use crate::report::{RefResult, Report};
@@ -68,13 +68,19 @@ async fn resolve_target(client: &RegistryClient, text: &str, t: &Target, file: &
         Err(_) => {
             result.status = "skipped".to_string();
             result.reason = Some("unparseable reference".to_string());
-            return Resolved { result, replacement: None };
+            return Resolved {
+                result,
+                replacement: None,
+            };
         }
     };
     if !r.is_docker_hub() {
         result.status = "skipped".to_string();
         result.reason = Some(format!("registry not enabled: {}", r.host_str()));
-        return Resolved { result, replacement: None };
+        return Resolved {
+            result,
+            replacement: None,
+        };
     }
     let digest = match client.digest(&r).await {
         Ok(d) => d,
@@ -84,17 +90,26 @@ async fn resolve_target(client: &RegistryClient, text: &str, t: &Target, file: &
             };
             result.status = "unresolved".to_string();
             result.reason = Some(msg);
-            return Resolved { result, replacement: None };
+            return Resolved {
+                result,
+                replacement: None,
+            };
         }
     };
     if r.digest.as_deref() == Some(digest.as_str()) {
         result.status = "ok".to_string();
-        return Resolved { result, replacement: None };
+        return Resolved {
+            result,
+            replacement: None,
+        };
     }
     let new_token = edit::splice_value(token, &r, &digest);
     result.status = "pinned".to_string();
     result.new = Some(new_token.clone());
-    Resolved { result, replacement: Some((t.start, new_token)) }
+    Resolved {
+        result,
+        replacement: Some((t.start, new_token)),
+    }
 }
 
 /// Drive all `futures` concurrently on the current task until each is
@@ -129,15 +144,21 @@ where
         }
     })
     .await;
-    results.into_iter().map(|r| r.expect("completed future has a result")).collect()
+    results
+        .into_iter()
+        .map(|r| r.expect("completed future has a result"))
+        .collect()
 }
 
 /// Resolve every image target in one CI file against `client`, apply the
 /// edits (unless `opts.dry_run`), and write the file only when at least one
 /// edit was applied. Results are sorted by line.
-pub async fn pin_file(path: &Path, opts: &PinOptions, client: &RegistryClient) -> Result<Vec<RefResult>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+pub async fn pin_file(
+    path: &Path,
+    opts: &PinOptions,
+    client: &RegistryClient,
+) -> Result<Vec<RefResult>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let targets = discover(&text);
     let file = path.display().to_string();
 
@@ -166,8 +187,7 @@ pub async fn pin_file(path: &Path, opts: &PinOptions, client: &RegistryClient) -
     if !opts.dry_run && !replacements.is_empty() {
         let (new_text, applied) = edit::apply(&text, &targets, &replacements);
         if applied > 0 {
-            std::fs::write(path, new_text)
-                .map_err(|e| format!("{}: {e}", path.display()))?;
+            std::fs::write(path, new_text).map_err(|e| format!("{}: {e}", path.display()))?;
         }
     }
     Ok(resolved.into_iter().map(|r| r.result).collect())
@@ -175,7 +195,11 @@ pub async fn pin_file(path: &Path, opts: &PinOptions, client: &RegistryClient) -
 
 /// Pin every target in each file (files in order; resolutions within one
 /// file run concurrently, bounded by `opts.concurrency`).
-pub async fn pin_files(paths: &[PathBuf], opts: &PinOptions, client: &RegistryClient) -> Result<Report, String> {
+pub async fn pin_files(
+    paths: &[PathBuf],
+    opts: &PinOptions,
+    client: &RegistryClient,
+) -> Result<Report, String> {
     let mut results = Vec::new();
     for path in paths {
         results.extend(pin_file(path, opts, client).await?);

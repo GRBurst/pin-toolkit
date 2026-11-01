@@ -63,7 +63,10 @@ impl ImageRef {
             _ => None,
         };
         let (repo, tag) = match tag_pos {
-            Some(colon) => (rest[..colon].to_string(), Some(rest[colon + 1..].to_string())),
+            Some(colon) => (
+                rest[..colon].to_string(),
+                Some(rest[colon + 1..].to_string()),
+            ),
             None => (rest.to_string(), None),
         };
 
@@ -87,7 +90,10 @@ impl ImageRef {
 
     /// True for Docker Hub: host `None`, `"docker.io"` or `"index.docker.io"`.
     pub fn is_docker_hub(&self) -> bool {
-        matches!(self.host.as_deref(), None | Some("docker.io") | Some("index.docker.io"))
+        matches!(
+            self.host.as_deref(),
+            None | Some("docker.io") | Some("index.docker.io")
+        )
     }
 
     /// The tag, `"latest"` when tag is `None`.
@@ -122,13 +128,43 @@ mod tests {
         let cases: &[(&str, Option<&str>, &str, Option<&str>, Option<&str>)] = &[
             ("alpine", None, "alpine", None, None),
             ("alpine:3.20", None, "alpine", Some("3.20"), None),
-            ("docker.io/alpine:3.20", Some("docker.io"), "alpine", Some("3.20"), None),
-            ("library/alpine:3.20", None, "library/alpine", Some("3.20"), None),
-            ("ghcr.io/org/img:v1", Some("ghcr.io"), "org/img", Some("v1"), None),
-            ("reg.example.com:5000/a/b:1", Some("reg.example.com:5000"), "a/b", Some("1"), None),
+            (
+                "docker.io/alpine:3.20",
+                Some("docker.io"),
+                "alpine",
+                Some("3.20"),
+                None,
+            ),
+            (
+                "library/alpine:3.20",
+                None,
+                "library/alpine",
+                Some("3.20"),
+                None,
+            ),
+            (
+                "ghcr.io/org/img:v1",
+                Some("ghcr.io"),
+                "org/img",
+                Some("v1"),
+                None,
+            ),
+            (
+                "reg.example.com:5000/a/b:1",
+                Some("reg.example.com:5000"),
+                "a/b",
+                Some("1"),
+                None,
+            ),
             // Note: brief's `concat!("alpine:3.20@", DIGEST)` does not compile (concat! only
             // accepts literals); inlined the literal instead — identical test input.
-            ("alpine:3.20@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", None, "alpine", Some("3.20"), Some(DIGEST)),
+            (
+                "alpine:3.20@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                None,
+                "alpine",
+                Some("3.20"),
+                Some(DIGEST),
+            ),
         ];
         for (input, host, repo, tag, digest) in cases {
             let r = ImageRef::parse(input).unwrap();
@@ -141,7 +177,13 @@ mod tests {
 
     #[test]
     fn parse_rejects_garbage() {
-        for bad in ["", "a b", "alpine:3.20@notadigest", "alpine:3.20@sha256:zzz", "@sha256:0000000000000000000000000000000000000000000000000000000000000000"] {
+        for bad in [
+            "",
+            "a b",
+            "alpine:3.20@notadigest",
+            "alpine:3.20@sha256:zzz",
+            "@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
             assert!(ImageRef::parse(bad).is_err(), "{bad}");
         }
     }
@@ -152,8 +194,14 @@ mod tests {
         assert!(ImageRef::parse("docker.io/x/y:1").unwrap().is_docker_hub());
         assert!(!ImageRef::parse("ghcr.io/x/y:1").unwrap().is_docker_hub());
         assert!(!ImageRef::parse("reg:5000/x/y:1").unwrap().is_docker_hub());
-        assert_eq!(ImageRef::parse("alpine").unwrap().api_repo(), "library/alpine");
-        assert_eq!(ImageRef::parse("library/alpine").unwrap().api_repo(), "library/alpine");
+        assert_eq!(
+            ImageRef::parse("alpine").unwrap().api_repo(),
+            "library/alpine"
+        );
+        assert_eq!(
+            ImageRef::parse("library/alpine").unwrap().api_repo(),
+            "library/alpine"
+        );
         assert_eq!(ImageRef::parse("org/img").unwrap().api_repo(), "org/img");
         assert_eq!(ImageRef::parse("alpine").unwrap().effective_tag(), "latest");
     }

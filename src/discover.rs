@@ -187,7 +187,13 @@ fn top_key(line: &str) -> Option<(&str, bool)> {
 /// of its colon), push its target(s) on `targets`: a scalar value, or one
 /// target per item of a flow sequence. Offsets are relative to the line;
 /// `line_off` is the line's byte offset in the file text.
-fn push_target(targets: &mut Vec<Target>, line_idx: usize, line_off: usize, line: &str, colon: Option<usize>) {
+fn push_target(
+    targets: &mut Vec<Target>,
+    line_idx: usize,
+    line_off: usize,
+    line: &str,
+    colon: Option<usize>,
+) {
     let Some(colon) = colon else {
         return;
     };
@@ -214,7 +220,13 @@ fn push_target(targets: &mut Vec<Target>, line_idx: usize, line_off: usize, line
 /// comma-split pieces — trimmed, one layer of quotes stripped — and each
 /// must parse as an [`ImageRef`]. Spans point at the item within the line
 /// (quotes included in the span when quoted).
-fn push_flow_targets(targets: &mut Vec<Target>, line_idx: usize, line_off: usize, line: &str, bracket: usize) {
+fn push_flow_targets(
+    targets: &mut Vec<Target>,
+    line_idx: usize,
+    line_off: usize,
+    line: &str,
+    bracket: usize,
+) {
     let Some(close) = line[bracket..].find(']') else {
         return; // unclosed: not a flow sequence
     };
@@ -228,7 +240,13 @@ fn push_flow_targets(targets: &mut Vec<Target>, line_idx: usize, line_off: usize
         let pad = part.len() - part.trim_start().len();
         let token = part.trim();
         if !token.is_empty() {
-            push_flow_item(targets, line_idx, line_off, inside_off + part_off + pad, token);
+            push_flow_item(
+                targets,
+                line_idx,
+                line_off,
+                inside_off + part_off + pad,
+                token,
+            );
         }
         part_off += part.len() + 1; // the part plus its comma
     }
@@ -237,7 +255,13 @@ fn push_flow_targets(targets: &mut Vec<Target>, line_idx: usize, line_off: usize
 /// Push a target for one flow item: the trimmed `token` starting at `tok_off`
 /// in the line, with one layer of quotes stripped when present (the span
 /// includes the quotes).
-fn push_flow_item(targets: &mut Vec<Target>, line_idx: usize, line_off: usize, tok_off: usize, token: &str) {
+fn push_flow_item(
+    targets: &mut Vec<Target>,
+    line_idx: usize,
+    line_off: usize,
+    tok_off: usize,
+    token: &str,
+) {
     let (len, value) = match token.chars().next().unwrap() {
         q if q == '"' || q == '\'' => match token[1..].find(q) {
             Some(close) => (2 + close, token[1..1 + close].to_string()),
@@ -264,7 +288,13 @@ fn dash_item_rest(line: &str) -> Option<usize> {
 /// Push a target for a block-sequence item whose rest begins at `rest` in
 /// `line`: either a `name: <scalar>` mapping (target = the scalar) or a
 /// bare/quoted scalar (target = the scalar itself).
-fn push_item_targets(targets: &mut Vec<Target>, line_idx: usize, line_off: usize, line: &str, rest: usize) {
+fn push_item_targets(
+    targets: &mut Vec<Target>,
+    line_idx: usize,
+    line_off: usize,
+    line: &str,
+    rest: usize,
+) {
     let rest_str = &line[rest..];
     let (value_off, value_content) = match name_value_offset(rest_str) {
         Some(pos) => {
@@ -293,7 +323,13 @@ fn name_value_offset(content: &str) -> Option<usize> {
 
 /// Push a target for a `name:` child of an `image:` mapping block: the line's
 /// content (starting at `indent`) must be `name: <scalar>`.
-fn push_name_child_target(targets: &mut Vec<Target>, line_idx: usize, line_off: usize, line: &str, indent: usize) {
+fn push_name_child_target(
+    targets: &mut Vec<Target>,
+    line_idx: usize,
+    line_off: usize,
+    line: &str,
+    indent: usize,
+) {
     let content = &line[indent..];
     let Some(pos) = name_value_offset(content) else {
         return;
@@ -308,7 +344,14 @@ fn push_name_child_target(targets: &mut Vec<Target>, line_idx: usize, line_off: 
 
 /// Push a target for the parsed token `value` written at `[start, end)` in
 /// the line (byte offsets relative to the line).
-fn push_if_parses(targets: &mut Vec<Target>, line_idx: usize, line_off: usize, start: usize, end: usize, value: String) {
+fn push_if_parses(
+    targets: &mut Vec<Target>,
+    line_idx: usize,
+    line_off: usize,
+    start: usize,
+    end: usize,
+    value: String,
+) {
     if ImageRef::parse(&value).is_ok() {
         targets.push(Target {
             line: line_idx,
@@ -353,13 +396,16 @@ mod tests {
     fn discovers_scalar_image_and_services() {
         let t = discover(SIMPLE);
         let got: Vec<(usize, &str)> = t.iter().map(|x| (x.line, x.value.as_str())).collect();
-        assert_eq!(got, vec![
-            (1, "alpine:3.20"),    // top-level image
-            (4, "ubuntu:24.04"),   // default.image
-            (7, "node:20"),        // build.image (quoted; value unquoted)
-            (8, "redis:7"),        // build.services scalar
-            (11, "alpine:3.20"),   // test.image (same image twice)
-        ]);
+        assert_eq!(
+            got,
+            vec![
+                (1, "alpine:3.20"),  // top-level image
+                (4, "ubuntu:24.04"), // default.image
+                (7, "node:20"),      // build.image (quoted; value unquoted)
+                (8, "redis:7"),      // build.services scalar
+                (11, "alpine:3.20"), // test.image (same image twice)
+            ]
+        );
         // spans must cover the exact written token (quotes included in span, not value)
         for x in &t {
             let token = &SIMPLE[x.start..x.end];
@@ -374,14 +420,17 @@ mod tests {
     fn discovers_sequences_flow_and_mapping_forms() {
         let t = discover(RICH);
         let got: Vec<(usize, &str)> = t.iter().map(|x| (x.line, x.value.as_str())).collect();
-        assert_eq!(got, vec![
-            (2, "alpine:3.20"),   // default.image with trailing comment
-            (3, "docker:24"),     // flow item 1
-            (3, "redis:7"),       // flow item 2 (same line, later span)
-            (7, "node:20"),       // image mapping name
-            (10, "docker:24"),    // sequence scalar
-            (11, "redis:7"),      // sequence mapping name
-        ]);
+        assert_eq!(
+            got,
+            vec![
+                (2, "alpine:3.20"), // default.image with trailing comment
+                (3, "docker:24"),   // flow item 1
+                (3, "redis:7"),     // flow item 2 (same line, later span)
+                (7, "node:20"),     // image mapping name
+                (10, "docker:24"),  // sequence scalar
+                (11, "redis:7"),    // sequence mapping name
+            ]
+        );
     }
 
     #[test]

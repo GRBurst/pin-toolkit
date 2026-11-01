@@ -54,7 +54,11 @@ impl Creds {
     /// Resolve Docker Hub credentials: env user/pass take precedence over
     /// config.json; config.json is read from `home/.docker/config.json` when
     /// `home` is `Some` and the file exists.
-    pub fn load_from(env_user: Option<String>, env_pass: Option<String>, home: Option<&Path>) -> Self {
+    pub fn load_from(
+        env_user: Option<String>,
+        env_pass: Option<String>,
+        home: Option<&Path>,
+    ) -> Self {
         if let (Some(user), Some(pass)) = (env_user, env_pass)
             && !user.is_empty()
             && !pass.is_empty()
@@ -74,7 +78,11 @@ fn dockerhub_from_config(home: Option<&Path>) -> Option<(String, String)> {
     let raw = std::fs::read_to_string(home.join(".docker").join("config.json")).ok()?;
     let config: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let auths = config.get("auths")?.as_object()?;
-    for key in ["https://index.docker.io/v1/", "index.docker.io/v1/", "docker.io"] {
+    for key in [
+        "https://index.docker.io/v1/",
+        "index.docker.io/v1/",
+        "docker.io",
+    ] {
         if let Some(entry) = auths.get(key) {
             let user = entry.get("username")?.as_str()?.to_string();
             let pass = entry.get("password")?.as_str()?.to_string();
@@ -122,13 +130,12 @@ impl RegistryClient {
                 return Err(RegError::Unresolved(format!(
                     "no base URL for registry host {}",
                     r.host_str()
-                )))
+                )));
             }
         };
         let path = format!("/v2/{}/manifests/{}", r.api_repo(), r.effective_tag());
-        let not_found = || {
-            RegError::Unresolved(format!("{}:{} not found", r.api_repo(), r.effective_tag()))
-        };
+        let not_found =
+            || RegError::Unresolved(format!("{}:{} not found", r.api_repo(), r.effective_tag()));
 
         let first = self
             .http
@@ -172,7 +179,8 @@ impl RegistryClient {
                     .map_err(|e| RegError::Network(e.to_string()))?;
                 match retry.status() {
                     s if s.is_success() => {
-                        self.digest_from_head(r, retry, &base, &path, Some(&token)).await
+                        self.digest_from_head(r, retry, &base, &path, Some(&token))
+                            .await
                     }
                     StatusCode::UNAUTHORIZED => {
                         Err(RegError::Unresolved("authentication failed".to_string()))
@@ -211,7 +219,10 @@ impl RegistryClient {
         if let Some(t) = token {
             req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
         }
-        let resp = req.send().await.map_err(|e| RegError::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| RegError::Network(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
             return if status == StatusCode::NOT_FOUND {
@@ -224,7 +235,10 @@ impl RegistryClient {
                 Err(RegError::Network(format!("{status} at {path}")))
             };
         }
-        let body = resp.bytes().await.map_err(|e| RegError::Network(e.to_string()))?;
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| RegError::Network(e.to_string()))?;
         let mut hasher = Sha256::new();
         hasher.update(&body);
         let sum = hasher.finalize();
@@ -233,7 +247,12 @@ impl RegistryClient {
     }
 
     /// Bearer token for `scope`, from the cache or the token endpoint.
-    async fn cached_token(&self, scope: &str, realm: &str, service: &str) -> Result<String, RegError> {
+    async fn cached_token(
+        &self,
+        scope: &str,
+        realm: &str,
+        service: &str,
+    ) -> Result<String, RegError> {
         {
             let cache = self.tokens.lock().await;
             if let Some(token) = cache.get(scope) {
@@ -251,7 +270,12 @@ impl RegistryClient {
     /// `GET {realm}?service={service}&scope={scope}` with HTTP Basic auth when
     /// Docker Hub credentials are present. Expects JSON `{"token": ...}` or
     /// `{"access_token": ...}`.
-    async fn fetch_token(&self, realm: &str, service: &str, scope: &str) -> Result<String, RegError> {
+    async fn fetch_token(
+        &self,
+        realm: &str,
+        service: &str,
+        scope: &str,
+    ) -> Result<String, RegError> {
         let mut req = self
             .http
             .get(realm)
@@ -259,7 +283,10 @@ impl RegistryClient {
         if let Some((user, pass)) = &self.creds.dockerhub {
             req = req.basic_auth(user, Some(pass));
         }
-        let resp = req.send().await.map_err(|e| RegError::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| RegError::Network(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
             return Err(RegError::Unresolved(format!(

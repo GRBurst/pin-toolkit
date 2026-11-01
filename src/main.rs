@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use pin_ci::{client_from_env, exit_code, pin_files, PinOptions};
+use pin_ci::{PinOptions, client_from_env, exit_code, pin_files};
 
 /// Pin container image references in GitLab CI files to immutable digests.
 #[derive(Parser)]
@@ -36,7 +36,11 @@ async fn main() {
     let paths: Vec<PathBuf> = cli.files.iter().map(PathBuf::from).collect();
     match pin_files(&paths, &opts, &client).await {
         Ok(report) => {
-            let out = if cli.json { report.to_json() } else { report.render_human() };
+            let out = if cli.json {
+                report.to_json()
+            } else {
+                report.render_human()
+            };
             println!("{out}");
             std::process::exit(exit_code(&report));
         }

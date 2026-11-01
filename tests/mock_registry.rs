@@ -20,7 +20,10 @@ impl Match for NoAuthorization {
 const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 fn client(server: &MockServer, creds: Creds) -> RegistryClient {
-    RegistryClient::new(creds, std::collections::HashMap::from([("docker.io".to_string(), server.uri())]))
+    RegistryClient::new(
+        creds,
+        std::collections::HashMap::from([("docker.io".to_string(), server.uri())]),
+    )
 }
 
 fn alpine() -> ImageRef {
@@ -41,7 +44,8 @@ async fn mount_alpine_digest(server: &MockServer, code: u16, with_auth: bool) {
         m = m.and(NoAuthorization);
     }
     m.respond_with(ResponseTemplate::new(code).insert_header("docker-content-digest", DIGEST))
-        .mount(server).await;
+        .mount(server)
+        .await;
 }
 
 #[tokio::test]
@@ -68,9 +72,12 @@ async fn bearer_flow_on_401() {
         .and(path("/token"))
         .and(query_param("service", "registry.mock"))
         .and(query_param("scope", "repository:library/alpine:pull"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok123"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok123"})),
+        )
         .expect(1) // wiremock 0.6: expect() is on Mock, after respond_with()
-        .mount(&server).await;
+        .mount(&server)
+        .await;
     let c = client(&server, Creds::none());
     assert_eq!(c.digest(&alpine()).await.unwrap(), DIGEST);
     let _ = token_calls;
@@ -91,10 +98,18 @@ async fn creds_send_basic_auth_to_token_endpoint() {
     Mock::given(method("GET"))
         .and(path("/token"))
         .and(header("authorization", "Basic dXNlcjpwYXNz")) // base64("user:pass")
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok123"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok123"})),
+        )
         .expect(1) // wiremock 0.6: expect() is on Mock, after respond_with()
-        .mount(&server).await;
-    let c = client(&server, Creds { dockerhub: Some(("user".into(), "pass".into())) });
+        .mount(&server)
+        .await;
+    let c = client(
+        &server,
+        Creds {
+            dockerhub: Some(("user".into(), "pass".into())),
+        },
+    );
     assert_eq!(c.digest(&alpine()).await.unwrap(), DIGEST);
 }
 
@@ -113,9 +128,12 @@ async fn token_is_cached_per_scope() {
         .mount(&server).await;
     let _tok = Mock::given(method("GET"))
         .and(path("/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok123"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok123"})),
+        )
         .expect(1)
-        .mount(&server).await;
+        .mount(&server)
+        .await;
     let c = client(&server, Creds::none());
     let a = ImageRef::parse("alpine:3.20").unwrap();
     let b = ImageRef::parse("alpine:3.21").unwrap(); // different tag, same scope
@@ -133,7 +151,8 @@ async fn token_is_cached_per_scope() {
         .and(path("/v2/library/alpine/manifests/3.21"))
         .and(header("authorization", "Bearer tok123"))
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", DIGEST))
-        .mount(&server).await;
+        .mount(&server)
+        .await;
     assert_eq!(c.digest(&a).await.unwrap(), DIGEST);
     assert_eq!(c.digest(&b).await.unwrap(), DIGEST); // must reuse tok123, no 2nd /token
 }
@@ -144,13 +163,18 @@ async fn falls_back_to_body_sha256_when_header_missing() {
     Mock::given(method("GET"))
         .and(path("/v2/library/alpine/manifests/3.20"))
         .respond_with(ResponseTemplate::new(200).set_body_raw("hello", "application/octet-stream"))
-        .mount(&server).await;
+        .mount(&server)
+        .await;
     Mock::given(method("HEAD"))
         .and(path("/v2/library/alpine/manifests/3.20"))
         .respond_with(ResponseTemplate::new(200)) // no docker-content-digest header
-        .mount(&server).await;
+        .mount(&server)
+        .await;
     let c = client(&server, Creds::none());
-    assert_eq!(c.digest(&alpine()).await.unwrap(), "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    assert_eq!(
+        c.digest(&alpine()).await.unwrap(),
+        "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    );
 }
 
 #[tokio::test]
@@ -159,9 +183,13 @@ async fn not_found_is_unresolved() {
     Mock::given(method("HEAD"))
         .and(path("/v2/library/mystery/manifests/1.0"))
         .respond_with(ResponseTemplate::new(404))
-        .mount(&server).await;
+        .mount(&server)
+        .await;
     let c = client(&server, Creds::none());
-    let err = c.digest(&ImageRef::parse("mystery:1.0").unwrap()).await.unwrap_err();
+    let err = c
+        .digest(&ImageRef::parse("mystery:1.0").unwrap())
+        .await
+        .unwrap_err();
     match err {
         RegError::Unresolved(msg) => assert!(msg.contains("library/mystery")),
         other => panic!("expected Unresolved, got {other:?}"),
@@ -172,11 +200,20 @@ async fn not_found_is_unresolved() {
 fn creds_env_precedence_and_config_json() {
     let home = tempfile_dir(); // helper: std::env::temp_dir().join("pin-ci-creds-test-..."), created fresh
     std::fs::create_dir_all(home.join(".docker")).unwrap();
-    std::fs::write(home.join(".docker/config.json"),
-        r#"{"auths":{"https://index.docker.io/v1/":{"username":"u","password":"p"}}}"#).unwrap();
+    std::fs::write(
+        home.join(".docker/config.json"),
+        r#"{"auths":{"https://index.docker.io/v1/":{"username":"u","password":"p"}}}"#,
+    )
+    .unwrap();
     let c = Creds::load_from(None, None, Some(&home));
-    assert_eq!(c.dockerhub.as_ref().unwrap(), &("u".to_string(), "p".to_string()));
+    assert_eq!(
+        c.dockerhub.as_ref().unwrap(),
+        &("u".to_string(), "p".to_string())
+    );
     let c = Creds::load_from(Some("eu".into()), Some("ep".into()), Some(&home));
-    assert_eq!(c.dockerhub.as_ref().unwrap(), &("eu".to_string(), "ep".to_string()));
+    assert_eq!(
+        c.dockerhub.as_ref().unwrap(),
+        &("eu".to_string(), "ep".to_string())
+    );
     std::fs::remove_dir_all(&home).ok();
 }
