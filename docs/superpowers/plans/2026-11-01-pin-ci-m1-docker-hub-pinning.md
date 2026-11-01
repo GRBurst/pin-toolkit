@@ -106,7 +106,7 @@ fn parse_table() {
         ("library/alpine:3.20", None, "library/alpine", Some("3.20"), None),
         ("ghcr.io/org/img:v1", Some("ghcr.io"), "org/img", Some("v1"), None),
         ("reg.example.com:5000/a/b:1", Some("reg.example.com:5000"), "a/b", Some("1"), None),
-        (concat!("alpine:3.20@", DIGEST), None, "alpine", Some("3.20"), Some(DIGEST)),
+        ("alpine:3.20@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", None, "alpine", Some("3.20"), Some(DIGEST)),
     ];
     for (input, host, repo, tag, digest) in cases {
         let r = ImageRef::parse(input).unwrap();
