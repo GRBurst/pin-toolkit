@@ -1,0 +1,12 @@
+# comment line
+image: alpine:3.20
+
+default:
+  image: ubuntu:24.04
+
+build:
+  image: "node:20"
+  services: redis:7
+
+test:
+  image: alpine:3.20
