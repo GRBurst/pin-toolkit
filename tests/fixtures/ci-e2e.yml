@@ -1,0 +1,7 @@
+image: alpine:3.20
+ghcr-job:
+  image: ghcr.io/org/img:v1
+missing-job:
+  image: mystery:1.0
+dup:
+  image: alpine:3.20
