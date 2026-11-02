@@ -5,8 +5,6 @@
 //! (`name:` child). Comment lines, `include:` blocks and script items
 //! never produce targets.
 
-use crate::image_ref::ImageRef;
-
 /// One discovered image reference location in a CI file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
@@ -25,11 +23,17 @@ pub struct Target {
 /// Returns targets sorted by `(line, start)`. A line is a candidate when it
 /// is a top-level `image:`/`services:` line or sits one level inside a
 /// top-level block (at the block's child indentation); deeper nesting is
-/// ignored. A candidate yields a target if its value parses via
-/// [`ImageRef::parse`]: a bare/quoted scalar, a flow sequence (one target
-/// per item), or an empty value opening a block — sequence items
-/// (`- value`, `- name: value`) and, for `image:`, a `name:` child at the
-/// block's child indentation. Comment lines never produce targets.
+/// ignored. Syntactic candidates yield targets: a bare/quoted scalar (one
+/// target), a flow sequence (one target per item), or an empty value opening
+/// a block — sequence items (`- value`, `- name: value`) and, for `image:`,
+/// a `name:` child at the block's child indentation. Comment lines never
+/// produce targets.
+///
+/// Discovery is purely syntactic — it does NOT filter via
+/// [`ImageRef::parse`](crate::image_ref::ImageRef::parse). Values that fail to parse (e.g. shell/YAML
+/// interpolation like `${IMAGE}:${TAG}`) stay targets and are reported as
+/// `skipped (unparseable reference)` at resolve time, so the report stays
+/// complete and the exit code stays 0.
 pub fn discover(text: &str) -> Vec<Target> {
     // Precompute each line's byte offset in `text` (line text excl. newline).
     let mut lines: Vec<(usize, &str)> = Vec::new();
@@ -218,7 +222,7 @@ fn push_target(
 /// `bracket` in `line`. M1: the inside must not contain `{`, `}`, or a
 /// nested `[` (otherwise the whole line yields no targets); items are the
 /// comma-split pieces — trimmed, one layer of quotes stripped — and each
-/// must parse as an [`ImageRef`]. Spans point at the item within the line
+/// must parse as an [`ImageRef`](crate::image_ref::ImageRef). Spans point at the item within the line
 /// (quotes included in the span when quoted).
 fn push_flow_targets(
     targets: &mut Vec<Target>,
@@ -352,14 +356,12 @@ fn push_if_parses(
     end: usize,
     value: String,
 ) {
-    if ImageRef::parse(&value).is_ok() {
-        targets.push(Target {
-            line: line_idx,
-            start: line_off + start,
-            end: line_off + end,
-            value,
-        });
-    }
+    targets.push(Target {
+        line: line_idx,
+        start: line_off + start,
+        end: line_off + end,
+        value,
+    });
 }
 
 /// Extract the scalar token at the start of `content` (a slice of a line
@@ -391,6 +393,18 @@ mod tests {
     use super::*;
 
     const SIMPLE: &str = include_str!("../tests/fixtures/ci-simple.yml");
+
+    #[test]
+    fn templated_value_is_still_a_target() {
+        // Shell/YAML interpolation is a syntactic image candidate; the parse
+        // rejection happens at resolve time (reported as `skipped
+        // (unparseable reference)`), not here — discover must not silently
+        // drop lines the user should see in the report.
+        let text = "job:\n  image: ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}\n";
+        let t = discover(text);
+        assert_eq!(t.len(), 1, "templated value must stay a target");
+        assert_eq!(t[0].value, "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}");
+    }
 
     #[test]
     fn discovers_scalar_image_and_services() {

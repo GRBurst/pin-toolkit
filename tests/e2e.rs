@@ -121,6 +121,41 @@ async fn dry_run_writes_nothing() {
 }
 
 #[tokio::test]
+async fn templated_image_is_skipped_not_unresolved() {
+    // Shell/YAML-templated image lines are syntactic candidates that fail
+    // parse at resolve time: they must be reported as `skipped` (visible in
+    // the report, file untouched) and must NOT make the run fail. No mock
+    // server needed — templated and non-hub refs never reach the client.
+    let client = RegistryClient::new(Default::default(), std::collections::HashMap::new());
+    let dir = std::env::temp_dir().join(format!("pin-ci-e2e4-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("ci-templated.yml");
+    let original = "job:\n  image: ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}\nghcr-job:\n  image: ghcr.io/org/img:v1\n";
+    std::fs::write(&p, original).unwrap();
+    let opts = PinOptions {
+        dry_run: false,
+        json: false,
+        concurrency: 4,
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
+    assert_eq!(report.summary.skipped, 2);
+    assert_eq!(report.summary.unresolved, 0);
+    assert_eq!(report.summary.pinned, 0);
+    assert_eq!(exit_code(&report), 0);
+    let reasons: Vec<_> = report
+        .results
+        .iter()
+        .map(|r| r.reason.clone().unwrap_or_default())
+        .collect();
+    assert!(reasons.contains(&"unparseable reference".to_string()));
+    assert!(reasons.contains(&"registry not enabled: ghcr.io".to_string()));
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
 async fn missing_file_is_error() {
     let s = mock_server().await;
     let client = RegistryClient::new(

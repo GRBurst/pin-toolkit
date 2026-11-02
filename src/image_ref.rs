@@ -24,6 +24,12 @@ impl ImageRef {
     /// 4. Tag: the text after the last `:` that appears after the last `/`,
     ///    else `None`.
     /// 5. Reject an empty repo.
+    /// 6. Validate characters against the Docker reference grammar: the
+    ///    repository path is lowercase alphanumerics with `._-/` separators,
+    ///    the host is `[a-z0-9.-]` with an optional `:port`, the tag is
+    ///    `[a-zA-Z0-9._-]`. Shell/YAML interpolation (`$`, `{`, `}`) and
+    ///    uppercase repo paths fail here, so callers report them as
+    ///    `skipped (unparseable)` instead of trying to resolve them.
     pub fn parse(input: &str) -> Result<ImageRef, String> {
         if input.is_empty() || input.chars().any(char::is_whitespace) {
             return Err("invalid image reference".to_string());
@@ -73,6 +79,39 @@ impl ImageRef {
         // 5. Reject an empty repo.
         if repo.is_empty() {
             return Err("empty repository".to_string());
+        }
+
+        // 6. Docker reference grammar: repo path is lowercase alphanumerics
+        //    with `._-/` separators; host is [a-z0-9.-] with optional :port;
+        //    tag is [a-zA-Z0-9._-]. `$`, `{`, `}` (shell/YAML interpolation)
+        //    and uppercase repo paths fail here on purpose.
+        let repo_ok = repo
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-' | b'/'));
+        if !repo_ok {
+            return Err("invalid repository".to_string());
+        }
+        if let Some(tag) = &tag {
+            let tag_ok = tag
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'_' | b'-'));
+            if !tag_ok {
+                return Err("invalid tag".to_string());
+            }
+        }
+        if let Some(host) = &host {
+            let (h, port) = match host.rsplit_once(':') {
+                Some((h, p)) => (h, Some(p)),
+                None => (host.as_str(), None),
+            };
+            let host_ok = h
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-'));
+            let port_ok =
+                port.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+            if !host_ok || !port_ok {
+                return Err("invalid registry host".to_string());
+            }
         }
 
         Ok(ImageRef {
@@ -190,6 +229,22 @@ mod tests {
             "alpine:3.20@notadigest",
             "alpine:3.20@sha256:zzz",
             "@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            assert!(ImageRef::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn parse_rejects_non_reference_characters() {
+        // Values from shell/YAML interpolation and uppercase repo paths can
+        // never be Docker image references; they must fail parse so the
+        // caller reports `skipped (unparseable)` instead of trying to resolve
+        // them (which would 404 and fail the whole run).
+        for bad in [
+            "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}",
+            "alpine:$TAG",
+            "MyRepo/app:1",
+            "${REGISTRY}:5000/img:1",
         ] {
             assert!(ImageRef::parse(bad).is_err(), "{bad}");
         }

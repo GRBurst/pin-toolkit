@@ -28,9 +28,9 @@ fn bin_present(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Extract all `[\w./-]+@sha256:[0-9a-f]{64}` occurrences in `text`.
 /// Manual scan (no regex dependency): find each `@sha256:`, verify 64 hex
 /// digits follow, then extend backwards over `[\w./-]`.
+/// Extract all `[\w./-]+@sha256:[0-9a-f]{64}` occurrences in `text`.
 fn digest_occurrences(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let bytes = text.as_bytes();
@@ -89,6 +89,33 @@ async fn oracle_matches_old_pipeline() {
 
     // 3. Copy to a second temp dir; run the OLD pipeline as-is on the first.
     std::fs::copy(&yml_old, &yml_new).unwrap();
+
+    // The old pipeline runs renovate, which requires a git repository.
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args([
+                "-c",
+                "user.email=oracle@pin-ci",
+                "-c",
+                "user.name=oracle",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&dir_old)
+            .output()
+            .expect("git ran");
+        if !out.status.success() {
+            panic!(
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    };
+    git(&["init", "-b", "main"]);
+    git(&["add", "ci/.gitlab-ci.yml"]);
+    git(&["commit", "-m", "ci"]);
+
     let cmd = Command::new("sh")
         .arg("-c")
         .arg(format!(
