@@ -59,7 +59,7 @@ impl ImageRef {
 
         // 4. Tag: text after the last ':' that appears after the last '/'.
         let tag_pos = match rest.rfind(':') {
-            Some(colon) if rest.rfind('/').map_or(true, |slash| colon > slash) => Some(colon),
+            Some(colon) if rest.rfind('/').is_none_or(|slash| colon > slash) => Some(colon),
             _ => None,
         };
         let (repo, tag) = match tag_pos {
@@ -125,7 +125,14 @@ mod tests {
 
     #[test]
     fn parse_table() {
-        let cases: &[(&str, Option<&str>, &str, Option<&str>, Option<&str>)] = &[
+        type Case<'a> = (
+            &'a str,
+            Option<&'a str>,
+            &'a str,
+            Option<&'a str>,
+            Option<&'a str>,
+        );
+        let cases: &[Case] = &[
             ("alpine", None, "alpine", None, None),
             ("alpine:3.20", None, "alpine", Some("3.20"), None),
             (

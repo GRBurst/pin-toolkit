@@ -88,12 +88,12 @@ pub fn discover(text: &str) -> Vec<Target> {
                 }
                 continue;
             }
-            if indent == key_indent {
-                if let Some(rest) = dash_item_rest(line) {
-                    // A `- item` at the key's indentation belongs to the block.
-                    push_item_targets(&mut targets, line_idx, *line_off, line, rest);
-                    continue;
-                }
+            if indent == key_indent
+                && let Some(rest) = dash_item_rest(line)
+            {
+                // A `- item` at the key's indentation belongs to the block.
+                push_item_targets(&mut targets, line_idx, *line_off, line, rest);
+                continue;
             }
             // Any other line at or above the key's indentation ends the block.
             sub_key_indent = None;
@@ -146,10 +146,10 @@ fn image_key(line: &str) -> Option<(&'static str, usize)> {
     let indent = line.len() - line.trim_start_matches(' ').len();
     let content = &line[indent..];
     for key in ["image", "services"] {
-        if let Some(rest) = content.strip_prefix(key).and_then(|r| r.strip_prefix(':')) {
-            if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
-                return Some((key, indent + key.len()));
-            }
+        if let Some(rest) = content.strip_prefix(key).and_then(|r| r.strip_prefix(':'))
+            && (rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t'))
+        {
+            return Some((key, indent + key.len()));
         }
     }
     None

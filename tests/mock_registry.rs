@@ -65,10 +65,10 @@ async fn bearer_flow_on_401() {
         .and(NoAuthorization)
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
-            format!("Bearer realm=\"{}\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", format!("{}/token", server.uri())),
+            format!("Bearer realm=\"{}/token\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", server.uri()),
         ))
         .mount(&server).await;
-    let token_calls = Mock::given(method("GET"))
+    let _token_calls = Mock::given(method("GET"))
         .and(path("/token"))
         .and(query_param("service", "registry.mock"))
         .and(query_param("scope", "repository:library/alpine:pull"))
@@ -80,7 +80,6 @@ async fn bearer_flow_on_401() {
         .await;
     let c = client(&server, Creds::none());
     assert_eq!(c.digest(&alpine()).await.unwrap(), DIGEST);
-    let _ = token_calls;
 }
 
 #[tokio::test]
@@ -92,7 +91,7 @@ async fn creds_send_basic_auth_to_token_endpoint() {
         .and(NoAuthorization)
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
-            format!("Bearer realm=\"{}\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", format!("{}/token", server.uri())),
+            format!("Bearer realm=\"{}/token\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", server.uri()),
         ))
         .mount(&server).await;
     Mock::given(method("GET"))
@@ -122,7 +121,7 @@ async fn token_is_cached_per_scope() {
         .and(NoAuthorization)
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
-            format!("Bearer realm=\"{}\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", format!("{}/token", server.uri())),
+            format!("Bearer realm=\"{}/token\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", server.uri()),
         ))
         .expect(1) // wiremock 0.6: expect() is on Mock, after respond_with()
         .mount(&server).await;
@@ -144,7 +143,7 @@ async fn token_is_cached_per_scope() {
         .and(NoAuthorization)
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
-            format!("Bearer realm=\"{}\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", format!("{}/token", server.uri())),
+            format!("Bearer realm=\"{}/token\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", server.uri()),
         ))
         .mount(&server).await;
     Mock::given(method("HEAD"))

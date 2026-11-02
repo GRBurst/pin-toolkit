@@ -80,6 +80,7 @@ fn dockerhub_from_config(home: Option<&Path>) -> Option<(String, String)> {
     let auths = config.get("auths")?.as_object()?;
     for key in [
         "https://index.docker.io/v1/",
+        "https://docker.io",
         "index.docker.io/v1/",
         "docker.io",
     ] {
@@ -382,5 +383,39 @@ mod tests {
     fn creds_none_is_default() {
         assert!(Creds::none().dockerhub.is_none());
         assert_eq!(Creds::none(), Creds::default());
+    }
+
+    fn write_docker_config(home: &std::path::Path, json: &str) {
+        std::fs::create_dir_all(home.join(".docker")).unwrap();
+        std::fs::write(home.join(".docker").join("config.json"), json).unwrap();
+    }
+
+    #[test]
+    fn config_json_https_docker_io_key() {
+        let home = std::env::temp_dir().join(format!("pin-ci-cfg-dockerio-{}", std::process::id()));
+        write_docker_config(
+            &home,
+            r#"{"auths":{"https://docker.io":{"username":"u","password":"p"}}}"#,
+        );
+        assert_eq!(
+            dockerhub_from_config(Some(&home)),
+            Some(("u".to_string(), "p".to_string()))
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn config_json_key_precedence_index_first() {
+        let home =
+            std::env::temp_dir().join(format!("pin-ci-cfg-precedence-{}", std::process::id()));
+        write_docker_config(
+            &home,
+            r#"{"auths":{"https://docker.io":{"username":"alt","password":"x"},"https://index.docker.io/v1/":{"username":"u","password":"p"}}}"#,
+        );
+        assert_eq!(
+            dockerhub_from_config(Some(&home)),
+            Some(("u".to_string(), "p".to_string()))
+        );
+        std::fs::remove_dir_all(&home).ok();
     }
 }

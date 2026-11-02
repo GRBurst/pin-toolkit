@@ -38,8 +38,9 @@ pinned: 2, ok: 0, skipped: 0, unresolved: 0
 ## Environment
 
 - `DOCKERHUB_USER` / `DOCKERHUB_TOKEN` — Docker Hub credentials, used first.
-- Fallback: `~/.docker/config.json` (`auths` keys
-  `https://index.docker.io/v1/`, `https://docker.io`, `docker.io`).
+- Fallback: `~/.docker/config.json` (`auths` keys, in order:
+  `https://index.docker.io/v1/`, `https://docker.io`,
+  `index.docker.io/v1/`, `docker.io`).
 
 Nothing secret is written to files or logs.
 

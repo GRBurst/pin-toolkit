@@ -42,7 +42,9 @@ async fn pins_and_reports_all_states() {
         json: false,
         concurrency: 4,
     };
-    let report = pin_files(&[p.clone()], &opts, &client).await.unwrap();
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
     let out = std::fs::read_to_string(&p).unwrap();
     let expected = format!(
         "image: alpine:3.20@{D1}\nghcr-job:\n  image: ghcr.io/org/img:v1\nmissing-job:\n  image: mystery:1.0\ndup:\n  image: alpine:3.20@{D1}\n"
@@ -78,9 +80,13 @@ async fn second_run_is_noop() {
         json: false,
         concurrency: 4,
     };
-    let _ = pin_files(&[p.clone()], &opts, &client).await.unwrap();
+    let _ = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
     let after_first = std::fs::read_to_string(&p).unwrap();
-    let report2 = pin_files(&[p.clone()], &opts, &client).await.unwrap();
+    let report2 = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), after_first);
     assert!(
         report2
@@ -106,7 +112,9 @@ async fn dry_run_writes_nothing() {
         json: false,
         concurrency: 4,
     };
-    let report = pin_files(&[p.clone()], &opts, &client).await.unwrap();
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), FIXTURE);
     assert_eq!(report.summary.pinned, 2);
     std::fs::remove_dir_all(&dir).ok();
