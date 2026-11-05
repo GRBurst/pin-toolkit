@@ -14,10 +14,10 @@ use std::task::Poll;
 use tokio::sync::Semaphore;
 
 use crate::discover::{Target, discover};
-use crate::image_ref::ImageRef;
 use crate::registry::{Creds, RegError};
 use crate::report::{RefResult, Report};
 
+pub use image_ref::ImageRef;
 pub use registry::RegistryClient;
 
 /// Options for a pin run.

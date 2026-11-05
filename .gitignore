@@ -13,3 +13,4 @@ devenv.local.yaml
 
 # local cargo home (devenv has no rust by design; store toolchain + repo-local cache)
 .cargo-home/
+.tmp/
