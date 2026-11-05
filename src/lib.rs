@@ -30,6 +30,12 @@ pub struct PinOptions {
     pub json: bool,
     /// Max concurrent digest lookups per file.
     pub concurrency: usize,
+    /// Bump unpinned, versioned Docker Hub refs to the latest compatible
+    /// stable tag and pin the bumped tag's digest (status `updated`).
+    pub update: bool,
+    /// With `update`, allow bumping to a higher major (same suffix and
+    /// release length still required). Meaningful only when `update` is set.
+    pub update_major: bool,
 }
 
 /// Build the registry client from the environment: `DOCKERHUB_USER` /
@@ -53,7 +59,13 @@ struct Resolved {
 }
 
 /// Resolve one discovered target against the client.
-async fn resolve_target(client: &RegistryClient, text: &str, t: &Target, file: &str) -> Resolved {
+async fn resolve_target(
+    client: &RegistryClient,
+    opts: &PinOptions,
+    text: &str,
+    t: &Target,
+    file: &str,
+) -> Resolved {
     let token = &text[t.start..t.end];
     let mut result = RefResult {
         file: file.to_string(),
@@ -103,6 +115,54 @@ async fn resolve_target(client: &RegistryClient, text: &str, t: &Target, file: &
             result,
             replacement: None,
         };
+    }
+    if opts.update && r.digest.is_none() {
+        // Pinned refs never reach here (re-pin only); only non-empty,
+        // versioned tags bump — tagless and non-semver tags fall through to
+        // the M1 pin path.
+        if let Some(tag) = r.tag.as_deref()
+            && !tag.is_empty()
+            && versioning::parse(tag).is_some()
+        {
+            let tags = match client.list_tags(&r).await {
+                Ok(tags) => tags,
+                Err(e) => {
+                    result.status = "unresolved".to_string();
+                    result.reason = Some(format!("tag list: {e}"));
+                    return Resolved {
+                        result,
+                        replacement: None,
+                    };
+                }
+            };
+            if let Some(new_tag) = versioning::pick_latest_stable(tag, &tags, opts.update_major)
+                && new_tag != tag
+            {
+                let mut bumped = r.clone();
+                bumped.tag = Some(new_tag.clone());
+                let new_digest = match client.digest(&bumped).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let msg = match e {
+                            RegError::Unresolved(m) | RegError::Network(m) => m,
+                        };
+                        result.status = "unresolved".to_string();
+                        result.reason = Some(msg);
+                        return Resolved {
+                            result,
+                            replacement: None,
+                        };
+                    }
+                };
+                let new_token = edit::splice_update(token, &new_tag, &new_digest);
+                result.status = "updated".to_string();
+                result.new = Some(new_token.clone());
+                return Resolved {
+                    result,
+                    replacement: Some((t.start, new_token)),
+                };
+            }
+        }
     }
     let new_token = edit::splice_value(token, &r, &digest);
     result.status = "pinned".to_string();
@@ -173,7 +233,7 @@ pub async fn pin_file(
         let sem = Arc::clone(&sem);
         futures.push(async move {
             let _permit = sem.acquire().await.expect("semaphore is never closed");
-            resolve_target(client_ref, text_ref, t, file_ref).await
+            resolve_target(client_ref, opts, text_ref, t, file_ref).await
         });
     }
     let mut resolved: Vec<Resolved> = join_all(futures).await;

@@ -66,6 +66,36 @@ pub fn splice_value(old_token: &str, ref_: &ImageRef, digest: &str) -> String {
     }
 }
 
+/// Tag bump + pin: `alpine:3.20` → `alpine:3.24@sha256:...`. Quote-preserving
+/// like `splice_value`. Callers guarantee: ref has a tag and no digest.
+pub fn splice_update(old_token: &str, new_tag: &str, digest: &str) -> String {
+    let b = old_token.as_bytes();
+    let quote: Option<char> =
+        if b.len() >= 2 && (b[0] == b'"' || b[0] == b'\'') && b[b.len() - 1] == b[0] {
+            Some(b[0] as char)
+        } else {
+            None
+        };
+    let inner: &str = match quote {
+        Some(_) => &old_token[1..old_token.len() - 1],
+        None => old_token,
+    };
+    // Repo part = everything before the tag's colon (the last `:` after the
+    // last `/`); fall back to cutting at the last `/` when the tag is not
+    // separated by a colon.
+    let repo_part = match (inner.rfind('/'), inner.rfind(':')) {
+        (Some(slash), Some(colon)) if colon > slash => &inner[..colon],
+        (Some(slash), _) => &inner[..slash],
+        (None, Some(colon)) => &inner[..colon],
+        (None, None) => inner,
+    };
+    let value = format!("{repo_part}:{new_tag}@{digest}");
+    match quote {
+        Some(q) => format!("{q}{value}{q}"),
+        None => value,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +138,30 @@ mod tests {
         assert_eq!(
             splice_value(&old, &r, other),
             format!("alpine:3.20@{other}")
+        );
+    }
+
+    #[test]
+    fn splice_update_bumps_and_pins_bare() {
+        assert_eq!(
+            splice_update("alpine:3.20", "3.24", DIGEST),
+            format!("alpine:3.24@{DIGEST}")
+        );
+    }
+
+    #[test]
+    fn splice_update_preserves_quotes() {
+        assert_eq!(
+            splice_update("\"node:20\"", "22", DIGEST),
+            format!("\"node:22@{DIGEST}\"")
+        );
+    }
+
+    #[test]
+    fn splice_update_keeps_repo_path() {
+        assert_eq!(
+            splice_update("library/alpine:3.20", "3.24", DIGEST),
+            format!("library/alpine:3.24@{DIGEST}")
         );
     }
 

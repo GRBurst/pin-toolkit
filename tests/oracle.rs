@@ -173,6 +173,8 @@ async fn oracle_matches_old_pipeline() {
         dry_run: false,
         json: false,
         concurrency: 4,
+        update: false,
+        update_major: false,
     };
     let report = pin_files(&paths, &opts, &client_from_env())
         .await

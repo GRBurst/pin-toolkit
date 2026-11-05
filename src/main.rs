@@ -31,6 +31,10 @@ async fn main() {
         dry_run: cli.dry_run,
         json: cli.json,
         concurrency: cli.concurrency,
+        // The `--update`/`--update-major` CLI flags land in M2 Task 4; the
+        // library default is off.
+        update: false,
+        update_major: false,
     };
     let client = client_from_env();
     let paths: Vec<PathBuf> = cli.files.iter().map(PathBuf::from).collect();
