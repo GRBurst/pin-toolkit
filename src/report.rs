@@ -11,7 +11,7 @@ pub struct RefResult {
     pub reference: String,
     pub old: String,
     pub new: Option<String>,
-    /// "pinned" | "ok" | "skipped" | "unresolved"
+    /// "pinned" | "ok" | "updated" | "skipped" | "unresolved"
     pub status: String,
     /// Present for skipped/unresolved.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -28,6 +28,7 @@ pub struct Report {
 pub struct Summary {
     pub pinned: usize,
     pub ok: usize,
+    pub updated: usize,
     pub skipped: usize,
     pub unresolved: usize,
 }
@@ -38,6 +39,7 @@ impl Report {
         let summary = Summary {
             pinned: results.iter().filter(|r| r.status == "pinned").count(),
             ok: results.iter().filter(|r| r.status == "ok").count(),
+            updated: results.iter().filter(|r| r.status == "updated").count(),
             skipped: results.iter().filter(|r| r.status == "skipped").count(),
             unresolved: results.iter().filter(|r| r.status == "unresolved").count(),
         };
@@ -46,7 +48,7 @@ impl Report {
 
     /// One line per result, then the summary line:
     /// `{file}:{line}  {status}{(reason)}  {old} -> {new or "-"}  # {reference}`
-    /// `pinned: {n}, ok: {n}, skipped: {n}, unresolved: {n}`
+    /// `pinned: {n}, ok: {n}, updated: {n}, skipped: {n}, unresolved: {n}`
     pub fn render_human(&self) -> String {
         let mut out = String::new();
         for r in &self.results {
@@ -61,8 +63,12 @@ impl Report {
             ));
         }
         out.push_str(&format!(
-            "pinned: {}, ok: {}, skipped: {}, unresolved: {}\n",
-            self.summary.pinned, self.summary.ok, self.summary.skipped, self.summary.unresolved
+            "pinned: {}, ok: {}, updated: {}, skipped: {}, unresolved: {}\n",
+            self.summary.pinned,
+            self.summary.ok,
+            self.summary.updated,
+            self.summary.skipped,
+            self.summary.unresolved
         ));
         out
     }
@@ -91,6 +97,15 @@ mod tests {
             },
             RefResult {
                 file: "ci/.gitlab-ci.yml".into(),
+                line: 4,
+                reference: "alpine:3.20".into(),
+                old: "alpine:3.20".into(),
+                new: Some("alpine:3.24@sha256:def".into()),
+                status: "updated".into(),
+                reason: None,
+            },
+            RefResult {
+                file: "ci/.gitlab-ci.yml".into(),
                 line: 5,
                 reference: "ghcr.io/o/i:v1".into(),
                 old: "ghcr.io/o/i:v1".into(),
@@ -100,8 +115,9 @@ mod tests {
             },
         ]);
         let expected = "ci/.gitlab-ci.yml:2  pinned  alpine:3.20 -> alpine:3.20@sha256:abc  # alpine:3.20\n\
+                    ci/.gitlab-ci.yml:4  updated  alpine:3.20 -> alpine:3.24@sha256:def  # alpine:3.20\n\
                     ci/.gitlab-ci.yml:5  skipped (registry not enabled: ghcr.io)  ghcr.io/o/i:v1 -> -  # ghcr.io/o/i:v1\n\
-                    pinned: 1, ok: 0, skipped: 1, unresolved: 0\n";
+                    pinned: 1, ok: 0, updated: 1, skipped: 1, unresolved: 0\n";
         assert_eq!(r.render_human(), expected);
     }
 

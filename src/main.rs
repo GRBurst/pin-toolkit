@@ -11,6 +11,16 @@ struct Cli {
     #[arg(default_value = "ci/.gitlab-ci.yml")]
     files: Vec<String>,
 
+    /// Bump unpinned, versioned Docker Hub tags to the latest compatible
+    /// stable tag and pin the bumped tag's digest
+    #[arg(long)]
+    update: bool,
+
+    /// With --update, also allow bumping to a higher major (meaningful only
+    /// with --update)
+    #[arg(long)]
+    update_major: bool,
+
     /// Resolve and report without writing files
     #[arg(long)]
     dry_run: bool,
@@ -24,14 +34,20 @@ struct Cli {
     concurrency: usize,
 }
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-    let opts = PinOptions {
+fn build_opts(cli: &Cli) -> PinOptions {
+    PinOptions {
         dry_run: cli.dry_run,
         json: cli.json,
         concurrency: cli.concurrency,
-    };
+        update: cli.update,
+        update_major: cli.update_major,
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    let opts = build_opts(&cli);
     let client = client_from_env();
     let paths: Vec<PathBuf> = cli.files.iter().map(PathBuf::from).collect();
     match pin_files(&paths, &opts, &client).await {
@@ -48,5 +64,29 @@ async fn main() {
             eprintln!("pin-ci: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_update_flags_parsed() {
+        let cli =
+            Cli::try_parse_from(["pin-ci", "ci/.gitlab-ci.yml", "--update", "--update-major"])
+                .unwrap();
+        let opts = build_opts(&cli);
+        assert!(opts.update);
+        assert!(opts.update_major);
+        assert!(!opts.dry_run);
+        assert!(!opts.json);
+        assert_eq!(opts.concurrency, 8);
+
+        let cli = Cli::try_parse_from(["pin-ci"]).unwrap();
+        let opts = build_opts(&cli);
+        assert!(!opts.update);
+        assert!(!opts.update_major);
+        assert_eq!(opts.concurrency, 8);
     }
 }

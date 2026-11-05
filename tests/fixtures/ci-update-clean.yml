@@ -1,0 +1,9 @@
+build:
+  image: alpine:3.20
+app:
+  image: docker:24
+ubuntu:
+  image: ubuntu:24.04
+sidecars:
+  services:
+    - alpine:3.20

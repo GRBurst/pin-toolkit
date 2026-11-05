@@ -177,6 +177,155 @@ async fn falls_back_to_body_sha256_when_header_missing() {
 }
 
 #[tokio::test]
+async fn list_tags_single_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("n", "1000"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"tags": ["a", "b"]})),
+        )
+        .mount(&server)
+        .await;
+    let c = client(&server, Creds::none());
+    assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b"]);
+}
+
+#[tokio::test]
+async fn list_tags_follows_link_next() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("n", "1000"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"tags": ["a", "b"]}))
+                .insert_header(
+                    "link",
+                    format!(
+                        r#"<{}/v2/library/alpine/tags/list?last=b>; rel="next""#,
+                        server.uri()
+                    ),
+                ),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("last", "b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"tags": ["c"]})))
+        .mount(&server)
+        .await;
+    let c = client(&server, Creds::none());
+    assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b", "c"]);
+}
+
+/// Docker Hub sends PATH-RELATIVE `Link` URLs (`</v2/...>; rel="next"`) for
+/// tag-list pagination (repos with >1000 tags, e.g. `docker`); the follow-up
+/// request must resolve them against the registry base.
+#[tokio::test]
+async fn list_tags_follows_relative_link_next() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("n", "1000"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"tags": ["a", "b"]}))
+                .insert_header(
+                    "link",
+                    r#"</v2/library/alpine/tags/list?last=b>; rel="next""#,
+                ),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("last", "b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"tags": ["c"]})))
+        .mount(&server)
+        .await;
+    let c = client(&server, Creds::none());
+    assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b", "c"]);
+}
+
+#[tokio::test]
+async fn list_tags_404() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/mystery/tags/list"))
+        .and(query_param("n", "1000"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let c = client(&server, Creds::none());
+    let err = c
+        .list_tags(&ImageRef::parse("mystery:1.0").unwrap())
+        .await
+        .unwrap_err();
+    match err {
+        RegError::Unresolved(msg) => assert!(msg.contains("library/mystery not found")),
+        other => panic!("expected Unresolved, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn list_tags_bearer_flow() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("n", "1000"))
+        .and(NoAuthorization)
+        .respond_with(ResponseTemplate::new(401).insert_header(
+            "www-authenticate",
+            format!(
+                "Bearer realm=\"{}/token\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"",
+                server.uri()
+            ),
+        ))
+        .mount(&server)
+        .await;
+    let _token = Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(query_param("service", "registry.mock"))
+        .and(query_param("scope", "repository:library/alpine:pull"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok123"})),
+        )
+        .expect(1) // wiremock 0.6: expect() is on Mock, after respond_with()
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("n", "1000"))
+        .and(header("authorization", "Bearer tok123"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"tags": ["a", "b"]})),
+        )
+        .mount(&server)
+        .await;
+    let c = client(&server, Creds::none());
+    assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b"]);
+}
+
+#[tokio::test]
+async fn list_tags_caches_per_repo() {
+    let server = MockServer::start().await;
+    let _tags = Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("n", "1000"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"tags": ["a", "b"]})),
+        )
+        .expect(1) // second list_tags call must be served from the per-repo cache
+        .mount(&server)
+        .await;
+    let c = client(&server, Creds::none());
+    assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b"]);
+    assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b"]);
+}
+
+#[tokio::test]
 async fn not_found_is_unresolved() {
     let server = MockServer::start().await;
     Mock::given(method("HEAD"))

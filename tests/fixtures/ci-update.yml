@@ -1,0 +1,9 @@
+build:
+  image: alpine:3.20
+sidecars:
+  services:
+    - alpine:3.20
+plain:
+  image: nginx:stable
+external:
+  image: ghcr.io/org/img:v1
