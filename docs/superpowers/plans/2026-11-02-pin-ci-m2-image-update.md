@@ -125,13 +125,15 @@ Semantics (Renovate docker flavor — port exactly, tests encode these):
   the numeric core of `prefix` is the longest `\d+(\.\d+)*` run starting at
   position 0 (leading zeros OK — `"24.04"` → `[24, 4]`); the remainder of
   `prefix` is the prerelease and must be all `[A-Za-z0-9_]` (`""` allowed);
-  release parts parse to `u64`. `"1.2.x"` → core `1.2`, prerelease `x`
-  (matches Renovate's anchored `\d+(?:\.\d+)*` + `\w*` regex).
+  release parts parse to `u64`. A dot not followed by a digit is dangling and
+  invalidates the whole parse (the anchored regex `\d+(?:\.\d+)*` + `\w*`
+  cannot match it — e.g. `"1.2.x"` → `None`), while `"1.2x"` → core `1.2`,
+  prerelease `x`.
 - `compare`: compare release part-by-part up to the longer length; a missing
   part on either side means the SHORTER version is BIGGER (`2.1 > 2.1.1`);
   then prerelease: absent > present, both present → bytewise `cmp`;
-  then suffix: reversed order (the lexicographically LARGER suffix wins —
-  Renovate does `suffix2.localeCompare(suffix1)`).
+  then suffix: reversed order (the lexicographically SMALLER suffix is the
+  BIGGER version — Renovate returns `suffix2.localeCompare(suffix1)`).
 - `pick_latest_stable`: candidates = tags where `parse` ok, `is_stable`,
   `is_compatible` with current, and (`allow_major` OR same major). Return the
   candidate that beats all others, only if it is `compare`-greater than
@@ -152,11 +154,11 @@ fn parse_table() {
         ("24.04", Some((vec![24, 4], "", ""))),
         ("1.2.3", Some((vec![1, 2, 3], "", ""))),
         ("v1.2.3", Some((vec![1, 2, 3], "", ""))),
-        ("1.2.3-rc1", Some((vec![1, 2, 3], "rc1", ""))),
+        ("1.2.3-rc1", Some((vec![1, 2, 3], "", "rc1"))), // dash → suffix (stable), not prerelease
         ("3.20-alpine", Some((vec![3, 20], "", "alpine"))),
         ("1.2.3rc1", Some((vec![1, 2, 3], "rc1", ""))),
         ("1.2.3-rc-1", Some((vec![1, 2, 3], "", "rc-1"))),
-        ("1.2.x", Some((vec![1, 2], "x", ""))),
+        ("1.2.x", None), // dot before the prerelease is unmatchable by the anchored regex
         ("1234567", Some((vec![1234567], "", ""))),
         ("", None),
         ("latest", None),
@@ -178,7 +180,7 @@ fn parse_table() {
 fn stability() {
     assert!(parse("3.20").unwrap().is_stable());
     assert!(parse("3.20-alpine").unwrap().is_stable()); // suffix does NOT destabilize (Renovate generic isStable)
-    assert!(!parse("3.20.5-rc0").unwrap().is_stable());
+    assert!(parse("3.20.5-rc0").unwrap().is_stable()); // dash-suffix is stable in Renovate docker versioning
     assert!(!parse("1.2.3rc1").unwrap().is_stable());
 }
 
@@ -188,7 +190,7 @@ fn compatibility() {
     assert!(a.is_compatible(&parse("3.24").unwrap()));
     assert!(!a.is_compatible(&parse("3.24.0").unwrap())); // release length
     assert!(!a.is_compatible(&parse("3.20-alpine").unwrap())); // suffix
-    assert!(parse("3.20-alpine").unwrap().is_compatible(&parse("3.20.5-alpine").unwrap()));
+    assert!(parse("3.20-alpine").unwrap().is_compatible(&parse("3.24-alpine").unwrap()));
 }
 
 #[test]
@@ -199,11 +201,12 @@ fn compare_table() {
         ("2.1", "2.1.1", Greater),  // shorter is bigger (docker flavor)
         ("2.1.1", "2.1", Less),
         ("2.1", "2.2", Less),
-        ("3.20.5", "3.20", Greater),
-        ("1.2.3-rc1", "1.2.3", Less),   // stable beats pre
+        ("3.20.5", "3.20", Less),
+        ("1.2.3-rc1", "1.2.3", Less), // suffixed < plain (smaller suffix wins)
         ("1.2.3", "1.2.3-rc1", Greater),
-        ("1.2.3-rc1", "1.2.3-rc2", Less), // bytewise pre order
-        ("3.20-ubuntu", "3.20-alpine", Greater), // reversed suffix order
+        ("1.2.3-rc1", "1.2.3-rc2", Greater), // suffix order (rc1 < rc2 lexically)
+        ("1.2.3rc1", "1.2.3rc2", Less), // glued prereleases compare directly
+        ("3.20-ubuntu", "3.20-alpine", Less), // smaller suffix wins (Renovate: suffix2.localeCompare(suffix1))
         ("3.20", "3.20", Equal),
     ];
     for (a, b, want) in cases {
