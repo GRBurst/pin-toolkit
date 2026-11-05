@@ -45,7 +45,7 @@ pinned: 0, ok: 0, updated: 2, skipped: 0, unresolved: 0
 For every Docker Hub reference, the tag list is fetched from the registry
 and the tag is bumped to the **highest stable tag compatible with the
 current one** (docker versioning: pre-release/beta/nightly tags are
-ignored). Compatibility means the same pre-release suffix and the same
+ignored). Compatibility means the same dash-suffix (e.g. `-alpine`) and the same
 number of release components (`3.20` ↔ `3.24`, `24.04` ↔ `26.04`; `24` is
 not compatible with `24.0`). By default the major must not change;
 `--update-major` lifts that restriction. The bumped tag is then pinned as
