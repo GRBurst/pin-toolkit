@@ -45,6 +45,33 @@ fn mock_client(s: &MockServer) -> RegistryClient {
     )
 }
 
+/// Mock server for the `ci-update.yml` fixture: alpine tag list with 3.24
+/// above 3.20, plus digests for alpine 3.20/3.24 and nginx:stable. The
+/// fixture's ghcr ref is skipped before any client call, so it needs no
+/// mock.
+async fn update_mock_server() -> MockServer {
+    let s = MockServer::start().await;
+    tag_list_mock("library/alpine", &["3.16", "3.20", "3.24"])
+        .mount(&s)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/library/alpine/manifests/3.20"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D1))
+        .mount(&s)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/library/alpine/manifests/3.24"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D2))
+        .mount(&s)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/library/nginx/manifests/stable"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D3))
+        .mount(&s)
+        .await;
+    s
+}
+
 fn tag_list_mock(repo: &str, tags: &[&str]) -> Mock {
     Mock::given(method("GET"))
         .and(path(format!("/v2/{repo}/tags/list")))
@@ -243,11 +270,12 @@ async fn update_bumps_scalar_and_pins_digest() {
         .unwrap();
     let out = std::fs::read_to_string(&p).unwrap();
     let expected = format!(
-        "build:\n  image: alpine:3.24@{D2}\nsidecars:\n  services:\n    - alpine:3.24@{D2}\nplain:\n  image: nginx:stable@{D3}\n"
+        "build:\n  image: alpine:3.24@{D2}\nsidecars:\n  services:\n    - alpine:3.24@{D2}\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1\n"
     );
     assert_eq!(out, expected);
     assert_eq!(report.summary.updated, 2);
     assert_eq!(report.summary.pinned, 1);
+    assert_eq!(report.summary.skipped, 1);
     assert_eq!(report.summary.unresolved, 0);
     assert_eq!(exit_code(&report), 0);
     std::fs::remove_dir_all(&dir).ok();
@@ -440,6 +468,203 @@ async fn update_tag_list_failure_is_unresolved() {
 }
 
 #[tokio::test]
+async fn update_json_report() {
+    let s = update_mock_server().await;
+    let client = mock_client(&s);
+    let dir = std::env::temp_dir().join(format!("pin-ci-e2e-update7-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = write_update_fixture(&dir);
+    let opts = PinOptions {
+        dry_run: false,
+        json: true,
+        concurrency: 4,
+        update: true,
+        update_major: false,
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+    assert_eq!(v["summary"]["updated"], 2);
+    let results = v["results"].as_array().unwrap();
+    let statuses: Vec<&str> = results
+        .iter()
+        .map(|r| r["status"].as_str().unwrap())
+        .collect();
+    assert!(statuses.contains(&"updated"));
+    assert!(statuses.contains(&"pinned"));
+    assert!(statuses.contains(&"skipped"));
+    let want = format!("alpine:3.24@{D2}");
+    let alpine_news: Vec<String> = results
+        .iter()
+        .filter(|r| r["status"] == "updated")
+        .map(|r| r["new"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(alpine_news, vec![want.clone(), want]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn update_human_report_line() {
+    let s = update_mock_server().await;
+    let client = mock_client(&s);
+    let dir = std::env::temp_dir().join(format!("pin-ci-e2e-update8-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = write_update_fixture(&dir);
+    let opts = PinOptions {
+        dry_run: false,
+        json: false,
+        concurrency: 4,
+        update: true,
+        update_major: false,
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
+    let out = report.render_human();
+    let want_line = format!("  updated  alpine:3.20 -> alpine:3.24@{D2}  # alpine:3.20");
+    assert!(
+        out.lines().any(|l| l.contains(&want_line)),
+        "human output:\n{out}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.ends_with("pinned: 1, ok: 0, updated: 2, skipped: 1, unresolved: 0")),
+        "human output:\n{out}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn update_dry_run_does_not_write() {
+    let s = update_mock_server().await;
+    let client = mock_client(&s);
+    let dir = std::env::temp_dir().join(format!("pin-ci-e2e-update9-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = write_update_fixture(&dir);
+    let opts = PinOptions {
+        dry_run: true,
+        json: false,
+        concurrency: 4,
+        update: true,
+        update_major: false,
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
+    // The report shows what would change...
+    assert_eq!(report.summary.updated, 2);
+    assert_eq!(report.summary.pinned, 1);
+    assert_eq!(report.summary.skipped, 1);
+    // ...but the file bytes are untouched.
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), UPDATE_FIXTURE);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn update_idempotent_second_run() {
+    let s = update_mock_server().await;
+    let client = mock_client(&s);
+    let dir = std::env::temp_dir().join(format!("pin-ci-e2e-update10-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = write_update_fixture(&dir);
+    let opts = PinOptions {
+        dry_run: false,
+        json: false,
+        concurrency: 4,
+        update: true,
+        update_major: false,
+    };
+    let report1 = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
+    assert_eq!(report1.summary.updated, 2);
+    let after_first = std::fs::read_to_string(&p).unwrap();
+    let report2 = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
+    // Pinned refs re-verify only: no second bump, no second write.
+    assert_eq!(report2.summary.updated, 0);
+    assert_eq!(report2.summary.ok, 3);
+    assert_eq!(report2.summary.pinned, 0);
+    assert!(
+        report2
+            .results
+            .iter()
+            .all(|r| r.status == "ok" || r.status == "skipped"),
+        "statuses: {:?}",
+        report2
+            .results
+            .iter()
+            .map(|r| r.status.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), after_first);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn update_exit_code() {
+    let dir = std::env::temp_dir().join(format!("pin-ci-e2e-update11-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let opts = PinOptions {
+        dry_run: false,
+        json: false,
+        concurrency: 4,
+        update: true,
+        update_major: false,
+    };
+
+    // Mix of updated + pinned + skipped: nothing unresolved → exit 0.
+    let s = update_mock_server().await;
+    let client = mock_client(&s);
+    let p = write_update_fixture(&dir);
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+        .await
+        .unwrap();
+    assert_eq!(report.summary.updated, 2);
+    assert_eq!(report.summary.skipped, 1);
+    assert_eq!(report.summary.unresolved, 0);
+    assert_eq!(exit_code(&report), 0);
+
+    // Same file with a failing tags endpoint: both alpine refs become
+    // unresolved → exit 1, file untouched.
+    let s2 = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("n", "1000"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&s2)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/library/alpine/manifests/3.20"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D1))
+        .mount(&s2)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/library/nginx/manifests/stable"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D3))
+        .mount(&s2)
+        .await;
+    let client2 = mock_client(&s2);
+    std::fs::write(&p, UPDATE_FIXTURE).unwrap();
+    let report2 = pin_files(std::slice::from_ref(&p), &opts, &client2)
+        .await
+        .unwrap();
+    assert_eq!(report2.summary.unresolved, 2);
+    assert_eq!(exit_code(&report2), 1);
+    // M1 partial-write semantics: the failing alpine refs stay as written;
+    // the resolvable nginx ref is still pinned and written.
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        format!(
+            "build:\n  image: alpine:3.20\nsidecars:\n  services:\n    - alpine:3.20\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1\n"
+        )
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
 async fn update_off_keeps_m1_behavior() {
     let s = MockServer::start().await;
     // No tag-list mock: with update off the tags endpoint must never be
@@ -470,10 +695,11 @@ async fn update_off_keeps_m1_behavior() {
         .unwrap();
     assert_eq!(report.summary.pinned, 3);
     assert_eq!(report.summary.updated, 0);
+    assert_eq!(report.summary.skipped, 1);
     assert_eq!(exit_code(&report), 0);
     let out = std::fs::read_to_string(&p).unwrap();
     let expected = format!(
-        "build:\n  image: alpine:3.20@{D1}\nsidecars:\n  services:\n    - alpine:3.20@{D1}\nplain:\n  image: nginx:stable@{D3}\n"
+        "build:\n  image: alpine:3.20@{D1}\nsidecars:\n  services:\n    - alpine:3.20@{D1}\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1\n"
     );
     assert_eq!(out, expected);
     std::fs::remove_dir_all(&dir).ok();
