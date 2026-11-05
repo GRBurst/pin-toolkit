@@ -349,7 +349,7 @@ impl RegistryClient {
                 }
             }
             match parse_link_next(next_link.as_ref()) {
-                Some(next) => url = next,
+                Some(next) => url = resolve_link_url(&next, &base),
                 None => break,
             }
         }
@@ -460,6 +460,21 @@ fn parse_www_authenticate<'a>(header: &'a str) -> Option<(String, String, String
 
 /// Parse a `Link` header, returning the URL whose `rel` is `"next"`.
 /// Entries are comma-separated, each of the form `<url>; params`.
+/// Resolve a `Link` URL against the registry base. Registries differ: Docker
+/// Hub sends PATH-RELATIVE links (`/v2/...` — required for tag-list
+/// pagination once a repo passes the `n=1000` first page), others send
+/// absolute URLs. An unresolved relative URL would make reqwest fail to
+/// build the follow-up request ("builder error").
+fn resolve_link_url(link: &str, base: &str) -> String {
+    if link.starts_with("http://") || link.starts_with("https://") {
+        link.to_string()
+    } else if let Some(rest) = link.strip_prefix("//") {
+        format!("https://{rest}")
+    } else {
+        format!("{base}/{}", link.trim_start_matches('/'))
+    }
+}
+
 fn parse_link_next(header: Option<&reqwest::header::HeaderValue>) -> Option<String> {
     let raw = header?.to_str().ok()?;
     for part in raw.split(',') {
@@ -547,6 +562,28 @@ mod tests {
             Some(("u".to_string(), "p".to_string()))
         );
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn resolve_link_url_forms() {
+        let base = "https://registry-1.docker.io";
+        // Absolute links pass through untouched.
+        assert_eq!(
+            resolve_link_url("https://r/v2/x/tags/list?last=b", base),
+            "https://r/v2/x/tags/list?last=b"
+        );
+        // Docker Hub form: path-relative.
+        assert_eq!(
+            resolve_link_url("/v2/x/tags/list?last=b", base),
+            "https://registry-1.docker.io/v2/x/tags/list?last=b"
+        );
+        // Protocol-relative.
+        assert_eq!(resolve_link_url("//r/v2/x", base), "https://r/v2/x");
+        // Bare relative (defensive).
+        assert_eq!(
+            resolve_link_url("v2/x/tags/list", base),
+            "https://registry-1.docker.io/v2/x/tags/list"
+        );
     }
 
     #[test]

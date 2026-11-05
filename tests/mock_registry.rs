@@ -220,6 +220,35 @@ async fn list_tags_follows_link_next() {
     assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b", "c"]);
 }
 
+/// Docker Hub sends PATH-RELATIVE `Link` URLs (`</v2/...>; rel="next"`) for
+/// tag-list pagination (repos with >1000 tags, e.g. `docker`); the follow-up
+/// request must resolve them against the registry base.
+#[tokio::test]
+async fn list_tags_follows_relative_link_next() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("n", "1000"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"tags": ["a", "b"]}))
+                .insert_header(
+                    "link",
+                    r#"</v2/library/alpine/tags/list?last=b>; rel="next""#,
+                ),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/alpine/tags/list"))
+        .and(query_param("last", "b"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"tags": ["c"]})))
+        .mount(&server)
+        .await;
+    let c = client(&server, Creds::none());
+    assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b", "c"]);
+}
+
 #[tokio::test]
 async fn list_tags_404() {
     let server = MockServer::start().await;
