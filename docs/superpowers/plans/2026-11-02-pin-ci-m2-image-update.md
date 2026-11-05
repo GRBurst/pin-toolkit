@@ -575,7 +575,10 @@ pipeline (same-major default; no release-age guard — M4 follow-up).
    confirm the update branch is unreachable for `r.digest.is_some()`,
    tagless, and unparsable tags; confirm re-pin behavior unchanged.
 3. **Fail-loud tag listing** — `list_tags` error under `--update` ⇒
-   `unresolved` + exit 1, file untouched (dry-run and write paths).
+   `unresolved` + exit 1; the failing ref stays as written while other
+   resolvable refs in the file are still written (M1 partial-write
+   semantics, adjudicated 2026-11-05 — the implementer flagged this against
+   an earlier absolute "file untouched" wording); dry-run writes nothing.
 4. **Cache correctness** — per-`api_repo()` key; error path stores nothing;
    `digest` flow untouched (all M1 wiremock tests green unmodified).
 5. **Byte-exact output** — updated lines change only the token; trailing
