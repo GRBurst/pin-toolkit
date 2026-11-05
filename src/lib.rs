@@ -3,6 +3,7 @@ pub mod edit;
 pub mod image_ref;
 pub mod registry;
 pub mod report;
+pub mod versioning;
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
