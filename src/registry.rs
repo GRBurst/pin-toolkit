@@ -104,6 +104,9 @@ pub struct RegistryClient {
     base_urls: HashMap<String, String>,
     /// Bearer tokens keyed by the `WWW-Authenticate` scope.
     tokens: Mutex<HashMap<String, String>>,
+    /// Fetched tag lists keyed by `api_repo()`; avoids re-fetching for
+    /// repeated refs to the same repo.
+    tag_lists: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl RegistryClient {
@@ -119,21 +122,26 @@ impl RegistryClient {
             creds,
             base_urls,
             tokens: Mutex::new(HashMap::new()),
+            tag_lists: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Registry base URL for `r`'s host: the `base_urls` map, falling back
+    /// to `DEFAULT_DOCKER_HUB_BASE` for `"docker.io"`.
+    fn base_for(&self, r: &ImageRef) -> Result<String, RegError> {
+        match self.base_urls.get(r.host_str()).cloned() {
+            Some(base) => Ok(base),
+            None if r.host_str() == "docker.io" => Ok(DEFAULT_DOCKER_HUB_BASE.to_string()),
+            None => Err(RegError::Unresolved(format!(
+                "no base URL for registry host {}",
+                r.host_str()
+            ))),
         }
     }
 
     /// Resolve `r` to `"sha256:<64 hex>"`.
     pub async fn digest(&self, r: &ImageRef) -> Result<String, RegError> {
-        let base = match self.base_urls.get(r.host_str()).cloned() {
-            Some(base) => base,
-            None if r.host_str() == "docker.io" => DEFAULT_DOCKER_HUB_BASE.to_string(),
-            None => {
-                return Err(RegError::Unresolved(format!(
-                    "no base URL for registry host {}",
-                    r.host_str()
-                )));
-            }
-        };
+        let base = self.base_for(r)?;
         let path = format!("/v2/{}/manifests/{}", r.api_repo(), r.effective_tag());
         let not_found =
             || RegError::Unresolved(format!("{}:{} not found", r.api_repo(), r.effective_tag()));
@@ -147,7 +155,7 @@ impl RegistryClient {
             .map_err(|e| RegError::Network(e.to_string()))?;
 
         match first.status() {
-            s if s.is_success() => self.digest_from_head(r, first, &base, &path, None).await,
+            s if s.is_success() => self.digest_from_head(r, first, &base, &path).await,
             StatusCode::UNAUTHORIZED => {
                 let Some(www) = first
                     .headers()
@@ -179,10 +187,7 @@ impl RegistryClient {
                     .await
                     .map_err(|e| RegError::Network(e.to_string()))?;
                 match retry.status() {
-                    s if s.is_success() => {
-                        self.digest_from_head(r, retry, &base, &path, Some(&token))
-                            .await
-                    }
+                    s if s.is_success() => self.digest_from_head(r, retry, &base, &path).await,
                     StatusCode::UNAUTHORIZED => {
                         Err(RegError::Unresolved("authentication failed".to_string()))
                     }
@@ -203,7 +208,6 @@ impl RegistryClient {
         head: reqwest::Response,
         base: &str,
         path: &str,
-        token: Option<&str>,
     ) -> Result<String, RegError> {
         if let Some(digest) = head
             .headers()
@@ -213,17 +217,13 @@ impl RegistryClient {
         {
             return Ok(digest.to_string());
         }
-        let mut req = self
-            .http
-            .get(format!("{base}{path}"))
-            .header(reqwest::header::ACCEPT, MANIFEST_ACCEPT);
-        if let Some(t) = token {
-            req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| RegError::Network(e.to_string()))?;
+        let resp = self
+            .get_authed(
+                &format!("{base}{path}"),
+                &r.api_repo(),
+                Some(MANIFEST_ACCEPT),
+            )
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             return if status == StatusCode::NOT_FOUND {
@@ -245,6 +245,116 @@ impl RegistryClient {
         let sum = hasher.finalize();
         let hex: String = sum.iter().map(|b| format!("{b:02x}")).collect();
         Ok(format!("sha256:{hex}"))
+    }
+
+    /// Anonymous `GET url` (with `Accept: {accept}` when `accept` is
+    /// `Some`); on 401 parse `WWW-Authenticate`, verify the scope is
+    /// `repository:{repo}:pull`, fetch the cached bearer token and retry
+    /// once with `Authorization: Bearer`. Returns the final response; the
+    /// caller handles its status.
+    async fn get_authed(
+        &self,
+        url: &str,
+        repo: &str,
+        accept: Option<&str>,
+    ) -> Result<reqwest::Response, RegError> {
+        let mut req = self.http.get(url);
+        if let Some(accept) = accept {
+            req = req.header(reqwest::header::ACCEPT, accept);
+        }
+        let first = req
+            .send()
+            .await
+            .map_err(|e| RegError::Network(e.to_string()))?;
+        if first.status() != StatusCode::UNAUTHORIZED {
+            return Ok(first);
+        }
+        let Some(www) = first
+            .headers()
+            .get(reqwest::header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+        else {
+            return Err(RegError::Unresolved(format!(
+                "401 without WWW-Authenticate at {url}"
+            )));
+        };
+        let Some((realm, service, scope)) = parse_www_authenticate(www) else {
+            return Err(RegError::Unresolved(format!(
+                "unparseable WWW-Authenticate header at {url}: {www}"
+            )));
+        };
+        if scope != format!("repository:{repo}:pull") {
+            return Err(RegError::Unresolved(format!(
+                "unexpected token scope {scope} for {repo}"
+            )));
+        }
+        let token = self.cached_token(&scope, &realm, &service).await?;
+        let mut retry = self
+            .http
+            .get(url)
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        if let Some(accept) = accept {
+            retry = retry.header(reqwest::header::ACCEPT, accept);
+        }
+        retry
+            .send()
+            .await
+            .map_err(|e| RegError::Network(e.to_string()))
+    }
+
+    /// All tags of the repo, following `Link: <url>; rel="next"` until
+    /// exhausted. First request carries `?n=1000`. Anonymous probe first;
+    /// 401 → WWW-Authenticate → bearer token (scope `repository:{repo}:pull`)
+    /// → retry. 404 → `Unresolved("{repo} not found")`. Cached per
+    /// `api_repo()` for the client's lifetime.
+    pub async fn list_tags(&self, r: &ImageRef) -> Result<Vec<String>, RegError> {
+        let repo = r.api_repo();
+        {
+            let cache = self.tag_lists.lock().await;
+            if let Some(tags) = cache.get(&repo) {
+                return Ok(tags.clone());
+            }
+        }
+        let base = self.base_for(r)?;
+        let mut tags: Vec<String> = Vec::new();
+        let mut url = format!("{base}/v2/{repo}/tags/list?n=1000");
+        loop {
+            let resp = self.get_authed(&url, &repo, None).await?;
+            match resp.status() {
+                StatusCode::NOT_FOUND => {
+                    return Err(RegError::Unresolved(format!("{repo} not found")));
+                }
+                StatusCode::UNAUTHORIZED => {
+                    return Err(RegError::Unresolved("authentication failed".to_string()));
+                }
+                s if s.is_success() => {}
+                s => return Err(RegError::Network(format!("{s} at {url}"))),
+            }
+            // `text()` consumes the response; take the `Link` header first.
+            let next_link = resp.headers().get(reqwest::header::LINK).cloned();
+            // reqwest's `json()` method needs its `json` feature (not
+            // enabled); parse the body text with serde_json instead. A
+            // missing/`null` `tags` array is an empty list.
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| RegError::Network(e.to_string()))?;
+            let body: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| RegError::Network(format!("invalid tag list JSON at {url}: {e}")))?;
+            if let Some(arr) = body.get("tags").and_then(serde_json::Value::as_array) {
+                for tag in arr {
+                    if let Some(t) = tag.as_str() {
+                        tags.push(t.to_string());
+                    }
+                }
+            }
+            match parse_link_next(next_link.as_ref()) {
+                Some(next) => url = next,
+                None => break,
+            }
+        }
+        self.tag_lists.lock().await.insert(repo, tags.clone());
+        Ok(tags)
     }
 
     /// Bearer token for `scope`, from the cache or the token endpoint.
@@ -348,6 +458,26 @@ fn parse_www_authenticate<'a>(header: &'a str) -> Option<(String, String, String
     ))
 }
 
+/// Parse a `Link` header, returning the URL whose `rel` is `"next"`.
+/// Entries are comma-separated, each of the form `<url>; params`.
+fn parse_link_next(header: Option<&reqwest::header::HeaderValue>) -> Option<String> {
+    let raw = header?.to_str().ok()?;
+    for part in raw.split(',') {
+        let part = part.trim();
+        let Some((url_part, params)) = part.split_once(';') else {
+            continue;
+        };
+        let url = url_part.trim();
+        let Some(url) = url.strip_prefix('<').and_then(|u| u.strip_suffix('>')) else {
+            continue;
+        };
+        if params.contains(r#"rel="next""#) {
+            return Some(url.trim().to_string());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,5 +547,21 @@ mod tests {
             Some(("u".to_string(), "p".to_string()))
         );
         std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn parse_link_next_unit() {
+        use reqwest::header::HeaderValue;
+        assert_eq!(parse_link_next(None), None);
+        let h = HeaderValue::from_str(
+            r#"<https://r/v2/x/tags/list?last=a>; rel="prev", <https://r/v2/x/tags/list?last=b>; rel="next""#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_link_next(Some(&h)),
+            Some("https://r/v2/x/tags/list?last=b".to_string())
+        );
+        let junk = HeaderValue::from_str("not <quoted>; rel=next").unwrap();
+        assert_eq!(parse_link_next(Some(&junk)), None);
     }
 }
