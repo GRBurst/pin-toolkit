@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use pin_ci::{PinOptions, client_from_env, exit_code, pin_files};
+use pin_ci::{PinOptions, client_from_env, exit_code, gitlab_from_env, pin_files};
 
 /// Pin container image references in GitLab CI files to immutable digests.
 #[derive(Parser)]
@@ -41,6 +41,9 @@ fn build_opts(cli: &Cli) -> PinOptions {
         concurrency: cli.concurrency,
         update: cli.update,
         update_major: cli.update_major,
+        // The --gitlab-host flag is wired in M3 Task 5; day one defaults
+        // to gitlab.com.
+        gitlab_host: "gitlab.com".into(),
     }
 }
 
@@ -49,8 +52,9 @@ async fn main() {
     let cli = Cli::parse();
     let opts = build_opts(&cli);
     let client = client_from_env();
+    let gitlab = gitlab_from_env(&opts.gitlab_host);
     let paths: Vec<PathBuf> = cli.files.iter().map(PathBuf::from).collect();
-    match pin_files(&paths, &opts, &client).await {
+    match pin_files(&paths, &opts, &client, &gitlab).await {
         Ok(report) => {
             let out = if cli.json {
                 report.to_json()

@@ -45,6 +45,12 @@ fn mock_client(s: &MockServer) -> RegistryClient {
     )
 }
 
+/// GitLab client for the M3 signature: the M1/M2 fixtures contain no
+/// component/include targets, so it is never contacted (dead local base).
+fn gitlab_dummy() -> pin_ci::gitlab::GitLabClient {
+    pin_ci::gitlab::GitLabClient::new("http://127.0.0.1:9".into(), None, false)
+}
+
 /// Mock server for the `ci-update.yml` fixture: alpine tag list with 3.24
 /// above 3.20, plus digests for alpine 3.20/3.24 and nginx:stable. The
 /// fixture's ghcr ref is skipped before any client call, so it needs no
@@ -95,8 +101,9 @@ async fn pins_and_reports_all_states() {
         concurrency: 4,
         update: false,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     let out = std::fs::read_to_string(&p).unwrap();
@@ -135,12 +142,13 @@ async fn second_run_is_noop() {
         concurrency: 4,
         update: false,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let _ = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let _ = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     let after_first = std::fs::read_to_string(&p).unwrap();
-    let report2 = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report2 = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), after_first);
@@ -169,8 +177,9 @@ async fn dry_run_writes_nothing() {
         concurrency: 4,
         update: false,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), FIXTURE);
@@ -196,8 +205,9 @@ async fn templated_image_is_skipped_not_unresolved() {
         concurrency: 4,
         update: false,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report.summary.skipped, 2);
@@ -228,8 +238,15 @@ async fn missing_file_is_error() {
         concurrency: 4,
         update: false,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let r = pin_files(&[PathBuf::from("/nonexistent/ci.yml")], &opts, &client).await;
+    let r = pin_files(
+        &[PathBuf::from("/nonexistent/ci.yml")],
+        &opts,
+        &client,
+        &gitlab_dummy(),
+    )
+    .await;
     assert!(r.is_err());
 }
 
@@ -264,8 +281,9 @@ async fn update_bumps_scalar_and_pins_digest() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     let out = std::fs::read_to_string(&p).unwrap();
@@ -301,8 +319,9 @@ async fn update_no_bump_when_already_highest() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report.summary.pinned, 1);
@@ -352,8 +371,9 @@ async fn update_same_major_restriction() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report.summary.pinned, 1);
@@ -372,8 +392,9 @@ async fn update_same_major_restriction() {
         concurrency: 4,
         update: true,
         update_major: true,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report.summary.updated, 1);
@@ -411,8 +432,9 @@ async fn update_pinned_never_bumps() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report.summary.ok, 1);
@@ -450,8 +472,9 @@ async fn update_tag_list_failure_is_unresolved() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report.summary.unresolved, 1);
@@ -480,8 +503,9 @@ async fn update_json_report() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     let v: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
@@ -517,8 +541,9 @@ async fn update_human_report_line() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     let out = report.render_human();
@@ -548,8 +573,9 @@ async fn update_dry_run_does_not_write() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     // The report shows what would change...
@@ -574,13 +600,14 @@ async fn update_idempotent_second_run() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report1 = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report1 = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report1.summary.updated, 2);
     let after_first = std::fs::read_to_string(&p).unwrap();
-    let report2 = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report2 = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     // Pinned refs re-verify only: no second bump, no second write.
@@ -613,13 +640,14 @@ async fn update_exit_code() {
         concurrency: 4,
         update: true,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
 
     // Mix of updated + pinned + skipped: nothing unresolved → exit 0.
     let s = update_mock_server().await;
     let client = mock_client(&s);
     let p = write_update_fixture(&dir);
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report.summary.updated, 2);
@@ -648,7 +676,7 @@ async fn update_exit_code() {
         .await;
     let client2 = mock_client(&s2);
     std::fs::write(&p, UPDATE_FIXTURE).unwrap();
-    let report2 = pin_files(std::slice::from_ref(&p), &opts, &client2)
+    let report2 = pin_files(std::slice::from_ref(&p), &opts, &client2, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report2.summary.unresolved, 2);
@@ -689,8 +717,9 @@ async fn update_off_keeps_m1_behavior() {
         concurrency: 4,
         update: false,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&p), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
     assert_eq!(report.summary.pinned, 3);

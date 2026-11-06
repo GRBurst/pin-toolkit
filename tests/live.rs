@@ -7,6 +7,12 @@ fn client_from_env() -> pin_ci::RegistryClient {
     pin_ci::client_from_env()
 }
 
+/// GitLab client for the M3 signature: the live fixtures contain no
+/// component/include targets, so it is never contacted (dead local base).
+fn gitlab_dummy() -> pin_ci::gitlab::GitLabClient {
+    pin_ci::gitlab::GitLabClient::new("http://127.0.0.1:9".into(), None, false)
+}
+
 /// `crane digest <ref>` — same unreadable-`~/.docker/config.json`
 /// workaround as the oracle (point crane at an empty config dir when the
 /// real one is missing or unreadable).
@@ -109,8 +115,9 @@ async fn live_update_docker_hub() {
         concurrency: 4,
         update: true,
         update_major: true,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(std::slice::from_ref(&yml), &opts, &client)
+    let report = pin_files(std::slice::from_ref(&yml), &opts, &client, &gitlab_dummy())
         .await
         .expect("live update run");
 
@@ -175,7 +182,7 @@ async fn live_update_docker_hub() {
     }
 
     // Second run: all ok, zero changes.
-    let report2 = pin_files(std::slice::from_ref(&yml), &opts, &client)
+    let report2 = pin_files(std::slice::from_ref(&yml), &opts, &client, &gitlab_dummy())
         .await
         .expect("second run");
     assert_eq!(

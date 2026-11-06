@@ -28,6 +28,12 @@ build:
     - docker:24
 ";
 
+/// GitLab client for the M3 signature: the oracle fixtures contain no
+/// component/include targets, so it is never contacted (dead local base).
+fn gitlab_dummy() -> pin_ci::gitlab::GitLabClient {
+    pin_ci::gitlab::GitLabClient::new("http://127.0.0.1:9".into(), None, false)
+}
+
 /// True when `name` is on PATH (checked `which`-style via `command -v`).
 fn bin_present(name: &str) -> bool {
     Command::new("sh")
@@ -176,8 +182,9 @@ async fn oracle_matches_old_pipeline() {
         concurrency: 4,
         update: false,
         update_major: false,
+        gitlab_host: "gitlab.com".into(),
     };
-    let report = pin_files(&paths, &opts, &client_from_env())
+    let report = pin_files(&paths, &opts, &client_from_env(), &gitlab_dummy())
         .await
         .expect("new tool run");
 
@@ -437,8 +444,10 @@ async fn m2_oracle_update_matches_old_pipeline() {
             concurrency: 4,
             update: true,
             update_major: true,
+            gitlab_host: "gitlab.com".into(),
         },
         &client_from_env(),
+        &gitlab_dummy(),
     )
     .await
     .expect("new tool run");
