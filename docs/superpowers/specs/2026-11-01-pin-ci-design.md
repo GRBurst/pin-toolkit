@@ -166,9 +166,10 @@ right are small enough to validate against the oracle.
 
 ## Open
 
-- **Component tag refs under `--update`.** Bump to highest stable same-major
-  (like images), or leave alone and re-pin only? Deferred to the component
-  milestone (M3); unanswered.
+- **Component tag refs under `--update`.** Resolved 2026-11-05 (controller,
+  owner may override): M3 is **pin-only** for components — mirroring the M1/M2
+  image split (pin first, `--update` as a separate later step). Bumping
+  component versions under `--update` is deferred to M4 follow-ups.
 - **Minimum release age.** Decided 2026-11-01: NOT implemented day one.
   Follow-up (M4): the old config's `minimumReleaseAge: 14d` would need tag
   timestamps, which Docker Hub's v2 API does not expose (third API, Hub API,
@@ -215,11 +216,23 @@ right are small enough to validate against the oracle.
   detected and reported `skipped`. Plan: `docs/superpowers/plans/2026-11-01-pin-ci-m1-docker-hub-pinning.md`.
 - **M2 — `--update` for images.** Docker-versioning module (minimal
   Renovate subset), same-major stable bump, `--update-major`.
-- **M3 — gitlab.com components.** GitLab client (ref→commit for tags and
-  branches), classic and new-style includes, comment format; component
-  tag-ref bump behavior decided from Open above.
-- **M4 — follow-ups.** GHCR / GCP / ECR registry hosts, self-hosted GitLab
-  test coverage, minimum release age guard.
+- **M3 — gitlab.com components (pin-only).** GitLab client (ref→commit for
+  tags and branches), classic includes (explicit `ref`, any key order, incl.
+  `file`; bare `{project}` stays out) and new-style component references
+  (`gitlab.com/<group>/<project>/<file>@<version>`), pinned to the commit
+  SHA, comment format; pin-only (see Open above).
+- **M4 — follow-ups.** GHCR / GCP / ECR / **JFrog Artifactory** and other
+  self-hosted registry hosts (docker v2; the client must handle both
+  `Bearer` and `Basic` WWW-Authenticate — JFrog commonly sends Basic),
+  self-hosted GitLab test coverage, minimum release age guard, `--update`
+  for components.
+
+## Future (out of scope, noted 2026-11-05)
+
+- **Helm chart pinning — separate tool.** Owner wants a *separate* tool
+  later to pin Helm chart references (chart URLs / OCI chart digests,
+  `Chart.yaml` dependencies, `requirements`). Not part of pin-ci; scope and
+  plan it separately when picked up.
 
 The old pipeline is retired only after the differential oracle has passed on
 real files and the owner says so.
