@@ -1,25 +1,25 @@
 //! Byte-exact splicing of discovered image-reference tokens.
 
-use crate::discover::Target;
+use crate::discover::PinTarget;
 use crate::image_ref::ImageRef;
 
 /// Splice replacement tokens into `text` for the given targets.
 ///
-/// `new_by_start` maps `Target.start` to the replacement token (quotes
-/// preserved). Returns `(new_text, number of replacements actually
+/// `new_by_start` maps `PinTarget::start()` to the replacement token
+/// (quotes preserved). Returns `(new_text, number of replacements actually
 /// applied)`. Replacements whose value equals the current token count as
 /// 0. Offsets are applied end-first so earlier offsets stay valid.
 pub fn apply(
     text: &str,
-    targets: &[Target],
+    targets: &[PinTarget],
     new_by_start: &std::collections::BTreeMap<usize, String>,
 ) -> (String, usize) {
     let mut splices: Vec<(usize, usize, &String)> = Vec::new();
     for t in targets {
-        if let Some(new) = new_by_start.get(&t.start) {
-            let old = &text[t.start..t.end];
+        if let Some(new) = new_by_start.get(&t.start()) {
+            let old = &text[t.start()..t.end()];
             if new != old {
-                splices.push((t.start, t.end, new));
+                splices.push((t.start(), t.end(), new));
             }
         }
     }
@@ -172,10 +172,10 @@ mod tests {
         let mut m = std::collections::BTreeMap::new();
         for x in &t {
             m.insert(
-                x.start,
+                x.start(),
                 splice_value(
-                    &text[x.start..x.end],
-                    &ImageRef::parse(&x.value).unwrap(),
+                    &text[x.start()..x.end()],
+                    &ImageRef::parse(x.value()).unwrap(),
                     DIGEST,
                 ),
             );
@@ -194,7 +194,7 @@ mod tests {
     fn apply_is_noop_when_values_equal() {
         let text = "image: alpine:3.20\n";
         let t = discover(text);
-        let m = std::collections::BTreeMap::from([(t[0].start, t[0].value.clone())]);
+        let m = std::collections::BTreeMap::from([(t[0].start(), t[0].value().to_string())]);
         let (out, n) = apply(text, &t, &m);
         assert_eq!(n, 0);
         assert_eq!(out, text);
@@ -204,7 +204,7 @@ mod tests {
     fn apply_preserves_trailing_comment() {
         let text = "image: alpine:3.20   # base image\nother: keep\n";
         let t = discover(text);
-        let m = std::collections::BTreeMap::from([(t[0].start, format!("alpine:3.20@{DIGEST}"))]);
+        let m = std::collections::BTreeMap::from([(t[0].start(), format!("alpine:3.20@{DIGEST}"))]);
         let (out, _) = apply(text, &t, &m);
         assert_eq!(
             out,

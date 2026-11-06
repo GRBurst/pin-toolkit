@@ -1,24 +1,91 @@
-//! Discovery of container image references in GitLab CI files.
+//! Discovery of container image and component references in GitLab CI
+//! files.
 //!
 //! Task 2 + 3: scalar, flow-sequence (`[...]`) and block-sequence
 //! (`- ...`) `image:` / `services:` values, plus `image:` as a mapping
 //! (`name:` child). Comment lines, `include:` blocks and script items
 //! never produce targets.
+//!
+//! M3 Task 1: top-level (indent 0) `component:` values become
+//! `PinTarget::Component` targets; `parts` is `None` when the value fails
+//! [`parse_component_ref`].
 
-/// One discovered image reference location in a CI file.
+/// One discovered reference location in a CI file (M3: image or component).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Target {
-    /// 0-based line index in the file text.
-    pub line: usize,
-    /// Byte offset where the value token begins (incl. quotes).
-    pub start: usize,
-    /// Byte offset where the value token ends (excl. comments).
-    pub end: usize,
-    /// The value with quotes stripped.
-    pub value: String,
+pub enum PinTarget {
+    /// A container image reference (`image:` / `services:` value).
+    Image {
+        /// 0-based line index in the file text.
+        line: usize,
+        /// Byte offset where the value token begins (incl. quotes).
+        start: usize,
+        /// Byte offset where the value token ends (excl. comments).
+        end: usize,
+        /// The value with quotes stripped.
+        value: String,
+    },
+    /// A top-level GitLab component reference (`component:` value).
+    Component {
+        /// 0-based line index in the file text.
+        line: usize,
+        /// Byte offset where the value token begins (incl. quotes).
+        start: usize,
+        /// Byte offset where the value token ends (excl. comments).
+        end: usize,
+        /// The value with quotes stripped.
+        value: String,
+        /// Parsed `host / project / name @ version` pieces, or `None` when
+        /// the value is unparseable (reported `skipped` at resolve time —
+        /// the target is kept so the report stays complete).
+        parts: Option<ComponentParts>,
+    },
 }
 
-/// Discover `image:` / `services:` references in a CI file.
+/// Parsed pieces of a component reference
+/// `host/group[/group…]/name@version`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComponentParts {
+    /// The GitLab instance host (e.g. `gitlab.com`).
+    pub host: String,
+    /// The project path (e.g. `group/sub/project`).
+    pub project: String,
+    /// The component name (last path segment).
+    pub name: String,
+    /// The version token after the last `@`.
+    pub version: String,
+}
+
+impl PinTarget {
+    /// 0-based line index in the file text.
+    pub fn line(&self) -> usize {
+        match self {
+            Self::Image { line, .. } | Self::Component { line, .. } => *line,
+        }
+    }
+
+    /// Byte offset where the value token begins (incl. quotes).
+    pub fn start(&self) -> usize {
+        match self {
+            Self::Image { start, .. } | Self::Component { start, .. } => *start,
+        }
+    }
+
+    /// Byte offset where the value token ends (excl. comments).
+    pub fn end(&self) -> usize {
+        match self {
+            Self::Image { end, .. } | Self::Component { end, .. } => *end,
+        }
+    }
+
+    /// The value with quotes stripped.
+    pub fn value(&self) -> &str {
+        match self {
+            Self::Image { value, .. } | Self::Component { value, .. } => value,
+        }
+    }
+}
+
+/// Discover `image:` / `services:` / `component:` references in a CI file.
 ///
 /// Returns targets sorted by `(line, start)`. A line is a candidate when it
 /// is a top-level `image:`/`services:` line or sits one level inside a
@@ -29,12 +96,21 @@ pub struct Target {
 /// a `name:` child at the block's child indentation. Comment lines never
 /// produce targets.
 ///
+/// Top-level (indent 0) `component:` lines also yield targets: the value is
+/// a scalar token (quotes stripped from `value`, included in the span); an
+/// empty or comment-only value yields no target. `parse_component_ref`
+/// splits the value at its last `@` into
+/// `host / group(s) / name @ version`; `parts` is `Some` only when the
+/// prefix has ≥ 3 non-empty '/'-separated segments, the host contains a `.`
+/// and no `$`, and the version is non-empty.
+///
 /// Discovery is purely syntactic — it does NOT filter via
 /// [`ImageRef::parse`](crate::image_ref::ImageRef::parse). Values that fail to parse (e.g. shell/YAML
-/// interpolation like `${IMAGE}:${TAG}`) stay targets and are reported as
+/// interpolation like `${IMAGE}:${TAG}`) or fail
+/// [`parse_component_ref`] stay targets and are reported as
 /// `skipped (unparseable reference)` at resolve time, so the report stays
 /// complete and the exit code stays 0.
-pub fn discover(text: &str) -> Vec<Target> {
+pub fn discover(text: &str) -> Vec<PinTarget> {
     // Precompute each line's byte offset in `text` (line text excl. newline).
     let mut lines: Vec<(usize, &str)> = Vec::new();
     let mut off = 0usize;
@@ -44,7 +120,7 @@ pub fn discover(text: &str) -> Vec<Target> {
         off += chunk.len();
     }
 
-    let mut targets: Vec<Target> = Vec::new();
+    let mut targets: Vec<PinTarget> = Vec::new();
     // Current top-level key (from an indent-0 `key:` line), whether it opens
     // a block (`key:` with no value), and the indentation of the first
     // non-empty line inside that block.
@@ -127,6 +203,7 @@ pub fn discover(text: &str) -> Vec<Target> {
 
         if candidate {
             push_target(&mut targets, line_idx, *line_off, line, colon);
+            push_component_target(&mut targets, line_idx, *line_off, line);
             // An empty-value `image:`/`services:` key opens a block (Task 3).
             if let Some((key, k_colon)) = image_key(line) {
                 let value = line[k_colon + 1..].trim_start();
@@ -139,8 +216,81 @@ pub fn discover(text: &str) -> Vec<Target> {
         }
     }
 
-    targets.sort_by_key(|t| (t.line, t.start));
+    targets.sort_by_key(|t| (t.line(), t.start()));
     targets
+}
+
+/// The byte position of the colon of a top-level (indent 0) `component:`
+/// line, or `None`. The key must be followed by end-of-line or whitespace.
+fn component_key(line: &str) -> Option<usize> {
+    if let Some(rest) = line.strip_prefix("component:")
+        && (rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t'))
+    {
+        Some(9) // just after `component:`
+    } else {
+        None
+    }
+}
+
+/// If `line` is a top-level `component:` line, push a
+/// `PinTarget::Component` for its scalar value (quotes stripped from the
+/// value, included in the span); an empty or comment-only value yields no
+/// target. `parts` is `None` when the value is unparseable — the target is
+/// kept so the report stays complete.
+fn push_component_target(
+    targets: &mut Vec<PinTarget>,
+    line_idx: usize,
+    line_off: usize,
+    line: &str,
+) {
+    let Some(colon) = component_key(line) else {
+        return;
+    };
+    let after = &line[colon + 1..];
+    let pad = after.len() - after.trim_start().len();
+    let content = &after[pad..];
+    if content.is_empty() || content.starts_with('#') {
+        return;
+    }
+    let Some((start, end, value)) = scalar_token(content, colon + 1 + pad) else {
+        return;
+    };
+    targets.push(PinTarget::Component {
+        line: line_idx,
+        start: line_off + start,
+        end: line_off + end,
+        parts: parse_component_ref(&value),
+        value,
+    });
+}
+
+/// Split a component reference `host/group[/group…]/name@version` into
+/// pieces.
+///
+/// The split is at the LAST `@`. The prefix must have at least 3 non-empty
+/// '/'-separated segments; the first (host) must contain a `.` and no `$`;
+/// the version (after the last `@`) must be non-empty. Anything else is
+/// `None` (the caller keeps the target and reports it `skipped` at resolve
+/// time).
+fn parse_component_ref(value: &str) -> Option<ComponentParts> {
+    let (prefix, version) = value.rsplit_once('@')?;
+    if version.is_empty() {
+        return None;
+    }
+    let segments: Vec<&str> = prefix.split('/').collect();
+    if segments.len() < 3 || segments.iter().any(|s| s.is_empty()) {
+        return None;
+    }
+    let host = segments[0];
+    if !host.contains('.') || host.contains('$') {
+        return None;
+    }
+    Some(ComponentParts {
+        host: host.to_string(),
+        project: segments[1..segments.len() - 1].join("/"),
+        name: segments[segments.len() - 1].to_string(),
+        version: version.to_string(),
+    })
 }
 
 /// If the line is `image:` or `services:` followed by end-of-line or
@@ -192,7 +342,7 @@ fn top_key(line: &str) -> Option<(&str, bool)> {
 /// target per item of a flow sequence. Offsets are relative to the line;
 /// `line_off` is the line's byte offset in the file text.
 fn push_target(
-    targets: &mut Vec<Target>,
+    targets: &mut Vec<PinTarget>,
     line_idx: usize,
     line_off: usize,
     line: &str,
@@ -225,7 +375,7 @@ fn push_target(
 /// must parse as an [`ImageRef`](crate::image_ref::ImageRef). Spans point at the item within the line
 /// (quotes included in the span when quoted).
 fn push_flow_targets(
-    targets: &mut Vec<Target>,
+    targets: &mut Vec<PinTarget>,
     line_idx: usize,
     line_off: usize,
     line: &str,
@@ -260,7 +410,7 @@ fn push_flow_targets(
 /// in the line, with one layer of quotes stripped when present (the span
 /// includes the quotes).
 fn push_flow_item(
-    targets: &mut Vec<Target>,
+    targets: &mut Vec<PinTarget>,
     line_idx: usize,
     line_off: usize,
     tok_off: usize,
@@ -293,7 +443,7 @@ fn dash_item_rest(line: &str) -> Option<usize> {
 /// `line`: either a `name: <scalar>` mapping (target = the scalar) or a
 /// bare/quoted scalar (target = the scalar itself).
 fn push_item_targets(
-    targets: &mut Vec<Target>,
+    targets: &mut Vec<PinTarget>,
     line_idx: usize,
     line_off: usize,
     line: &str,
@@ -328,7 +478,7 @@ fn name_value_offset(content: &str) -> Option<usize> {
 /// Push a target for a `name:` child of an `image:` mapping block: the line's
 /// content (starting at `indent`) must be `name: <scalar>`.
 fn push_name_child_target(
-    targets: &mut Vec<Target>,
+    targets: &mut Vec<PinTarget>,
     line_idx: usize,
     line_off: usize,
     line: &str,
@@ -349,14 +499,14 @@ fn push_name_child_target(
 /// Push a target for the parsed token `value` written at `[start, end)` in
 /// the line (byte offsets relative to the line).
 fn push_if_parses(
-    targets: &mut Vec<Target>,
+    targets: &mut Vec<PinTarget>,
     line_idx: usize,
     line_off: usize,
     start: usize,
     end: usize,
     value: String,
 ) {
-    targets.push(Target {
+    targets.push(PinTarget::Image {
         line: line_idx,
         start: line_off + start,
         end: line_off + end,
@@ -393,23 +543,13 @@ mod tests {
     use super::*;
 
     const SIMPLE: &str = include_str!("../tests/fixtures/ci-simple.yml");
+    const RICH: &str = include_str!("../tests/fixtures/ci-rich.yml");
 
     #[test]
-    fn templated_value_is_still_a_target() {
-        // Shell/YAML interpolation is a syntactic image candidate; the parse
-        // rejection happens at resolve time (reported as `skipped
-        // (unparseable reference)`), not here — discover must not silently
-        // drop lines the user should see in the report.
-        let text = "job:\n  image: ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}\n";
-        let t = discover(text);
-        assert_eq!(t.len(), 1, "templated value must stay a target");
-        assert_eq!(t[0].value, "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}");
-    }
-
-    #[test]
-    fn discovers_scalar_image_and_services() {
+    fn image_targets_survive_enum_migration() {
+        // M1/M2 image expectations, unchanged: ci-simple.yml …
         let t = discover(SIMPLE);
-        let got: Vec<(usize, &str)> = t.iter().map(|x| (x.line, x.value.as_str())).collect();
+        let got: Vec<(usize, &str)> = t.iter().map(|x| (x.line(), x.value())).collect();
         assert_eq!(
             got,
             vec![
@@ -422,18 +562,13 @@ mod tests {
         );
         // spans must cover the exact written token (quotes included in span, not value)
         for x in &t {
-            let token = &SIMPLE[x.start..x.end];
+            let token = &SIMPLE[x.start()..x.end()];
             let unquoted = token.trim_matches(|c| c == '"' || c == '\'');
-            assert_eq!(unquoted, x.value);
+            assert_eq!(unquoted, x.value());
         }
-    }
-
-    const RICH: &str = include_str!("../tests/fixtures/ci-rich.yml");
-
-    #[test]
-    fn discovers_sequences_flow_and_mapping_forms() {
+        // … and ci-rich.yml.
         let t = discover(RICH);
-        let got: Vec<(usize, &str)> = t.iter().map(|x| (x.line, x.value.as_str())).collect();
+        let got: Vec<(usize, &str)> = t.iter().map(|x| (x.line(), x.value())).collect();
         assert_eq!(
             got,
             vec![
@@ -448,16 +583,133 @@ mod tests {
     }
 
     #[test]
+    fn templated_value_is_still_a_target() {
+        // Shell/YAML interpolation is a syntactic image candidate; the parse
+        // rejection happens at resolve time (reported as `skipped
+        // (unparseable reference)`), not here — discover must not silently
+        // drop lines the user should see in the report.
+        let text = "job:\n  image: ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}\n";
+        let t = discover(text);
+        assert_eq!(t.len(), 1, "templated value must stay a target");
+        assert_eq!(t[0].value(), "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}");
+    }
+
+    #[test]
     fn include_block_and_script_items_are_not_targets() {
         let t = discover(RICH);
-        assert!(t.iter().all(|x| x.value != "v1.0.0"));
-        assert!(t.iter().all(|x| x.value != "echo hi"));
+        assert!(t.iter().all(|x| x.value() != "v1.0.0"));
+        assert!(t.iter().all(|x| x.value() != "echo hi"));
     }
 
     #[test]
     fn trailing_comment_preserved_in_spans() {
         let t = discover(RICH);
         let first = &t[0];
-        assert_eq!(&RICH[first.start..first.end], "alpine:3.20");
+        assert_eq!(&RICH[first.start()..first.end()], "alpine:3.20");
+    }
+
+    #[test]
+    fn component_top_level_target() {
+        let text = "component: gitlab.com/g/sub/p/name@1.0.0\n";
+        let t = discover(text);
+        assert_eq!(t.len(), 1);
+        match &t[0] {
+            PinTarget::Component {
+                value,
+                parts,
+                start,
+                end,
+                line,
+            } => {
+                assert_eq!(value, "gitlab.com/g/sub/p/name@1.0.0");
+                let p = parts.as_ref().expect("parts");
+                assert_eq!(
+                    (
+                        p.host.as_str(),
+                        p.project.as_str(),
+                        p.name.as_str(),
+                        p.version.as_str()
+                    ),
+                    ("gitlab.com", "g/sub/p", "name", "1.0.0")
+                );
+                assert_eq!(&text[*start..*end], "gitlab.com/g/sub/p/name@1.0.0");
+                assert_eq!(*line, 0);
+            }
+            other => panic!("expected Component, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn component_indented_is_not_a_target() {
+        let text = "job:\n  component: gitlab.com/g/p/name@1.0.0\n";
+        assert!(discover(text).is_empty());
+    }
+
+    #[test]
+    fn component_unparseable_kept_with_none_parts() {
+        for v in [
+            "gitlab.com/name@1.0.0", // no project segment
+            "gitlab.com/g/p/name",   // no '@'
+            "${VAR}@1.0.0",          // templated host
+            "gitlab.com/g/p/name@",  // empty version
+        ] {
+            let text = format!("component: {v}\n");
+            let t = discover(&text);
+            assert_eq!(t.len(), 1, "value {v} must stay a target");
+            match &t[0] {
+                PinTarget::Component { parts, value, .. } => {
+                    assert!(parts.is_none(), "value {v} must have no parts");
+                    assert_eq!(value, v);
+                }
+                other => panic!("expected Component, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn component_quoted_and_comment() {
+        let text = "component: \"gitlab.com/g/p/name@2.0\"  # from docs\n";
+        let t = discover(text);
+        assert_eq!(t.len(), 1);
+        match &t[0] {
+            PinTarget::Component {
+                value, start, end, ..
+            } => {
+                assert_eq!(value, "gitlab.com/g/p/name@2.0");
+                assert_eq!(&text[*start..*end], "\"gitlab.com/g/p/name@2.0\"");
+            }
+            other => panic!("expected Component, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)] // (input, Option<(host, project, name, version)>) table
+    fn parse_component_ref_table() {
+        let cases: [(&str, Option<(&str, &str, &str, &str)>); 6] = [
+            (
+                "gitlab.com/g/p/name@1.0.0",
+                Some(("gitlab.com", "g/p", "name", "1.0.0")),
+            ),
+            (
+                "gitlab.com/a/b/c/d/name@v9",
+                Some(("gitlab.com", "a/b/c/d", "name", "v9")),
+            ),
+            ("gitlab.com/name@1.0.0", None), // no project segment
+            ("gitlab.com/g/p/name", None),   // no '@'
+            ("gitlab.com/g/p/name@", None),  // empty version
+            ("$CI_SERVER_FQDN/g/p/name@1.0.0", None), // templated host
+        ];
+        for (input, expected) in cases {
+            let parsed = parse_component_ref(input);
+            let got = parsed.as_ref().map(|p| {
+                (
+                    p.host.as_str(),
+                    p.project.as_str(),
+                    p.name.as_str(),
+                    p.version.as_str(),
+                )
+            });
+            assert_eq!(got, expected, "parse_component_ref({input})");
+        }
     }
 }

@@ -14,7 +14,7 @@ use std::task::Poll;
 
 use tokio::sync::Semaphore;
 
-use crate::discover::{Target, discover};
+use crate::discover::{PinTarget, discover};
 use crate::registry::{Creds, RegError};
 use crate::report::{RefResult, Report};
 
@@ -51,8 +51,8 @@ pub fn client_from_env() -> RegistryClient {
     RegistryClient::new(creds, HashMap::new())
 }
 
-/// One resolved target: the report row plus the `(Target.start, new token)`
-/// splice when the file should change.
+/// One resolved target: the report row plus the
+/// `(PinTarget::start(), new token)` splice when the file should change.
 struct Resolved {
     result: RefResult,
     replacement: Option<(usize, String)>,
@@ -63,20 +63,35 @@ async fn resolve_target(
     client: &RegistryClient,
     opts: &PinOptions,
     text: &str,
-    t: &Target,
+    t: &PinTarget,
     file: &str,
 ) -> Resolved {
-    let token = &text[t.start..t.end];
+    let token = &text[t.start()..t.end()];
     let mut result = RefResult {
         file: file.to_string(),
-        line: t.line + 1,
-        reference: t.value.clone(),
+        line: t.line() + 1,
+        reference: t.value().to_string(),
         old: token.to_string(),
         new: None,
         status: String::new(),
         reason: None,
     };
-    let r = match ImageRef::parse(&t.value) {
+    let PinTarget::Image { .. } = t else {
+        // Component targets are resolved against GitLab in M3 Task 4; until
+        // then they are reported, not pinned. Unparseable values use the
+        // same reason as image references.
+        result.status = "skipped".to_string();
+        result.reason = Some(if matches!(t, PinTarget::Component { parts: None, .. }) {
+            "unparseable reference".to_string()
+        } else {
+            "component resolution pending".to_string()
+        });
+        return Resolved {
+            result,
+            replacement: None,
+        };
+    };
+    let r = match ImageRef::parse(t.value()) {
         Ok(r) => r,
         Err(_) => {
             result.status = "skipped".to_string();
@@ -159,7 +174,7 @@ async fn resolve_target(
                 result.new = Some(new_token.clone());
                 return Resolved {
                     result,
-                    replacement: Some((t.start, new_token)),
+                    replacement: Some((t.start(), new_token)),
                 };
             }
         }
@@ -169,7 +184,7 @@ async fn resolve_target(
     result.new = Some(new_token.clone());
     Resolved {
         result,
-        replacement: Some((t.start, new_token)),
+        replacement: Some((t.start(), new_token)),
     }
 }
 
