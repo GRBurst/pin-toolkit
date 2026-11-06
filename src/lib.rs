@@ -77,12 +77,14 @@ async fn resolve_target(
         reason: None,
     };
     let PinTarget::Image { .. } = t else {
-        // Component targets are resolved against GitLab in M3 Task 4; until
-        // then they are reported, not pinned. Unparseable values use the
-        // same reason as image references.
+        // Component and include targets are resolved against GitLab in
+        // M3 Task 4; until then they are reported, not pinned. Unparseable
+        // component values use the same reason as image references.
         result.status = "skipped".to_string();
         result.reason = Some(if matches!(t, PinTarget::Component { parts: None, .. }) {
             "unparseable reference".to_string()
+        } else if matches!(t, PinTarget::IncludeRef { .. }) {
+            "include resolution pending".to_string()
         } else {
             "component resolution pending".to_string()
         });
