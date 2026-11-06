@@ -39,7 +39,7 @@ pub struct PinOptions {
     /// release length still required). Meaningful only when `update` is set.
     pub update_major: bool,
     /// GitLab instance host for component/include resolution (default
-    /// `gitlab.com`; the `--gitlab-host` flag is wired in M3 Task 5).
+    /// `gitlab.com`; set via `--gitlab-host`).
     pub gitlab_host: String,
 }
 

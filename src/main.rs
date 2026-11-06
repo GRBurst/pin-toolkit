@@ -32,6 +32,10 @@ struct Cli {
     /// Max concurrent digest lookups per file
     #[arg(long, default_value_t = 8)]
     concurrency: usize,
+
+    /// GitLab instance host for component/include resolution (default gitlab.com)
+    #[arg(long, default_value = "gitlab.com")]
+    gitlab_host: String,
 }
 
 fn build_opts(cli: &Cli) -> PinOptions {
@@ -41,9 +45,7 @@ fn build_opts(cli: &Cli) -> PinOptions {
         concurrency: cli.concurrency,
         update: cli.update,
         update_major: cli.update_major,
-        // The --gitlab-host flag is wired in M3 Task 5; day one defaults
-        // to gitlab.com.
-        gitlab_host: "gitlab.com".into(),
+        gitlab_host: cli.gitlab_host.clone(),
     }
 }
 
@@ -92,5 +94,16 @@ mod tests {
         assert!(!opts.update);
         assert!(!opts.update_major);
         assert_eq!(opts.concurrency, 8);
+    }
+
+    #[test]
+    fn cli_gitlab_host_parsed() {
+        let cli = Cli::try_parse_from(["pin-ci"]).unwrap();
+        let opts = build_opts(&cli);
+        assert_eq!(opts.gitlab_host, "gitlab.com");
+
+        let cli = Cli::try_parse_from(["pin-ci", "--gitlab-host", "gitlab.example.com"]).unwrap();
+        let opts = build_opts(&cli);
+        assert_eq!(opts.gitlab_host, "gitlab.example.com");
     }
 }
