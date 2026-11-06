@@ -14,8 +14,8 @@ byte-exact and idempotent.
 
 M2 adds `--update`: before pinning, each reference's tag is bumped to the
 latest eligible stable tag (see [Tag updates](#tag-updates--update)).
-Components (per-project `components` image definitions) are a later
-milestone.
+M3 extends the same run to GitLab **components** and **classic includes**
+(see [Components & includes (M3)](#components--includes-m3)).
 
 ## Usage
 
@@ -30,6 +30,8 @@ pin-ci [OPTIONS] [FILES]...
 - `--update` — bump each reference's tag to the latest eligible stable tag
   before pinning it (same major as the current tag by default)
 - `--update-major` — with `--update`, also allow major version bumps
+- `--gitlab-host` — GitLab instance host for component/include resolution
+  (default: `gitlab.com`)
 
 Example:
 
@@ -72,6 +74,110 @@ Two deliberate divergences from `pin-ci-images.sh` (renovate + crane):
   pin-ci has no such guard and will pick a just-published stable tag. The
   M2 oracle treats a strictly-newer stable tag as a documented divergence
   in exactly this case.
+
+## Components & includes (M3)
+
+M3 resolves and pins, in the same run as image pinning:
+
+- **component references** — a top-level (unindented)
+  `component: <host>/<group…/project>/<name>@<version>` line. The version
+  is resolved to a commit SHA (tag first, then branch) and rewritten as
+  `@<40-hex sha>`, with the original version kept as a trailing comment:
+
+  ```yaml
+  component: gitlab.com/acme/widget@1.0.0
+  # →
+  component: gitlab.com/acme/widget@0d7a3b1c2e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b  # 1.0.0
+  ```
+
+- **classic includes with an explicit `ref`** — a top-level `include:`
+  mapping (block or flow, any key order) carrying both `project` and
+  `ref`. The ref is resolved to a commit SHA and replaced, with the
+  original ref kept as a trailing comment:
+
+  ```yaml
+  include:
+    project: gitlab-org/example
+    ref: v1.2.3
+  # →
+  include:
+    project: gitlab-org/example
+    ref: 0d7a3b1c2e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b  # v1.2.3
+  ```
+
+  In a flow include the comment goes **after the closing bracket** (a
+  `#` inside `{ … }` would end the flow mapping):
+
+  ```yaml
+  include: { project: gitlab-org/example, ref: main }
+  # →
+  include: { project: gitlab-org/example, ref: 0d7a3b1c2e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b }  # main
+  ```
+
+  A line that already has a trailing comment is left as-is (no second
+  comment is added). Edits are byte-exact and idempotent — a second run
+  reports everything `ok` and writes nothing.
+
+### What gets skipped
+
+Skipped targets are left untouched and keep the exit code `0`:
+
+- **host not enabled** — a component reference whose host differs from
+  `--gitlab-host` (default `gitlab.com`): `skipped (host not enabled: <host>)`.
+  A classic include's `project` is a project path on the same instance,
+  so includes are always eligible (there is no host to compare).
+- **catalog-managed versions** — component versions that GitLab's CI/CD
+  Catalog resolves at pipeline time and that have no tag/branch to pin
+  against: versions starting with `~` (e.g. `~latest`), containing a
+  `.x` wildcard (e.g. `1.0.x`), or a **partial** numeric version (all
+  digits, fewer than 3 dot-separated components: `1`, `1.0`):
+  `skipped (catalog-managed version)`. **Full versions resolve as tags** —
+  including full numeric semvers like `1.0.0`; if no such tag (or branch)
+  exists the reference is `unresolved` (fail loud). Documented edges:
+  `2024` (one numeric component) is catalog-managed; `1.2.3.4` is treated
+  as a tag name.
+- **templated references** — a ref value containing `$` (e.g.
+  `ref: ${CI_REF}`): `skipped (templated reference)`.
+- **unparseable component references** — no `@`, too few path segments,
+  or an empty version: `skipped (unparseable reference)`.
+
+Never targets at all (not even reported): include mappings with
+`project` but no `ref` (bare `{project}`); include items that are plain
+local templates (`"local-template.yml"`), `remote:` URLs, or `template:`
+names; indented (job-level) `component:` / `include:`.
+
+### GitLab auth
+
+- `GITLAB_TOKEN` — sent as `PRIVATE-TOKEN`; takes precedence.
+- `CI_JOB_TOKEN` — sent as `JOB-TOKEN` (for runs inside a pipeline).
+  When a job token is the active token, branch resolution uses the list
+  endpoint `GET /projects/:id/repository/branches?search=<name>` plus an
+  exact-name match (the single-branch endpoint is not in the job-token
+  allowlist); PAT/anonymous use the single-branch endpoint.
+- Neither set — anonymous; works for public projects.
+
+### Self-hosted instances
+
+`--gitlab-host <host>` (default `gitlab.com`) points component/include
+resolution at a self-hosted GitLab. Only component references whose host
+equals the configured host are pinned; references on other hosts are
+skipped (`host not enabled`).
+
+### Errors & exit codes
+
+Resolution failures are reported per reference and never abort the run —
+other targets in the file are still written:
+
+- no tag and no branch for the ref:
+  `unresolved (<project>:<ref> not found (no tag or branch))`
+- `401`/`403`:
+  `unresolved (gitlab api: <status> unauthorized (check GITLAB_TOKEN/CI_JOB_TOKEN))`
+- `429`: `unresolved (gitlab api: rate limited (429), retry later)` —
+  **no retry** day one; run again later
+- other API/network failures: `unresolved (gitlab api: …)`
+
+The exit code is `1` iff at least one reference is `unresolved`; skipped
+targets keep exit `0` (M1/M2 exit-code rules unchanged).
 
 ## Environment
 

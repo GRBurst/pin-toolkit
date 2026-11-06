@@ -1,0 +1,13 @@
+include: { project: gitlab-org/example, ref: main }          # flow single mapping → target
+include:                                                      # block sequence
+  - project: gitlab-org/example2
+    ref: v1.2.3
+    file: /ci/test.yml                                        # → target (ref value)
+  - "local-template.yml"                                      # string item → no target
+  - project: gitlab-org/no-ref                                # bare {project} → no target (spec)
+  - remote: https://example.com/ci.yml                        # → no target
+include:
+  project: gitlab-org/single
+  ref: develop                                                # block single mapping → target
+job:
+  include: { project: gitlab-org/indented, ref: main }        # indented → no target
