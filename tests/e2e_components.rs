@@ -14,12 +14,9 @@ const D1: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456
 const SHA1: &str = "e3262fdd0914fa823210cdb79a8c421e2cef79d8";
 const SHA2: &str = "4f0a3b6c1d8e2f5a7b0c3d6e9f1a2b5c8d0e3f60";
 
-/// NOTE: the component version is `v1.0.0`, not `1.0.0` — a numeric-only
-/// version (`^\d+(\.\d+)*$`) is catalog-managed and skipped per plan
-/// constraint 8, so it could never be the pinned value in this test.
 const MIXED: &str = "\
 image: alpine:3.20
-component: gitlab.com/g/p/name@v1.0.0
+component: gitlab.com/g/p/name@1.0.0
 include:
   project: g/p
   ref: main
@@ -36,13 +33,14 @@ async fn registry_server() -> MockServer {
     s
 }
 
-/// GitLab mock for project `g/p`: tag `v1.0.0` → SHA1; branch `main` →
+/// GitLab mock for project `g/p`: tag `1.0.0` (a FULL numeric version
+/// resolves as a tag, not catalog-managed) → SHA1; branch `main` →
 /// SHA2 (tag `main` stays unmocked so it 404s and the bare-name fallback
 /// reaches the branch endpoint).
 async fn gitlab_server() -> MockServer {
     let s = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/projects/g%2Fp/repository/tags/v1.0.0"))
+        .and(path("/projects/g%2Fp/repository/tags/1.0.0"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(serde_json::json!({"commit": {"id": SHA1}})),
         )
@@ -111,7 +109,7 @@ async fn mixed_file_all_pinned() {
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
         format!(
-            "image: alpine:3.20@{D1}\ncomponent: gitlab.com/g/p/name@{SHA1}  # v1.0.0\ninclude:\n  project: g/p\n  ref: {SHA2}  # main\n"
+            "image: alpine:3.20@{D1}\ncomponent: gitlab.com/g/p/name@{SHA1}  # 1.0.0\ninclude:\n  project: g/p\n  ref: {SHA2}  # main\n"
         )
     );
     let _ = std::fs::remove_dir_all(&dir);
