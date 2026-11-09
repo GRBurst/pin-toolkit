@@ -380,7 +380,7 @@ username-env = "CHARTS_USER"
 password-env = "CHARTS_PASSWORD"
 [hosts."registry.example.com"]
 kind = "oci"
-ca-file = "/etc/ssl/certs/corp-ca.pem"  # private CA, see §14
+ca-file = "/etc/ssl/certs/corp-ca.pem"  # private CA (F3; §8.4)
 ```
 
 ## 8. Packaging and distribution
