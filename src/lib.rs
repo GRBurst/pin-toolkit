@@ -43,16 +43,12 @@ pub struct PinOptions {
     pub gitlab_host: String,
 }
 
-/// Build the registry client from the environment: `DOCKERHUB_USER` /
-/// `DOCKERHUB_TOKEN` (falling back to `~/.docker/config.json` via
-/// [`Creds::load_from`]); the default Docker Hub base URL is used when no
-/// registry is configured.
+/// Build the registry client from the environment: per-host credentials via
+/// [`Creds::load_from`] (`DOCKERHUB_USER`/`DOCKERHUB_TOKEN` for `docker.io`,
+/// `GITHUB_TOKEN` for `ghcr.io`, plus `~/.docker/config.json`); the default
+/// Docker Hub base URL is used when no registry is configured.
 pub fn client_from_env() -> RegistryClient {
-    let creds = Creds::load_from(
-        std::env::var("DOCKERHUB_USER").ok(),
-        std::env::var("DOCKERHUB_TOKEN").ok(),
-        std::env::var("HOME").ok().as_deref().map(Path::new),
-    );
+    let creds = Creds::load_from(std::env::var("HOME").ok().as_deref().map(Path::new));
     RegistryClient::new(creds, HashMap::new())
 }
 
