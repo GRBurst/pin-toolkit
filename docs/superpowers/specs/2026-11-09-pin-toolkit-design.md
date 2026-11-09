@@ -1,6 +1,6 @@
 # pin-toolkit — pin CI and Helm references to immutable ids
 
-Status: draft. Owner approval pending (see [§13 Open — owner](#13-open--owner)).
+Status: draft, owner questions answered 2026-11-09 ([§13](#13-owner-answers-2026-11-09)). Owner approval of the whole document pending.
 All sizes, milestones and the decisions table are proposals until the owner approves.
 Date: 2026-11-09. Supersedes the "Helm chart pinning — separate tool" note in
 `2026-11-01-pin-ci-design.md`. That spec remains the contract for existing `pin-ci` behaviour.
@@ -76,7 +76,7 @@ builds to Cachix, and a Home Manager module installs and configures it.
 | Existing pin-ci behaviour preserved: CLI, edits, human and JSON output, error texts, exit codes, partial writes, fail-loud auth, min-age default off, pin-only default | pin-ci contract (2026-11-01 spec, README) | `pin-ci` legacy mode (§6.6), M5 goldens, oracle kept |
 | GitLab-centric first, easy to extend later | owner | gitlab-ci milestones come before helm; github-actions is designed for, built last |
 | Open source on GitHub; GitHub Actions builds releases and pushes to Cachix | owner | §8.3 |
-| Installable and customisable via a Home Manager module (plugins on/off) | owner | §8.2, O1 |
+| Installable and customisable via a Home Manager module: plugin enable = in the build, settings = runtime | owner | §8.2, O1 |
 | Credentials only from env, docker/helm config files or a global host binding; never in repo files or the Nix store | pin-ci contract + §7.3 | `[hosts]` is global-only |
 | Light dependencies: no Node, no runtime tools; static Linux binary | pin-ci contract | musl static build, container without extra tools |
 
@@ -123,7 +123,7 @@ same value `helm pull` prints.
 |---|---|---|---|---|---|---|
 | H1 | `chart-dependency` | `Chart.yaml` (apiVersion v2) `dependencies[].version`, `requirements.yaml` (v1) | IDX for `https://` repos, OCI tag list for `oci://` (chart = `<repo>/<name>`) | `version: 1.2.7  # ~1.2`. An exact version that was written exactly stays unchanged (`ok`) | **no digest field** in Chart.yaml deps (feature request helm/helm#32133; verify its state). Editing makes `Chart.lock` stale: its `digest` is an aggregate hash over requirements, not per chart. Report follow-up `helm dependency update <dir>`. `file://`, empty repository, `git+` → skipped. `@alias`/`alias:` without a mapping → `skipped (unknown alias)`. Unparseable or empty version → skipped | M8b |
 | H2 | `values-image` | key matching `/image$/i` with a string value `repo:tag[@sha256:…]` (any depth, any document) | OCI | `image: "repo:1.2@sha256:<d>"`, same as C1 | value contains `{{` → skipped | M8a |
-| H3 | `values-image` | map `image: {registry?, repository, tag\|version, digest?}` | OCI | an existing `digest:` key is filled (`digest: sha256:<d>`) and the tag kept. **No `digest:` key → O2** (default `skipped (no digest key)`, opt-in `tag: "1.2.3@sha256:<d>"`) | empty `tag` (chart uses `appVersion`) → skipped. `sha:`/`imageDigest` variants → skipped (later). Whether the chart's templates honour `digest` cannot be known from values alone | M8a |
+| H3 | `values-image` | map `image: {registry?, repository, tag\|version, digest?}` | OCI | an existing `digest:` key is filled (`digest: sha256:<d>`) and the tag kept. **No `digest:` key → `tag: "1.2.3@sha256:<d>"` by default** (O2, owner); opt-out `plugins.helm.values.tag-digest = false` → `skipped (no digest key)` | empty `tag` (chart uses `appVersion`) → skipped. `sha:`/`imageDigest` variants → skipped (later). Whether the chart's templates honour `digest` cannot be known from values alone | M8a |
 | H4 | `helmfile-release` | `releases[]`/`templates{}` `{chart: repo/name\|oci://…, version}` + `repositories[]` (`oci: true` ⇒ OCI) | IDX / OCI | `version: 1.2.7  # ~1.2`. OCI opt-in (`helmfile.oci-digest`): `version: 1.2.7@sha256:<d>` | local charts, `{{ }}` values → skipped. Writing `helmfile.lock` → no, report follow-up `helmfile deps`. OCI digest needs a helmfile release that contains PR #2398 (merged 2026-02-12) | M8c |
 | H5 | — | `Chart.lock`, `helmfile.lock`, index `digest` of a `.tgz` | — | never written | Helm reads no chart-content digest from Chart.yaml or helmfile | — |
 
@@ -203,7 +203,7 @@ pub struct Splice { pub start: usize, pub end: usize, pub text: String }   // st
 pub fn apply(text: &str, s: &[Splice]) -> String;  // end-first, stable on equal start (R1 kept until F1)
 pub fn requote(old_token: &str, new_value: &str) -> String;                 // today's splice_replace
 pub fn trailing_comment(text: &str, line: usize, token_end: usize, orig: &str) -> Option<Splice>; // None if '#' already after token
-// later: existing_comment(..) (M4b-2/M9), insert_line_after(..) (only if O2 ever needs it)
+// later: existing_comment(..) (M4b-2/M9), insert_line_after(..) (only if a digest-key insertion mode is ever added)
 
 // pin-core::plugin
 pub struct KindSpec { pub id: &'static str, pub default_on: bool, pub legacy: bool, pub help: &'static str }
@@ -331,15 +331,15 @@ major = false
 min_days = 0
 unknown = "allow"
 [plugins.gitlab-ci]
-enable = true
+run = true          # runtime toggle (O1); a plugin not in the build is never run
 ignore = ["registry.example.com/legacy/*"]   # refs never touched (concatenated across layers)
 files = [".gitlab-ci.yml", "**/*.gitlab-ci.yml", ".gitlab/ci/**/*.yml"]
 gitlab-hosts = ["gitlab.com", "gitlab.example.com"]  # hosts to resolve (not [hosts]); others → skipped (host not enabled). Tokens only if bound globally (§7.3)
 kinds = { image = true, service = true, component = true, include = true, helm-oci = true }
 [plugins.helm]
-enable = true
+run = true
 kinds = { chart-dependency = true, values-image = true, helmfile-release = true }
-values = { tag-digest = false }          # O2
+values = { tag-digest = true }           # O2: default on, opt-out per repo
 helmfile = { oci-digest = false }
 aliases = { stable = "https://charts.helm.sh/stable" }   # name → URL only, never credentials
 ```
@@ -348,7 +348,7 @@ aliases = { stable = "https://charts.helm.sh/stable" }   # name → URL only, ne
 
 | Setting | Global (HM) | Repo | Env / CLI |
 |---|---|---|---|
-| `plugins.<p>.enable`, `kinds`, `files`, `ignore`, `update`, `release_age`, plugin options | default | ✓ overrides, so CI and local runs agree | ✓ |
+| `plugins.<p>.run`, `kinds`, `files`, `ignore`, `update`, `release_age`, plugin options | default | ✓ overrides, so CI and local runs agree | ✓ |
 | `concurrency`, output format | ✓ | — | ✓ |
 | **`[hosts]`**: GitLab hosts that may receive tokens, which env var holds each token, helm repo URL → credential env names, CA file, registry aliases/mirrors | **✓ only** | ✗ (exit 2) | ✓ (`--gitlab-host`, `CI_SERVER_HOST`) |
 | secrets | never | never | env, `~/.docker/config.json`/`$DOCKER_CONFIG`, `$HELM_REGISTRY_CONFIG`, `$HELM_REPOSITORY_CONFIG` |
@@ -397,18 +397,33 @@ ca-file = "/etc/ssl/certs/corp-ca.pem"  # private CA (F3; §8.4)
 
 ### 8.2 Home Manager module
 
+O1 (owner, 2026-11-09): **enabling is a build decision, configuring is a runtime decision.**
+`plugins.<name>.enable` in Home Manager decides whether the plugin is *in the build*; everything
+else about a plugin (whether it runs in a given repo, kinds, files, options) is configuration.
+
 ```nix
 programs.pin-toolkit = {
   enable = true;
-  package = <flake default>;                    # override for "not installed" (O1)
-  plugins.<name>.enable = true;                 # generated from allPlugins
-  plugins.<name>.settings = { };                # → [plugins.<name>] (kinds, files, …)
+  package = <flake default>;                    # all plugins; the Cachix-cached store path
+  plugins.<name>.enable = true;                 # generated from allPlugins; default true; = in the build
+  plugins.<name>.settings = { };                # → [plugins.<name>] (run, kinds, files, …)
   settings = { };                               # → rest of config.toml (pkgs.formats.toml), no secrets
+  # read-only: finalPackage
 };
 ```
-The module writes `xdg.configFile."pin-toolkit/config.toml"` and adds `home.packages = [ cfg.package ]`.
-An assertion fails when an enabled plugin is not in `cfg.package.passthru.plugins`. Under the O1
-default, `enable = false` is a **soft user default**, and a repo config may turn the plugin back on.
+
+- `finalPackage` = `cfg.package` **unchanged** when every plugin is enabled (same store path as the
+  flake default → Cachix hit; the owner's own setup). Otherwise
+  `cfg.package.override { plugins = <enabled>; }` — a feature-trimmed build that is **not** in
+  Cachix and compiles locally; the option description says so.
+- The module writes `xdg.configFile."pin-toolkit/config.toml"` and adds `home.packages = [ cfg.finalPackage ]`.
+- Assertion: an enabled plugin missing from `cfg.package.passthru.plugins` (custom package) fails evaluation.
+- Runtime: `[plugins.<p>] run = false` (any config layer, incl. a repo's `.pin-toolkit.toml`) turns a
+  built plugin off for that scope. A config that asks to run a plugin that is not in the build is
+  reported once as `skipped (plugin <p> not in this build)` (exit unaffected); `pin-toolkit <p>`
+  for a missing plugin exits 2 with the same message. CI uses the container image, which always
+  has all plugins, so a repo's config behaves the same in CI regardless of a user's local build.
+
 Source for `homeModules`: https://github.com/nix-community/home-manager/blob/master/flake-module.nix.
 
 ### 8.3 GitHub Actions, Cachix, releases
@@ -519,7 +534,7 @@ Order: M4b-1 → M5a…f → M6 → F1–F3 → G1 → M4b-2 → M7 → M8a → 
 | # | Decision | By | Reason |
 |---|---|---|---|
 | D1 | New project pin-toolkit (working name), open source on GitHub, its CI builds releases and pushes to Cachix | owner | — |
-| D2 | Installable and customisable via a Home Manager module (plugins on/off) | owner | semantics open: O1 |
+| D2 | Installable and customisable via a Home Manager module (plugins on/off) | owner | O1: HM enable = in the build (all enabled → cached default package); runtime `run`/kinds/settings = configuration |
 | D3 | Rust for anything beyond thin glue | owner | — |
 | D4 | Pin rule (§3) | owner | — |
 | D5 | Approach A: shared core library and plugins by file format, each also standalone. Per-kind toggles. One pass, one report, one exit code | owner | — |
@@ -550,17 +565,16 @@ Order: M4b-1 → M5a…f → M6 → F1–F3 → G1 → M4b-2 → M7 → M8a → 
 | D30 | A version **range** (H1 Chart.yaml/requirements, H4 helmfile) on a line that already has a trailing comment → `skipped (existing comment; pinning would lose constraint <c>)`. The constraint is never dropped. `--update` reads a recorded constraint only from a comment that is entirely `# <constraint>` and parses as one; any other comment counts as "no recorded constraint" (→ the image policy of D21). Exact versions and C3/C4 keep today's rule: pin, no second comment | my call (builder check) | never lose author intent; never misread an unrelated comment |
 | D31 | `GITLAB_TOKEN` only to the primary host (`--gitlab-host` > `CI_SERVER_HOST` > gitlab.com); other `gitlab-hosts` anonymous unless bound in global `[hosts]` (§7.3) | my call (builder check) | least privilege; repo config cannot widen it |
 
-## 13. Open — owner
+## 13. Owner answers (2026-11-09)
 
-Each answer changes what gets built. Each comes with a recommended default, so a builder can
-proceed under that default until the owner answers.
+All former open questions are answered; nothing is open for the owner.
 
-| # | Question | Recommended default | Blocks |
+| # | Question | Owner answer | Affects |
 |---|---|---|---|
-| O1 | "Plugin disabled in Home Manager": **not run** (config) or **not installed** (separate build)? If not run: a soft default (a repo config may re-enable it) or a hard deny? | **Not run, soft default.** Reasons: one store path means Cachix always hits. CI (container, no HM) and local runs behave the same for a given repo config. Toggling is instant and `pin-toolkit helm` still works ad hoc. Plugins hold no credentials, so there is no security gain. "Not installed" stays available as a documented `package = ….override { plugins = [ … ]; }`, guarded by an assertion | M6 (HM module) |
-| O2 | values.yaml map-form images **without** a `digest:` key: write `tag: "1.2.3@sha256:…"` (Renovate style, matches your inline rule, but breaks charts that also use `.tag` in labels or `semverCompare`), or skip? | Fill an existing `digest:` key. Pin inline `image: repo:tag` as `repo:tag@sha256`. Map without a digest key → `skipped (no digest key; set plugins.helm.values.tag-digest = true)`, opt-in per repo. A later template scan may switch it on automatically | M8a |
-| O3 | Is the name `pin-toolkit` final? Which GitHub owner/org? Cachix cache name? What happens to `gitlab.com:GRBurst/pin-gitlab-jobs`? (Creating the GitHub repo, the Cachix cache + `CACHIX_AUTH_TOKEN` secret and GHCR push rights is a **human prerequisite** for M6; M5f/M6 are planned with `<owner>`/`<cache>` placeholders until then.) | Keep `pin-toolkit` (free on crates.io and in nixpkgs, and no GitHub repo of that exact name was found on 2026-11-09; the user/org name was not checked). New repo `github.com/<owner>/pin-toolkit` with full history pushed. The GitLab repo becomes a read-only mirror (useful later to publish a GitLab CI component) | M5f (before Cachix cache, GHCR path and HM option names are fixed) |
-| O4 | License | `MIT OR Apache-2.0` (Rust ecosystem norm) | M5f |
+| O1 | What does "plugin disabled in Home Manager" mean? | **Not installed.** Enabling a plugin is a build decision, configuring it is runtime (§8.2). The owner runs with all plugins enabled, i.e. the cached default package; a subset is a local feature-trimmed build. A repo config can still stop a built plugin from running (`run = false`) | M6 (HM module, package override), M5e (`run` key, "not in this build" handling) |
+| O2 | values.yaml map image without a `digest:` key | **Always write `tag: "1.2.3@sha256:<d>"` by default**, opt-out `plugins.helm.values.tag-digest = false` (→ `skipped (no digest key)`). An existing `digest:` key is still filled instead (tag kept). Known risk, accepted: charts that use `.tag` in labels or `semverCompare` | M8a |
+| O3 | Name, owner, Cachix, GitLab repo | Name **`pin-toolkit`**. Repo `github.com/<owner>/pin-toolkit` where `<owner>` is the owner's **personal GitHub user** (exact handle to be filled in at M5f), full history pushed. Cachix cache: not set up yet; use the recommended name **`pin-toolkit`** (`pin-toolkit.cachix.org`). The GitLab repo **stays** (mirror) and additionally **hosts the GitLab test components/projects** used by the live component/include tests. Human prerequisites for M6: create the GitHub repo, the Cachix cache + `CACHIX_AUTH_TOKEN` secret, GHCR push rights | M5f, M6, live GitLab tests |
+| O4 | License | **`MIT OR Apache-2.0`** | M5f |
 
 ## 14. Left to the builder
 
