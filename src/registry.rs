@@ -275,28 +275,16 @@ impl RegistryClient {
                         "401 without WWW-Authenticate at {path}"
                     )));
                 };
-                let Some((realm, service, scope)) = parse_www_authenticate(www) else {
-                    return Err(RegError::Unresolved(format!(
-                        "unparseable WWW-Authenticate header at {path}: {www}"
-                    )));
-                };
-                if scope != format!("repository:{}:pull", r.api_repo()) {
-                    return Err(RegError::Unresolved(format!(
-                        "unexpected token scope {scope} for {}",
-                        r.api_repo()
-                    )));
-                }
-                let token = self
-                    .cached_token(&scope, &realm, &service, r.host_str())
-                    .await?;
                 let retry = self
-                    .http
-                    .head(format!("{base}{path}"))
-                    .header(reqwest::header::ACCEPT, MANIFEST_ACCEPT)
-                    .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-                    .send()
-                    .await
-                    .map_err(|e| RegError::Network(e.to_string()))?;
+                    .challenge_retry(
+                        reqwest::Method::HEAD,
+                        &format!("{base}{path}"),
+                        Some(MANIFEST_ACCEPT),
+                        r.host_str(),
+                        www,
+                        &path,
+                    )
+                    .await?;
                 match retry.status() {
                     s if s.is_success() => self.digest_from_head(r, retry, &base, &path).await,
                     StatusCode::UNAUTHORIZED => {
@@ -331,7 +319,6 @@ impl RegistryClient {
         let resp = self
             .get_authed(
                 &format!("{base}{path}"),
-                &r.api_repo(),
                 Some(MANIFEST_ACCEPT),
                 r.host_str(),
             )
@@ -360,14 +347,12 @@ impl RegistryClient {
     }
 
     /// Anonymous `GET url` (with `Accept: {accept}` when `accept` is
-    /// `Some`); on 401 parse `WWW-Authenticate`, verify the scope is
-    /// `repository:{repo}:pull`, fetch the cached bearer token (authed per
-    /// `host`) and retry once with `Authorization: Bearer`. Returns the
-    /// final response; the caller handles its status.
+    /// `Some`); on 401 dispatch the `WWW-Authenticate` challenge per host
+    /// (see [`challenge_retry`]) and retry once. Returns the final
+    /// response; the caller handles its status.
     async fn get_authed(
         &self,
         url: &str,
-        repo: &str,
         accept: Option<&str>,
         host: &str,
     ) -> Result<reqwest::Response, RegError> {
@@ -391,26 +376,80 @@ impl RegistryClient {
                 "401 without WWW-Authenticate at {url}"
             )));
         };
-        let Some((realm, service, scope)) = parse_www_authenticate(www) else {
-            return Err(RegError::Unresolved(format!(
-                "unparseable WWW-Authenticate header at {url}: {www}"
-            )));
-        };
-        if scope != format!("repository:{repo}:pull") {
-            return Err(RegError::Unresolved(format!(
-                "unexpected token scope {scope} for {repo}"
-            )));
+        self.challenge_retry(reqwest::Method::GET, url, accept, host, www, url)
+            .await
+    }
+
+    /// Dispatch a 401 challenge (`www` header) for a request to `url`,
+    /// returning the authenticated retry response:
+    /// - `Bearer realm=…` → the per-host token (cached by scope; the token
+    ///   request itself carries the per-host credential, M4a T1) and
+    ///   `Authorization: Bearer` on the retry. The scope is trusted as
+    ///   issued by the registry (ECR public uses `scope=aws`, not the
+    ///   Docker-Hub `repository:…:pull` grammar).
+    /// - `Basic realm=…` → the manifest is retried directly with the
+    ///   per-host Basic login (no token round-trip, JFrog style); a
+    ///   missing or Bearer-only per-host entry fails loud with a
+    ///   `docker login` hint (R1).
+    /// - any other scheme → the M1 unparseable-challenge error.
+    async fn challenge_retry(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        accept: Option<&str>,
+        host: &str,
+        www: &str,
+        label: &str,
+    ) -> Result<reqwest::Response, RegError> {
+        if let Some((realm, service, scope)) = parse_www_authenticate(www) {
+            let token = self.cached_token(&scope, &realm, &service, host).await?;
+            return self
+                .retry_request(method, url, accept, format!("Bearer {token}"))
+                .await;
         }
-        let token = self.cached_token(&scope, &realm, &service, host).await?;
-        let mut retry = self
+        if www
+            .split_whitespace()
+            .next()
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("basic"))
+        {
+            return match self.creds.for_host(host) {
+                Some(HostCreds::Basic { user, password }) => {
+                    let mut req = self.http.request(method, url);
+                    if let Some(a) = accept {
+                        req = req.header(reqwest::header::ACCEPT, a);
+                    }
+                    req = req.basic_auth(user, Some(password));
+                    req.send()
+                        .await
+                        .map_err(|e| RegError::Network(e.to_string()))
+                }
+                _ => Err(RegError::Unresolved(format!(
+                    "{host}: registry requires basic login — docker login {host}"
+                ))),
+            };
+        }
+        Err(RegError::Unresolved(format!(
+            "unparseable WWW-Authenticate header at {label}: {www}"
+        )))
+    }
+
+    /// Send `method url` with `Authorization: {authorization}` (plus
+    /// `Accept: {accept}` when `Some`).
+    async fn retry_request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        accept: Option<&str>,
+        authorization: String,
+    ) -> Result<reqwest::Response, RegError> {
+        let mut req = self
             .http
-            .get(url)
-            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
-        if let Some(accept) = accept {
-            retry = retry.header(reqwest::header::ACCEPT, accept);
+            .request(method, url)
+            .header(reqwest::header::AUTHORIZATION, authorization);
+        if let Some(a) = accept {
+            req = req.header(reqwest::header::ACCEPT, a);
         }
-        retry
-            .send()
+        req.send()
             .await
             .map_err(|e| RegError::Network(e.to_string()))
     }
@@ -432,7 +471,7 @@ impl RegistryClient {
         let mut tags: Vec<String> = Vec::new();
         let mut url = format!("{base}/v2/{repo}/tags/list?n=1000");
         loop {
-            let resp = self.get_authed(&url, &repo, None, r.host_str()).await?;
+            let resp = self.get_authed(&url, None, r.host_str()).await?;
             match resp.status() {
                 StatusCode::NOT_FOUND => {
                     return Err(RegError::Unresolved(format!("{repo} not found")));
@@ -522,6 +561,16 @@ impl RegistryClient {
             .await
             .map_err(|e| RegError::Network(e.to_string()))?;
         let status = resp.status();
+        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            let hint = if host == "ghcr.io" {
+                "set GITHUB_TOKEN (PAT with read:packages) or docker login ghcr.io".to_string()
+            } else {
+                format!("docker login {host}")
+            };
+            return Err(RegError::Unresolved(format!(
+                "{host}: token denied — {hint}"
+            )));
+        }
         if !status.is_success() {
             return Err(RegError::Unresolved(format!(
                 "token endpoint returned {status} at {realm}"
