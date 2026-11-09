@@ -1,5 +1,5 @@
 use pin_ci::image_ref::ImageRef;
-use pin_ci::registry::{Creds, RegError, RegistryClient};
+use pin_ci::registry::{Creds, HostCreds, RegError, RegistryClient};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
@@ -28,12 +28,6 @@ fn client(server: &MockServer, creds: Creds) -> RegistryClient {
 
 fn alpine() -> ImageRef {
     ImageRef::parse("alpine:3.20").unwrap()
-}
-
-fn tempfile_dir() -> std::path::PathBuf {
-    let home = std::env::temp_dir().join(format!("pin-ci-creds-{}", std::process::id()));
-    std::fs::create_dir_all(&home).unwrap();
-    home
 }
 
 async fn mount_alpine_digest(server: &MockServer, code: u16, with_auth: bool) {
@@ -83,7 +77,7 @@ async fn bearer_flow_on_401() {
 }
 
 #[tokio::test]
-async fn creds_send_basic_auth_to_token_endpoint() {
+async fn fetch_token_sends_basic() {
     let server = MockServer::start().await;
     mount_alpine_digest(&server, 200, true).await;
     Mock::given(method("HEAD"))
@@ -105,10 +99,78 @@ async fn creds_send_basic_auth_to_token_endpoint() {
         .await;
     let c = client(
         &server,
-        Creds {
-            dockerhub: Some(("user".into(), "pass".into())),
-        },
+        Creds::none().with_host(
+            "docker.io",
+            HostCreds::Basic {
+                user: "user".into(),
+                password: "pass".into(),
+            },
+        ),
     );
+    assert_eq!(c.digest(&alpine()).await.unwrap(), DIGEST);
+}
+
+/// A pre-issued Bearer token for the ref's host goes to the token endpoint
+/// as `Authorization: Bearer {token}` (M4a T1).
+#[tokio::test]
+async fn fetch_token_sends_bearer() {
+    let server = MockServer::start().await;
+    mount_alpine_digest(&server, 200, true).await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/library/alpine/manifests/3.20"))
+        .and(NoAuthorization)
+        .respond_with(ResponseTemplate::new(401).insert_header(
+            "www-authenticate",
+            format!("Bearer realm=\"{}/token\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", server.uri()),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(header("authorization", "Bearer ghp-atoken123"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok123"})),
+        )
+        .expect(1) // wiremock 0.6: expect() is on Mock, after respond_with()
+        .mount(&server)
+        .await;
+    let c = client(
+        &server,
+        Creds::none().with_host(
+            "docker.io",
+            HostCreds::Bearer {
+                token: "ghp-atoken123".into(),
+            },
+        ),
+    );
+    assert_eq!(c.digest(&alpine()).await.unwrap(), DIGEST);
+}
+
+/// No credentials for the ref's host -> the token request carries no
+/// `Authorization` header at all (M4a T1).
+#[tokio::test]
+async fn fetch_token_anonymous() {
+    let server = MockServer::start().await;
+    mount_alpine_digest(&server, 200, true).await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/library/alpine/manifests/3.20"))
+        .and(NoAuthorization)
+        .respond_with(ResponseTemplate::new(401).insert_header(
+            "www-authenticate",
+            format!("Bearer realm=\"{}/token\",service=\"registry.mock\",scope=\"repository:library/alpine:pull\"", server.uri()),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(NoAuthorization)
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok123"})),
+        )
+        .expect(1) // wiremock 0.6: expect() is on Mock, after respond_with()
+        .mount(&server)
+        .await;
+    let c = client(&server, Creds::none());
     assert_eq!(c.digest(&alpine()).await.unwrap(), DIGEST);
 }
 
@@ -342,26 +404,4 @@ async fn not_found_is_unresolved() {
         RegError::Unresolved(msg) => assert!(msg.contains("library/mystery")),
         other => panic!("expected Unresolved, got {other:?}"),
     }
-}
-
-#[test]
-fn creds_env_precedence_and_config_json() {
-    let home = tempfile_dir(); // helper: std::env::temp_dir().join("pin-ci-creds-test-..."), created fresh
-    std::fs::create_dir_all(home.join(".docker")).unwrap();
-    std::fs::write(
-        home.join(".docker/config.json"),
-        r#"{"auths":{"https://index.docker.io/v1/":{"username":"u","password":"p"}}}"#,
-    )
-    .unwrap();
-    let c = Creds::load_from(None, None, Some(&home));
-    assert_eq!(
-        c.dockerhub.as_ref().unwrap(),
-        &("u".to_string(), "p".to_string())
-    );
-    let c = Creds::load_from(Some("eu".into()), Some("ep".into()), Some(&home));
-    assert_eq!(
-        c.dockerhub.as_ref().unwrap(),
-        &("eu".to_string(), "ep".to_string())
-    );
-    std::fs::remove_dir_all(&home).ok();
 }

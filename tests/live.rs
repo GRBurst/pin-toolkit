@@ -205,3 +205,95 @@ async fn live_update_docker_hub() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Live ECR public — anonymous, no credentials at all. ECR public issues
+/// a Bearer challenge with a trailing-slash realm and a non-repository
+/// scope (`scope=aws`); the token request is anonymous and the manifest
+/// fetch succeeds without any login (probe-verified 2026-11-06,
+/// re-verified 2026-11-09).
+///
+/// `:latest` digests move over time, so this is a differential check
+/// against an independent implementation (`crane digest`), not a frozen
+/// value. Cross-check at writing time (2026-11-09 17:00 UTC):
+///   DOCKER_CONFIG=<empty dir> crane digest public.ecr.aws/nginx/nginx:latest
+///   -> sha256:875df6964525450b1b459b44df8225d2a514a00b72a8e059967e3c38724a486c
+#[tokio::test]
+async fn live_ecr_public_anonymous() {
+    if std::env::var("PIN_CI_LIVE").is_err() {
+        eprintln!("SKIP live (set PIN_CI_LIVE=1)");
+        return;
+    }
+    use pin_ci::image_ref::ImageRef;
+    const REF: &str = "public.ecr.aws/nginx/nginx:latest";
+    let want = match crane_digest(REF) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!(
+                "SKIP live ecr (crane cross-check unavailable: {e}; hint: put `crane` on PATH, e.g. via the repo devenv)"
+            );
+            return;
+        }
+    };
+    let got = client_from_env()
+        .digest(&ImageRef::parse(REF).unwrap())
+        .await
+        .expect("anonymous ECR public resolution must succeed");
+    assert!(got.starts_with("sha256:") && got.len() == 7 + 64, "{got}");
+    assert_eq!(
+        got, want,
+        "tool digest != crane digest for {REF} (a :latest move between the two calls? re-run)"
+    );
+}
+
+/// Live GHCR — a real public package, gated on `GITHUB_TOKEN` (R2: the
+/// token is sent as `Authorization: Bearer` on the token request).
+///
+/// GHCR serves the standard Bearer challenge; public packages are also
+/// pullable anonymously (probe 2026-11-09 16:01 UTC):
+///   curl -sI https://ghcr.io/v2/actions/actions-runner/manifests/latest
+///   -> 401, www-authenticate: Bearer realm="https://ghcr.io/token",
+///      service="ghcr.io",scope="repository:actions/actions-runner:pull"
+///   curl -s 'https://ghcr.io/token?service=ghcr.io&scope=repository:actions/actions-runner:pull'
+///   -> 200 {"token":"djE6…"}
+///   manifest HEAD with that token -> 200,
+///      docker-content-digest:
+///      sha256:759a1d94a15b05941aba5196974ff43fe15b4cbba29b694b35cbc32a1166b232
+/// This test exercises the token-gated path the plan specifies. The
+/// digest is auth-independent (same manifest either way), so the
+/// cross-check is an ANONYMOUS `crane digest` — no token plumbing needed
+/// for crane. `:latest` moves over time: differential check, not a
+/// frozen value.
+#[tokio::test]
+async fn live_ghcr() {
+    if std::env::var("PIN_CI_LIVE").is_err() {
+        eprintln!("SKIP live (set PIN_CI_LIVE=1)");
+        return;
+    }
+    if std::env::var("GITHUB_TOKEN")
+        .map(|t| t.trim().is_empty())
+        .unwrap_or(true)
+    {
+        eprintln!("SKIP live ghcr (set GITHUB_TOKEN to a PAT with read:packages)");
+        return;
+    }
+    use pin_ci::image_ref::ImageRef;
+    const REF: &str = "ghcr.io/actions/actions-runner:latest";
+    let want = match crane_digest(REF) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!(
+                "SKIP live ghcr (crane cross-check unavailable: {e}; hint: put `crane` on PATH, e.g. via the repo devenv)"
+            );
+            return;
+        }
+    };
+    let got = client_from_env()
+        .digest(&ImageRef::parse(REF).unwrap())
+        .await
+        .expect("GHCR resolution with GITHUB_TOKEN must succeed");
+    assert!(got.starts_with("sha256:") && got.len() == 7 + 64, "{got}");
+    assert_eq!(
+        got, want,
+        "tool digest != crane digest for {REF} (a :latest move between the two calls? re-run)"
+    );
+}

@@ -221,11 +221,27 @@ right are small enough to validate against the oracle.
   `file`; bare `{project}` stays out) and new-style component references
   (`gitlab.com/<group>/<project>/<file>@<version>`), pinned to the commit
   SHA, comment format; pin-only (see Open above).
-- **M4 — follow-ups.** GHCR / GCP / ECR / **JFrog Artifactory** and other
-  self-hosted registry hosts (docker v2; the client must handle both
-  `Bearer` and `Basic` WWW-Authenticate — JFrog commonly sends Basic),
-  self-hosted GitLab test coverage, minimum release age guard, `--update`
-  for components.
+- **M1 — DONE** (merged ad42721).
+- **M2 — DONE** (merged 543d56a).
+- **M3 — DONE** (merged ea43e2e; branch m3-components, 8 commits 5379740..a7cad28).
+- **M4a — multi-registry support (in progress, 2026-11-07).** Every
+  docker-v2 host resolves by default (the M1 `skipped (registry not
+  enabled)` image status is gone): GHCR, GCP Artifact Registry, ECR
+  public (anonymous-verified), ECR private via `docker login` config
+  (SigV4 minting deferred), **JFrog Artifactory** and any self-hosted
+  registry (docker v2; client handles both `Bearer` and `Basic`
+  WWW-Authenticate — JFrog commonly sends Basic). Per-host credentials:
+  `DOCKERHUB_USER`/`DOCKERHUB_TOKEN` (hub), `GITHUB_TOKEN` (ghcr, Bearer
+  on token request), `~/.docker/config.json` for all hosts (username/
+  password → Basic; identitytoken → Bearer, the gcloud path). Host
+  demanding auth with no configured credentials → `unresolved` with a
+  login hint, exit 1 (fail-loud ruling 2026-11-07). `--update` works for
+  all hosts (shared auth path). Design:
+  `.superpowers/sdd/2026-11-07-pin-ci-m4a-multi-registry/design.md`.
+- **M4b — follow-ups (later, own plan).** Minimum release age guard
+  (needs Docker Hub API `tag_last_pushed`; owner-deferred since start),
+  `--update` for gitlab.com components/includes, self-hosted GitLab live
+  test coverage.
 
 ## Future (out of scope, noted 2026-11-05)
 

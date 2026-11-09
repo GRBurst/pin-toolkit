@@ -4,13 +4,13 @@ Pin container image references in GitLab CI files to immutable digests.
 
 ## What it does
 
-M1 pins Docker Hub image references in GitLab CI files: every image or
-service reference whose host is Docker Hub (`None`/`docker.io`/
-`index.docker.io`) is resolved to its current digest and rewritten in place
-as `original-as-written@sha256:<digest>` (an existing `@sha256:<old>` has its
-digest replaced; tags are never changed). Non-Docker Hub references are
-reported as `skipped (registry not enabled)` and left untouched. Edits are
-byte-exact and idempotent.
+M1 pins image references in GitLab CI files: every image or service
+reference is resolved to its current digest and rewritten in place as
+`original-as-written@sha256:<digest>` (an existing `@sha256:<old>` has its
+digest replaced; tags are never changed). Edits are byte-exact and
+idempotent. M1 started Docker-Hub-only — references on other hosts were
+`skipped (registry not enabled)`; M4a removes that skip entirely (see
+[Multi-registry support (M4a)](#multi-registry-support-m4a)).
 
 M2 adds `--update`: before pinning, each reference's tag is bumped to the
 latest eligible stable tag (see [Tag updates](#tag-updates--update)).
@@ -44,9 +44,9 @@ pinned: 0, ok: 0, updated: 2, skipped: 0, unresolved: 0
 
 ## Tag updates (`--update`)
 
-For every Docker Hub reference, the tag list is fetched from the registry
-and the tag is bumped to the **highest stable tag compatible with the
-current one** (docker versioning: pre-release/beta/nightly tags are
+For every image reference (any registry host), the tag list is fetched
+from its registry and the tag is bumped to the **highest stable tag
+compatible with the current one** (docker versioning: pre-release/beta/nightly tags are
 ignored). Compatibility means the same dash-suffix (e.g. `-alpine`) and the same
 number of release components (`3.20` ↔ `3.24`, `24.04` ↔ `26.04`; `24` is
 not compatible with `24.0`). By default the major must not change;
@@ -179,6 +179,43 @@ other targets in the file are still written:
 The exit code is `1` iff at least one reference is `unresolved`; skipped
 targets keep exit `0` (M1/M2 exit-code rules unchanged).
 
+## Multi-registry support (M4a)
+
+M4a extends image pinning to **every docker-v2 registry host** —
+`ghcr.io`, GCP Artifact Registry, ECR (public and private), JFrog
+Artifactory, and any self-hosted registry. The M1 status
+`skipped (registry not enabled)` no longer occurs for images.
+
+### Per-host logins
+
+| Registry host | How to authenticate |
+|---|---|
+| `docker.io` | `DOCKERHUB_USER` + `DOCKERHUB_TOKEN` (env, used first) or `~/.docker/config.json` (M1 auths keys) |
+| `ghcr.io` | `GITHUB_TOKEN` (a PAT with `read:packages`), sent as Bearer on the token request, or config.json |
+| GCP Artifact Registry (`<region>-docker.pkg.dev`) | `gcloud auth configure-docker <host>` — writes an `identitytoken` entry to config.json, sent as Bearer |
+| ECR public (`public.ecr.aws`) | none — anonymous |
+| ECR private (`registry-…amazonaws.com`) | `docker login -u AWS -p "$(aws ecr get-login-password …)" registry-…` — lands in config.json. SigV4 credential minting is deliberately **not** in the tool |
+| JFrog Artifactory / self-hosted | `docker login <host>` — lands in config.json; both `Basic` and `Bearer` challenges are handled |
+
+config.json entries resolve per host: `username` + `password` → Basic
+credentials, otherwise `identitytoken` → Bearer token. Precedence is
+per host: env vars first, then config.json. A missing or malformed
+config.json is never fatal — the host simply has no credentials.
+
+### Fail loud (no silent skips)
+
+When a registry demands auth — anonymous 401 with the token request
+denied, or a `Basic` challenge — and no credentials are configured for
+that host, the reference is `unresolved` with a login hint and the exit
+code is `1`:
+
+- `ghcr.io`: `unresolved (ghcr.io: token denied — set GITHUB_TOKEN (PAT with read:packages) or docker login ghcr.io)`
+- other hosts: `unresolved (<host>: token denied — docker login <host>)`; a `Basic` challenge with no (or Bearer-only) credentials reports `unresolved (<host>: registry requires basic login — docker login <host>)`
+
+Everything else in the file is still resolved and written (partial-write
+semantics, M1/M2/M3 rules). `--gitlab-host` (M3) is unaffected: it only
+selects the GitLab instance for component/include resolution.
+
 ## Environment
 
 Example:
@@ -192,10 +229,16 @@ pinned: 2, ok: 0, skipped: 0, unresolved: 0
 
 ## Environment
 
-- `DOCKERHUB_USER` / `DOCKERHUB_TOKEN` — Docker Hub credentials, used first.
-- Fallback: `~/.docker/config.json` (`auths` keys, in order:
+- `DOCKERHUB_USER` / `DOCKERHUB_TOKEN` — `docker.io` credentials, used
+  first.
+- `GITHUB_TOKEN` — `ghcr.io`, sent as Bearer on the token request.
+- Fallback: `~/.docker/config.json`, per host — `auths` keys in order
   `https://index.docker.io/v1/`, `https://docker.io`,
-  `index.docker.io/v1/`, `docker.io`).
+  `index.docker.io/v1/`, `docker.io` for Docker Hub; `ghcr.io` /
+  `https://ghcr.io` for GitHub; `{host}` / `https://{host}` for anything
+  else. An entry's `username` + `password` are Basic credentials; an
+  `identitytoken` is a Bearer token. A missing or malformed config.json
+  is never fatal (no credentials for that host).
 
 Nothing secret is written to files or logs.
 
@@ -207,13 +250,18 @@ Nothing secret is written to files or logs.
 ## Tests
 
 - `cargo test` — unit, mock-registry, and end-to-end tests. Always runs
-  without network, Docker Hub credentials, or external tools.
+  without network, registry credentials, or external tools.
 - `PIN_CI_LIVE=1 cargo test --test live` — opt-in live tests against real
-  Docker Hub: digest resolution for `alpine:3.20` / `ubuntu:24.04`, plus a
-  full `--update --update-major` run whose tag choice is checked against an
-  independent `list_tags` + `pick_latest_stable` recomputation and whose
-  digests are checked against `crane digest`; a second run must change
-  nothing.
+  registries: Docker Hub digest resolution for `alpine:3.20` /
+  `ubuntu:24.04` plus a full `--update --update-major` run whose tag
+  choice is checked against an independent `list_tags` +
+  `pick_latest_stable` recomputation and whose digests are checked
+  against `crane digest` (a second run must change nothing); ECR public
+  anonymous resolution of `public.ecr.aws/nginx/nginx:latest`,
+  cross-checked against `crane digest` (skips with a hint when `crane`
+  is missing); and a GHCR public-package resolution gated on
+  `GITHUB_TOKEN` (skips with a hint otherwise), likewise cross-checked
+  against `crane digest`.
 - `PIN_CI_ORACLE=1 cargo test --test oracle` — opt-in differential tests
   against the old pipeline, which runs `pin-ci-images.sh` as-is on a temp
   checkout:

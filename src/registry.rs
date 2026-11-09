@@ -1,9 +1,12 @@
-//! Docker Hub v2 registry client: resolve an image reference to its immutable
-//! manifest digest.
+//! Registry v2 client: resolve an image reference to its immutable manifest
+//! digest on any registry host (M4a Task 2: the M1 Docker-Hub-only gate is
+//! gone; without a `base_urls` override the base is the Docker Hub default
+//! for `docker.io`, else `https://{host}`).
 //!
 //! Flow: anonymous `HEAD /v2/{repo}/manifests/{tag}`; on 401 parse
-//! `WWW-Authenticate`, fetch a bearer token (Basic auth when credentials are
-//! present), retry with `Authorization: Bearer`. The digest comes from the
+//! `WWW-Authenticate`, fetch a bearer token with the ref's host's
+//! credentials (per-host Basic or Bearer, M4a), retry with
+//! `Authorization: Bearer`. The digest comes from the
 //! `Docker-Content-Digest` header, falling back to `GET` + sha256 of the body.
 
 use std::collections::HashMap;
@@ -38,62 +41,166 @@ impl fmt::Display for RegError {
     }
 }
 
-/// Registry credentials. M1: Docker Hub only.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// Per-host registry credentials (M4a).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HostCreds {
+    /// HTTP Basic (registry token endpoint), e.g. Docker Hub.
+    Basic { user: String, password: String },
+    /// Pre-issued token sent as `Authorization: Bearer`, e.g. GitHub
+    /// Packages.
+    Bearer { token: String },
+}
+
+/// Registry credentials keyed by registry host (e.g. `"docker.io"`,
+/// `"ghcr.io"`). M4a: per-host Basic or Bearer.
+#[derive(Debug, Default, PartialEq)]
 pub struct Creds {
-    /// `(user, pass)` for Docker Hub.
-    pub dockerhub: Option<(String, String)>,
+    hosts: HashMap<String, HostCreds>,
 }
 
 impl Creds {
-    /// No credentials (anonymous).
+    /// No credentials: every request is anonymous.
     pub fn none() -> Self {
         Self::default()
     }
 
-    /// Resolve Docker Hub credentials: env user/pass take precedence over
-    /// config.json; config.json is read from `home/.docker/config.json` when
-    /// `home` is `Some` and the file exists.
-    pub fn load_from(
-        env_user: Option<String>,
-        env_pass: Option<String>,
-        home: Option<&Path>,
-    ) -> Self {
-        if let (Some(user), Some(pass)) = (env_user, env_pass)
-            && !user.is_empty()
-            && !pass.is_empty()
+    /// Environment (R2) + `~/.docker/config.json` per the constraint-4
+    /// precedence table. Env vars win per host: `DOCKERHUB_USER`+
+    /// `DOCKERHUB_TOKEN` -> `docker.io` Basic, `GITHUB_TOKEN` -> `ghcr.io`
+    /// Bearer. A missing or malformed config.json yields no entry for that
+    /// host, never fatal.
+    pub fn load_from(home: Option<&Path>) -> Self {
+        Self::load_from_env(home, |var| std::env::var(var).ok())
+    }
+
+    /// Same as [`Creds::load_from`] but env vars are read through `env`
+    /// (production passes `std::env::var`; unit tests inject).
+    fn load_from_env<F>(home: Option<&Path>, env: F) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let mut hosts: HashMap<String, HostCreds> = HashMap::new();
+        // config.json first (lower precedence); env vars override per host.
+        if let Some(home) = home
+            && let Some(from_config) = Self::hosts_from_config(home)
         {
-            return Self {
-                dockerhub: Some((user, pass)),
-            };
+            hosts.extend(from_config);
         }
-        Self {
-            dockerhub: dockerhub_from_config(home),
+        if let (Some(user), Some(password)) = (
+            env("DOCKERHUB_USER").filter(|s| !s.is_empty()),
+            env("DOCKERHUB_TOKEN").filter(|s| !s.is_empty()),
+        ) {
+            hosts.insert("docker.io".to_string(), HostCreds::Basic { user, password });
         }
+        if let Some(token) = env("GITHUB_TOKEN").filter(|s| !s.is_empty()) {
+            hosts.insert("ghcr.io".to_string(), HostCreds::Bearer { token });
+        }
+        Self { hosts }
+    }
+
+    /// Credentials for `host`, if any.
+    pub fn for_host(&self, host: &str) -> Option<&HostCreds> {
+        self.hosts.get(host)
+    }
+
+    /// Test hook: add/replace the credentials for one host.
+    pub fn with_host(mut self, host: &str, creds: HostCreds) -> Self {
+        self.hosts.insert(host.to_string(), creds);
+        self
+    }
+
+    /// Credentials from `home/.docker/config.json` per the constraint-4
+    /// key table. Missing or malformed file -> `None` (never fatal).
+    fn hosts_from_config(home: &Path) -> Option<HashMap<String, HostCreds>> {
+        let raw = std::fs::read_to_string(home.join(".docker").join("config.json")).ok()?;
+        let config: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let auths = config.get("auths")?.as_object()?;
+        // Distinct hosts present in config.json (reverse key -> host map).
+        let mut host_list: Vec<&str> = Vec::new();
+        for key in auths.keys() {
+            let host = host_from_config_key(key);
+            if !host_list.contains(&host) {
+                host_list.push(host);
+            }
+        }
+        let mut hosts: HashMap<String, HostCreds> = HashMap::new();
+        for host in host_list {
+            if let Some(creds) = creds_from_auths(auths, host) {
+                hosts.insert(host.to_string(), creds);
+            }
+        }
+        Some(hosts)
     }
 }
 
-fn dockerhub_from_config(home: Option<&Path>) -> Option<(String, String)> {
-    let home = home?;
-    let raw = std::fs::read_to_string(home.join(".docker").join("config.json")).ok()?;
-    let config: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let auths = config.get("auths")?.as_object()?;
-    for key in [
-        "https://index.docker.io/v1/",
-        "https://docker.io",
-        "index.docker.io/v1/",
-        "docker.io",
-    ] {
-        if let Some(entry) = auths.get(key) {
-            let user = entry.get("username")?.as_str()?.to_string();
-            let pass = entry.get("password")?.as_str()?.to_string();
-            return Some((user, pass));
-        }
+/// Reverse config.json key -> host map (constraint 4).
+fn host_from_config_key(key: &str) -> &str {
+    match key {
+        "docker.io"
+        | "index.docker.io/v1/"
+        | "https://docker.io"
+        | "https://index.docker.io/v1/" => "docker.io",
+        "ghcr.io" | "https://ghcr.io" => "ghcr.io",
+        k => k.strip_prefix("https://").unwrap_or(k),
+    }
+}
+
+/// Config keys to look up for `host`, in precedence order (constraint 4;
+/// docker.io keeps the M1 key list and order).
+fn config_keys_for_host(host: &str) -> Vec<String> {
+    if host == "docker.io" {
+        return vec![
+            "https://index.docker.io/v1/".to_string(),
+            "https://docker.io".to_string(),
+            "index.docker.io/v1/".to_string(),
+            "docker.io".to_string(),
+        ];
+    }
+    vec![host.to_string(), format!("https://{host}")]
+}
+
+/// For host `host`, the first key present in `auths` decides (M1
+/// semantics): its entry is converted, and a malformed entry yields `None`
+/// for the host (no fall-through to later keys).
+fn creds_from_auths(
+    auths: &serde_json::Map<String, serde_json::Value>,
+    host: &str,
+) -> Option<HostCreds> {
+    for key in config_keys_for_host(host) {
+        let Some(entry) = auths.get(&key) else {
+            continue;
+        };
+        return entry_to_creds(entry);
     }
     None
 }
 
-/// Client for the registry HTTP v2 API (M1: Docker Hub).
+/// Config entry -> credentials: `username`+`password` -> Basic, else
+/// `identitytoken` -> Bearer, else `None`.
+fn entry_to_creds(entry: &serde_json::Value) -> Option<HostCreds> {
+    if let (Some(user), Some(pass)) = (
+        entry.get("username").and_then(serde_json::Value::as_str),
+        entry.get("password").and_then(serde_json::Value::as_str),
+    ) {
+        return Some(HostCreds::Basic {
+            user: user.to_string(),
+            password: pass.to_string(),
+        });
+    }
+    if let Some(token) = entry
+        .get("identitytoken")
+        .and_then(serde_json::Value::as_str)
+    {
+        return Some(HostCreds::Bearer {
+            token: token.to_string(),
+        });
+    }
+    None
+}
+
+/// Client for the registry HTTP v2 API (M4a: per-host credentials; every
+/// host resolves — `base_urls` override, Docker Hub default, else
+/// `https://{host}`).
 ///
 /// The token cache is a `tokio::sync::Mutex` so `digest` is concurrency-safe
 /// (M1's orchestrator calls it from concurrent tasks).
@@ -126,22 +233,24 @@ impl RegistryClient {
         }
     }
 
-    /// Registry base URL for `r`'s host: the `base_urls` map, falling back
-    /// to `DEFAULT_DOCKER_HUB_BASE` for `"docker.io"`.
-    fn base_for(&self, r: &ImageRef) -> Result<String, RegError> {
-        match self.base_urls.get(r.host_str()).cloned() {
-            Some(base) => Ok(base),
-            None if r.host_str() == "docker.io" => Ok(DEFAULT_DOCKER_HUB_BASE.to_string()),
-            None => Err(RegError::Unresolved(format!(
-                "no base URL for registry host {}",
-                r.host_str()
-            ))),
+    /// Registry base URL for `r`'s host: the `base_urls` override, then the
+    /// Docker Hub default for `"docker.io"`, then `https://{host}` (M4a
+    /// Task 2: every host resolves; the M1 "no base URL" error is gone).
+    fn base_for(&self, r: &ImageRef) -> String {
+        let host = r.host_str();
+        if let Some(base) = self.base_urls.get(host) {
+            return base.clone();
+        }
+        if host == "docker.io" {
+            DEFAULT_DOCKER_HUB_BASE.to_string()
+        } else {
+            format!("https://{host}")
         }
     }
 
     /// Resolve `r` to `"sha256:<64 hex>"`.
     pub async fn digest(&self, r: &ImageRef) -> Result<String, RegError> {
-        let base = self.base_for(r)?;
+        let base = self.base_for(r);
         let path = format!("/v2/{}/manifests/{}", r.api_repo(), r.effective_tag());
         let not_found =
             || RegError::Unresolved(format!("{}:{} not found", r.api_repo(), r.effective_tag()));
@@ -166,26 +275,16 @@ impl RegistryClient {
                         "401 without WWW-Authenticate at {path}"
                     )));
                 };
-                let Some((realm, service, scope)) = parse_www_authenticate(www) else {
-                    return Err(RegError::Unresolved(format!(
-                        "unparseable WWW-Authenticate header at {path}: {www}"
-                    )));
-                };
-                if scope != format!("repository:{}:pull", r.api_repo()) {
-                    return Err(RegError::Unresolved(format!(
-                        "unexpected token scope {scope} for {}",
-                        r.api_repo()
-                    )));
-                }
-                let token = self.cached_token(&scope, &realm, &service).await?;
                 let retry = self
-                    .http
-                    .head(format!("{base}{path}"))
-                    .header(reqwest::header::ACCEPT, MANIFEST_ACCEPT)
-                    .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-                    .send()
-                    .await
-                    .map_err(|e| RegError::Network(e.to_string()))?;
+                    .challenge_retry(
+                        reqwest::Method::HEAD,
+                        &format!("{base}{path}"),
+                        Some(MANIFEST_ACCEPT),
+                        r.host_str(),
+                        www,
+                        &path,
+                    )
+                    .await?;
                 match retry.status() {
                     s if s.is_success() => self.digest_from_head(r, retry, &base, &path).await,
                     StatusCode::UNAUTHORIZED => {
@@ -220,8 +319,8 @@ impl RegistryClient {
         let resp = self
             .get_authed(
                 &format!("{base}{path}"),
-                &r.api_repo(),
                 Some(MANIFEST_ACCEPT),
+                r.host_str(),
             )
             .await?;
         let status = resp.status();
@@ -248,15 +347,14 @@ impl RegistryClient {
     }
 
     /// Anonymous `GET url` (with `Accept: {accept}` when `accept` is
-    /// `Some`); on 401 parse `WWW-Authenticate`, verify the scope is
-    /// `repository:{repo}:pull`, fetch the cached bearer token and retry
-    /// once with `Authorization: Bearer`. Returns the final response; the
-    /// caller handles its status.
+    /// `Some`); on 401 dispatch the `WWW-Authenticate` challenge per host
+    /// (see [`challenge_retry`]) and retry once. Returns the final
+    /// response; the caller handles its status.
     async fn get_authed(
         &self,
         url: &str,
-        repo: &str,
         accept: Option<&str>,
+        host: &str,
     ) -> Result<reqwest::Response, RegError> {
         let mut req = self.http.get(url);
         if let Some(accept) = accept {
@@ -278,26 +376,80 @@ impl RegistryClient {
                 "401 without WWW-Authenticate at {url}"
             )));
         };
-        let Some((realm, service, scope)) = parse_www_authenticate(www) else {
-            return Err(RegError::Unresolved(format!(
-                "unparseable WWW-Authenticate header at {url}: {www}"
-            )));
-        };
-        if scope != format!("repository:{repo}:pull") {
-            return Err(RegError::Unresolved(format!(
-                "unexpected token scope {scope} for {repo}"
-            )));
+        self.challenge_retry(reqwest::Method::GET, url, accept, host, www, url)
+            .await
+    }
+
+    /// Dispatch a 401 challenge (`www` header) for a request to `url`,
+    /// returning the authenticated retry response:
+    /// - `Bearer realm=…` → the per-host token (cached by scope; the token
+    ///   request itself carries the per-host credential, M4a T1) and
+    ///   `Authorization: Bearer` on the retry. The scope is trusted as
+    ///   issued by the registry (ECR public uses `scope=aws`, not the
+    ///   Docker-Hub `repository:…:pull` grammar).
+    /// - `Basic realm=…` → the manifest is retried directly with the
+    ///   per-host Basic login (no token round-trip, JFrog style); a
+    ///   missing or Bearer-only per-host entry fails loud with a
+    ///   `docker login` hint (R1).
+    /// - any other scheme → the M1 unparseable-challenge error.
+    async fn challenge_retry(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        accept: Option<&str>,
+        host: &str,
+        www: &str,
+        label: &str,
+    ) -> Result<reqwest::Response, RegError> {
+        if let Some((realm, service, scope)) = parse_www_authenticate(www) {
+            let token = self.cached_token(&scope, &realm, &service, host).await?;
+            return self
+                .retry_request(method, url, accept, format!("Bearer {token}"))
+                .await;
         }
-        let token = self.cached_token(&scope, &realm, &service).await?;
-        let mut retry = self
+        if www
+            .split_whitespace()
+            .next()
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("basic"))
+        {
+            return match self.creds.for_host(host) {
+                Some(HostCreds::Basic { user, password }) => {
+                    let mut req = self.http.request(method, url);
+                    if let Some(a) = accept {
+                        req = req.header(reqwest::header::ACCEPT, a);
+                    }
+                    req = req.basic_auth(user, Some(password));
+                    req.send()
+                        .await
+                        .map_err(|e| RegError::Network(e.to_string()))
+                }
+                _ => Err(RegError::Unresolved(format!(
+                    "{host}: registry requires basic login — docker login {host}"
+                ))),
+            };
+        }
+        Err(RegError::Unresolved(format!(
+            "unparseable WWW-Authenticate header at {label}: {www}"
+        )))
+    }
+
+    /// Send `method url` with `Authorization: {authorization}` (plus
+    /// `Accept: {accept}` when `Some`).
+    async fn retry_request(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        accept: Option<&str>,
+        authorization: String,
+    ) -> Result<reqwest::Response, RegError> {
+        let mut req = self
             .http
-            .get(url)
-            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
-        if let Some(accept) = accept {
-            retry = retry.header(reqwest::header::ACCEPT, accept);
+            .request(method, url)
+            .header(reqwest::header::AUTHORIZATION, authorization);
+        if let Some(a) = accept {
+            req = req.header(reqwest::header::ACCEPT, a);
         }
-        retry
-            .send()
+        req.send()
             .await
             .map_err(|e| RegError::Network(e.to_string()))
     }
@@ -315,11 +467,11 @@ impl RegistryClient {
                 return Ok(tags.clone());
             }
         }
-        let base = self.base_for(r)?;
+        let base = self.base_for(r);
         let mut tags: Vec<String> = Vec::new();
         let mut url = format!("{base}/v2/{repo}/tags/list?n=1000");
         loop {
-            let resp = self.get_authed(&url, &repo, None).await?;
+            let resp = self.get_authed(&url, None, r.host_str()).await?;
             match resp.status() {
                 StatusCode::NOT_FOUND => {
                     return Err(RegError::Unresolved(format!("{repo} not found")));
@@ -357,12 +509,14 @@ impl RegistryClient {
         Ok(tags)
     }
 
-    /// Bearer token for `scope`, from the cache or the token endpoint.
+    /// Bearer token for `scope`, from the cache or the token endpoint
+    /// (authed per `host`).
     async fn cached_token(
         &self,
         scope: &str,
         realm: &str,
         service: &str,
+        host: &str,
     ) -> Result<String, RegError> {
         {
             let cache = self.tokens.lock().await;
@@ -370,7 +524,7 @@ impl RegistryClient {
                 return Ok(token.clone());
             }
         }
-        let token = self.fetch_token(realm, service, scope).await?;
+        let token = self.fetch_token(realm, service, scope, host).await?;
         self.tokens
             .lock()
             .await
@@ -378,27 +532,45 @@ impl RegistryClient {
         Ok(token)
     }
 
-    /// `GET {realm}?service={service}&scope={scope}` with HTTP Basic auth when
-    /// Docker Hub credentials are present. Expects JSON `{"token": ...}` or
-    /// `{"access_token": ...}`.
+    /// `GET {realm}?service={service}&scope={scope}` with the host's
+    /// credentials: `Basic` -> HTTP Basic auth, `Bearer` ->
+    /// `Authorization: Bearer {token}`, none -> no `Authorization` header.
+    /// Expects JSON `{"token": ...}` or `{"access_token": ...}`.
     async fn fetch_token(
         &self,
         realm: &str,
         service: &str,
         scope: &str,
+        host: &str,
     ) -> Result<String, RegError> {
         let mut req = self
             .http
             .get(realm)
             .query(&[("service", service), ("scope", scope)]);
-        if let Some((user, pass)) = &self.creds.dockerhub {
-            req = req.basic_auth(user, Some(pass));
+        match self.creds.for_host(host) {
+            Some(HostCreds::Basic { user, password }) => {
+                req = req.basic_auth(user, Some(password));
+            }
+            Some(HostCreds::Bearer { token }) => {
+                req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+            }
+            None => {}
         }
         let resp = req
             .send()
             .await
             .map_err(|e| RegError::Network(e.to_string()))?;
         let status = resp.status();
+        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            let hint = if host == "ghcr.io" {
+                "set GITHUB_TOKEN (PAT with read:packages) or docker login ghcr.io".to_string()
+            } else {
+                format!("docker login {host}")
+            };
+            return Err(RegError::Unresolved(format!(
+                "{host}: token denied — {hint}"
+            )));
+        }
         if !status.is_success() {
             return Err(RegError::Unresolved(format!(
                 "token endpoint returned {status} at {realm}"
@@ -498,6 +670,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn base_for_precedence() {
+        // A base_urls override wins for any host.
+        let c = RegistryClient::new(
+            Creds::none(),
+            HashMap::from([("ghcr.io".to_string(), "http://mock-ghcr".to_string())]),
+        );
+        let r = ImageRef::parse("ghcr.io/org/img:1.0").unwrap();
+        assert_eq!(c.base_for(&r), "http://mock-ghcr");
+        // No overrides: docker.io keeps its default; every other host is
+        // https://{host} (M4a Task 2).
+        let c = RegistryClient::new(Creds::none(), HashMap::new());
+        assert_eq!(
+            c.base_for(&ImageRef::parse("alpine:3.20").unwrap()),
+            DEFAULT_DOCKER_HUB_BASE
+        );
+        assert_eq!(
+            c.base_for(&ImageRef::parse("docker.io/alpine:3.20").unwrap()),
+            DEFAULT_DOCKER_HUB_BASE
+        );
+        assert_eq!(
+            c.base_for(&ImageRef::parse("ghcr.io/org/img:1.0").unwrap()),
+            "https://ghcr.io"
+        );
+        assert_eq!(
+            c.base_for(&ImageRef::parse("reg.example.com:5000/a/b:1").unwrap()),
+            "https://reg.example.com:5000"
+        );
+    }
+
+    #[test]
     fn www_authenticate_parses_all_keys() {
         let (realm, service, scope) = parse_www_authenticate(
             r#"Bearer realm="https://auth.example/token",service="registry.example",scope="repository:library/alpine:pull""#,
@@ -526,7 +728,7 @@ mod tests {
 
     #[test]
     fn creds_none_is_default() {
-        assert!(Creds::none().dockerhub.is_none());
+        assert!(Creds::none().for_host("docker.io").is_none());
         assert_eq!(Creds::none(), Creds::default());
     }
 
@@ -535,32 +737,172 @@ mod tests {
         std::fs::write(home.join(".docker").join("config.json"), json).unwrap();
     }
 
+    /// A fresh per-test home dir under `std::env::temp_dir()`.
+    fn fresh_home(tag: &str) -> std::path::PathBuf {
+        let home = std::env::temp_dir().join(format!("pin-ci-cfg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        home
+    }
+
     #[test]
-    fn config_json_https_docker_io_key() {
-        let home = std::env::temp_dir().join(format!("pin-ci-cfg-dockerio-{}", std::process::id()));
+    fn creds_env_dockerhub_basic() {
+        let env = |var: &str| match var {
+            "DOCKERHUB_USER" => Some("hubuser".to_string()),
+            "DOCKERHUB_TOKEN" => Some("hubtoken".to_string()),
+            _ => None,
+        };
+        let c = Creds::load_from_env(None, env);
+        assert_eq!(
+            c.for_host("docker.io"),
+            Some(&HostCreds::Basic {
+                user: "hubuser".to_string(),
+                password: "hubtoken".to_string(),
+            })
+        );
+        assert_eq!(c.for_host("ghcr.io"), None);
+    }
+
+    #[test]
+    fn creds_env_ghcr_bearer() {
+        let env = |var: &str| match var {
+            "GITHUB_TOKEN" => Some("ghpat".to_string()),
+            _ => None,
+        };
+        let c = Creds::load_from_env(None, env);
+        assert_eq!(
+            c.for_host("ghcr.io"),
+            Some(&HostCreds::Bearer {
+                token: "ghpat".to_string()
+            })
+        );
+        assert_eq!(c.for_host("docker.io"), None);
+    }
+
+    #[test]
+    fn creds_env_beats_config() {
+        let home = fresh_home("env-beats-config");
         write_docker_config(
             &home,
-            r#"{"auths":{"https://docker.io":{"username":"u","password":"p"}}}"#,
+            r#"{"auths":{"docker.io":{"username":"cu","password":"cp"},"ghcr.io":{"identitytoken":"ctok"}}}"#,
+        );
+        let env = |var: &str| match var {
+            "DOCKERHUB_USER" => Some("eu".to_string()),
+            "DOCKERHUB_TOKEN" => Some("ep".to_string()),
+            "GITHUB_TOKEN" => Some("etok".to_string()),
+            _ => None,
+        };
+        let c = Creds::load_from_env(Some(&home), env);
+        assert_eq!(
+            c.for_host("docker.io"),
+            Some(&HostCreds::Basic {
+                user: "eu".to_string(),
+                password: "ep".to_string(),
+            })
         );
         assert_eq!(
-            dockerhub_from_config(Some(&home)),
-            Some(("u".to_string(), "p".to_string()))
+            c.for_host("ghcr.io"),
+            Some(&HostCreds::Bearer {
+                token: "etok".to_string()
+            })
         );
         std::fs::remove_dir_all(&home).ok();
     }
 
     #[test]
-    fn config_json_key_precedence_index_first() {
-        let home =
-            std::env::temp_dir().join(format!("pin-ci-cfg-precedence-{}", std::process::id()));
+    fn creds_config_dockerhub_keys() {
+        // Each of the four M1 key forms resolves to docker.io Basic.
+        for key in [
+            "https://index.docker.io/v1/",
+            "https://docker.io",
+            "index.docker.io/v1/",
+            "docker.io",
+        ] {
+            let home = fresh_home("dockerhub-keys");
+            write_docker_config(
+                &home,
+                &format!(r#"{{"auths":{{"{key}":{{"username":"u","password":"p"}}}}}}"#),
+            );
+            let c = Creds::load_from_env(Some(&home), |_| None);
+            assert_eq!(
+                c.for_host("docker.io"),
+                Some(&HostCreds::Basic {
+                    user: "u".to_string(),
+                    password: "p".to_string(),
+                }),
+                "config key {key}"
+            );
+            std::fs::remove_dir_all(&home).ok();
+        }
+        // Multiple keys present: the earliest key in the M1 list wins.
+        let home = fresh_home("dockerhub-key-order");
         write_docker_config(
             &home,
-            r#"{"auths":{"https://docker.io":{"username":"alt","password":"x"},"https://index.docker.io/v1/":{"username":"u","password":"p"}}}"#,
+            r#"{"auths":{"docker.io":{"username":"last","password":"p"},"https://index.docker.io/v1/":{"username":"first","password":"p"}}}"#,
         );
+        let c = Creds::load_from_env(Some(&home), |_| None);
         assert_eq!(
-            dockerhub_from_config(Some(&home)),
-            Some(("u".to_string(), "p".to_string()))
+            c.for_host("docker.io"),
+            Some(&HostCreds::Basic {
+                user: "first".to_string(),
+                password: "p".to_string(),
+            })
         );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn creds_config_identitytoken() {
+        let home = fresh_home("identitytoken");
+        write_docker_config(
+            &home,
+            r#"{"auths":{"us-docker.pkg.dev":{"identitytoken":"ya29.xyz"}}}"#,
+        );
+        let c = Creds::load_from_env(Some(&home), |_| None);
+        assert_eq!(
+            c.for_host("us-docker.pkg.dev"),
+            Some(&HostCreds::Bearer {
+                token: "ya29.xyz".to_string()
+            })
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn creds_config_arbitrary_host() {
+        for key in ["artifactory.example.com", "https://artifactory.example.com"] {
+            let home = fresh_home("arbitrary-host");
+            write_docker_config(
+                &home,
+                &format!(r#"{{"auths":{{"{key}":{{"username":"au","password":"ap"}}}}}}"#),
+            );
+            let c = Creds::load_from_env(Some(&home), |_| None);
+            assert_eq!(
+                c.for_host("artifactory.example.com"),
+                Some(&HostCreds::Basic {
+                    user: "au".to_string(),
+                    password: "ap".to_string(),
+                }),
+                "config key {key}"
+            );
+            std::fs::remove_dir_all(&home).ok();
+        }
+    }
+
+    #[test]
+    fn creds_missing_home_malformed() {
+        // home=None, no env vars -> none.
+        let c = Creds::load_from_env(None, |_| None);
+        assert_eq!(c, Creds::none());
+        // Malformed config.json -> none, never fatal.
+        let home = fresh_home("malformed");
+        write_docker_config(&home, "{not json");
+        let c = Creds::load_from_env(Some(&home), |_| None);
+        assert_eq!(c, Creds::none());
+        // Valid JSON but no auths -> none.
+        write_docker_config(&home, r#"{"other":true}"#);
+        let c = Creds::load_from_env(Some(&home), |_| None);
+        assert_eq!(c, Creds::none());
         std::fs::remove_dir_all(&home).ok();
     }
 

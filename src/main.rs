@@ -11,8 +11,8 @@ struct Cli {
     #[arg(default_value = "ci/.gitlab-ci.yml")]
     files: Vec<String>,
 
-    /// Bump unpinned, versioned Docker Hub tags to the latest compatible
-    /// stable tag and pin the bumped tag's digest
+    /// Bump unpinned, versioned image refs (any registry host) to the
+    /// latest compatible stable tag and pin the bumped tag's digest
     #[arg(long)]
     update: bool,
 
