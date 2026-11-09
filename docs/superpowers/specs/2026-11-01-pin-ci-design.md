@@ -238,10 +238,33 @@ right are small enough to validate against the oracle.
   login hint, exit 1 (fail-loud ruling 2026-11-07). `--update` works for
   all hosts (shared auth path). Design:
   `.superpowers/sdd/2026-11-07-pin-ci-m4a-multi-registry/design.md`.
-- **M4b — follow-ups (later, own plan).** Minimum release age guard
-  (needs Docker Hub API `tag_last_pushed`; owner-deferred since start),
-  `--update` for gitlab.com components/includes, self-hosted GitLab live
-  test coverage.
+- **M4b-1 — minimum release age guard (in progress, 2026-11-09).**
+  `--min-age-days <N>` (default 0 = off; only meaningful with
+  `--update`): a `--update` bump candidate must be at least N days old.
+  Timestamps come from the Docker Hub API
+  (`hub.docker.com/v2/repositories/{ns}/{repo}/tags` — `last_updated` /
+  `tag_last_pushed` per tag, `next` pagination, 180 req/h per IP —
+  probe-verified 2026-11-09); the guard applies to **docker.io refs only**
+  (the only host with push timestamps; other hosts: documented no-op,
+  per owner's small-steps ruling — overridable). No eligible candidate →
+  `skipped (release age: no candidate ≥ {N}d)`, exit 0. Ruling: default
+  OFF (M1-M4a contract: pin is default, update is opt-in; the old
+  pipeline's 14d is documented as the recommended value, not a default).
+  Oracle: same-day differential vs the old pipeline (config.js
+  `minimumReleaseAge: '14 days'`, `timestamp-required`) — the M2
+  documented divergence (ubuntu 26.04 vs 26.10) becomes a matching pick
+  when both see the same ages. Design:
+  `.superpowers/sdd/2026-11-09-pin-ci-m4b1-release-age/design.md`.
+- **M4b-2 — `--update` for gitlab.com components/includes (later, own
+  plan).** Bump `@<tag>` component versions and tag-valued include refs
+  to the same-major latest stable tag (GitLab tags list,
+  `order_by=version`), re-resolve to commit SHA; branch refs and
+  non-semver tags are not bump targets.
+- **Deferred (recorded 2026-11-09): self-hosted GitLab live test
+  coverage.** No self-hosted instance is available in this
+  environment; the wiremock suite covers the API contract and
+  `--gitlab-host` makes the host switch a one-liner. Revisit when a
+  real instance exists.
 
 ## Future (out of scope, noted 2026-11-05)
 
