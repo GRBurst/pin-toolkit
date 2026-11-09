@@ -364,6 +364,25 @@ reference is `unresolved (<host>: not trusted for credentials — bind it in ~/.
 gitlab.com. The HM-generated config sits in the world-readable `/nix/store`, so it holds env var
 *names* only, never secrets.
 
+**Which host gets `GITLAB_TOKEN` (D31, my call, from builder check).** `GITLAB_TOKEN` is sent only
+to the single *primary* GitLab host: `--gitlab-host`, else `CI_SERVER_HOST`, else `gitlab.com`.
+Every other host in `plugins.gitlab-ci.gitlab-hosts` resolves anonymously unless a global `[hosts]`
+entry binds a token env var to it. `gitlab-hosts` only decides *which* hosts are resolved; it never
+grants credentials. `[hosts]` shape (global file only; the builder may extend it, not loosen it):
+
+```toml
+[hosts."gitlab.example.com"]
+kind = "gitlab"
+token-env = "GITLAB_EXAMPLE_TOKEN"     # env var NAME, sent as PRIVATE-TOKEN
+[hosts."charts.example.com"]
+kind = "helm-repo"
+username-env = "CHARTS_USER"
+password-env = "CHARTS_PASSWORD"
+[hosts."registry.example.com"]
+kind = "oci"
+ca-file = "/etc/ssl/certs/corp-ca.pem"  # private CA, see §14
+```
+
 ## 8. Packaging and distribution
 
 ### 8.1 Flake (crane)
@@ -434,7 +453,7 @@ uses bundled roots only and ignores `SSL_CERT_FILE`.
 
 ## 9. Migration of this repo
 
-Order: **finish M4b-1 first**. Its T2 rewrites `resolve_image` and touches all 23 `PinOptions {…}`
+Order: **finish M4b-1 first**. Its T2 rewrites `resolve_image` and touches all 26 `PinOptions {…}`
 test literals, which is exactly the code the extraction moves. Recommendation for T2: add
 `impl Default for PinOptions` so the literals become `..Default::default()`, which shrinks the M5 churn.
 
@@ -528,6 +547,8 @@ Order: M4b-1 → M5a…f → M6 → F1–F3 → G1 → M4b-2 → M7 → M8a → 
 | D27 | crane, systems as in §8.1, `homeModules` alias, install-nix-action + cachix-action, SHA-pinned actions, release created once | my call | §8 |
 | D28 | Container on GHCR only, no Entrypoint, busybox + CA certs | my call | GitLab image requirements |
 | D29 | `PIN_CI_LIVE`/`PIN_CI_ORACLE` names kept. No crates.io publish. No `unpin`. Legacy mode reads no config | my call | scope control |
+| D30 | A version **range** (H1 Chart.yaml/requirements, H4 helmfile) on a line that already has a trailing comment → `skipped (existing comment; pinning would lose constraint <c>)`. The constraint is never dropped. `--update` reads a recorded constraint only from a comment that is entirely `# <constraint>` and parses as one; any other comment counts as "no recorded constraint" (→ the image policy of D21). Exact versions and C3/C4 keep today's rule: pin, no second comment | my call (builder check) | never lose author intent; never misread an unrelated comment |
+| D31 | `GITLAB_TOKEN` only to the primary host (`--gitlab-host` > `CI_SERVER_HOST` > gitlab.com); other `gitlab-hosts` anonymous unless bound in global `[hosts]` (§7.3) | my call (builder check) | least privilege; repo config cannot widen it |
 
 ## 13. Open — owner
 
@@ -538,7 +559,7 @@ proceed under that default until the owner answers.
 |---|---|---|---|
 | O1 | "Plugin disabled in Home Manager": **not run** (config) or **not installed** (separate build)? If not run: a soft default (a repo config may re-enable it) or a hard deny? | **Not run, soft default.** Reasons: one store path means Cachix always hits. CI (container, no HM) and local runs behave the same for a given repo config. Toggling is instant and `pin-toolkit helm` still works ad hoc. Plugins hold no credentials, so there is no security gain. "Not installed" stays available as a documented `package = ….override { plugins = [ … ]; }`, guarded by an assertion | M6 (HM module) |
 | O2 | values.yaml map-form images **without** a `digest:` key: write `tag: "1.2.3@sha256:…"` (Renovate style, matches your inline rule, but breaks charts that also use `.tag` in labels or `semverCompare`), or skip? | Fill an existing `digest:` key. Pin inline `image: repo:tag` as `repo:tag@sha256`. Map without a digest key → `skipped (no digest key; set plugins.helm.values.tag-digest = true)`, opt-in per repo. A later template scan may switch it on automatically | M8a |
-| O3 | Is the name `pin-toolkit` final? Which GitHub owner/org? What happens to `gitlab.com:GRBurst/pin-gitlab-jobs`? | Keep `pin-toolkit` (free on crates.io and in nixpkgs, and no GitHub repo of that exact name was found on 2026-11-09; the user/org name was not checked). New repo `github.com/<owner>/pin-toolkit` with full history pushed. The GitLab repo becomes a read-only mirror (useful later to publish a GitLab CI component) | M5f (before Cachix cache, GHCR path and HM option names are fixed) |
+| O3 | Is the name `pin-toolkit` final? Which GitHub owner/org? Cachix cache name? What happens to `gitlab.com:GRBurst/pin-gitlab-jobs`? (Creating the GitHub repo, the Cachix cache + `CACHIX_AUTH_TOKEN` secret and GHCR push rights is a **human prerequisite** for M6; M5f/M6 are planned with `<owner>`/`<cache>` placeholders until then.) | Keep `pin-toolkit` (free on crates.io and in nixpkgs, and no GitHub repo of that exact name was found on 2026-11-09; the user/org name was not checked). New repo `github.com/<owner>/pin-toolkit` with full history pushed. The GitLab repo becomes a read-only mirror (useful later to publish a GitLab CI component) | M5f (before Cachix cache, GHCR path and HM option names are fixed) |
 | O4 | License | `MIT OR Apache-2.0` (Rust ecosystem norm) | M5f |
 
 ## 14. Left to the builder
