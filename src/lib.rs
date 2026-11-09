@@ -32,8 +32,9 @@ pub struct PinOptions {
     pub json: bool,
     /// Max concurrent digest lookups per file.
     pub concurrency: usize,
-    /// Bump unpinned, versioned Docker Hub refs to the latest compatible
-    /// stable tag and pin the bumped tag's digest (status `updated`).
+    /// Bump unpinned, versioned image refs (any registry host) to the
+    /// latest compatible stable tag and pin the bumped tag's digest
+    /// (status `updated`).
     pub update: bool,
     /// With `update`, allow bumping to a higher major (same suffix and
     /// release length still required). Meaningful only when `update` is set.
@@ -45,8 +46,9 @@ pub struct PinOptions {
 
 /// Build the registry client from the environment: per-host credentials via
 /// [`Creds::load_from`] (`DOCKERHUB_USER`/`DOCKERHUB_TOKEN` for `docker.io`,
-/// `GITHUB_TOKEN` for `ghcr.io`, plus `~/.docker/config.json`); the default
-/// Docker Hub base URL is used when no registry is configured.
+/// `GITHUB_TOKEN` for `ghcr.io`, plus `~/.docker/config.json`); base URLs
+/// default to the Docker Hub base for `docker.io` and `https://{host}` for
+/// every other host (M4a Task 2).
 pub fn client_from_env() -> RegistryClient {
     let creds = Creds::load_from(std::env::var("HOME").ok().as_deref().map(Path::new));
     RegistryClient::new(creds, HashMap::new())
@@ -131,7 +133,8 @@ async fn resolve_target(
     }
 }
 
-/// Resolve an image target against the registry (M1/M2 behavior, unchanged).
+/// Resolve an image target against the registry: every registry host
+/// resolves (M4a Task 2 removed the M1 Docker-Hub-only skip).
 async fn resolve_image(
     client: &RegistryClient,
     opts: &PinOptions,
@@ -153,15 +156,6 @@ async fn resolve_image(
             };
         }
     };
-    if !r.is_docker_hub() {
-        result.status = "skipped".to_string();
-        result.reason = Some(format!("registry not enabled: {}", r.host_str()));
-        return Resolved {
-            result,
-            replacement: None,
-            comment: None,
-        };
-    }
     let digest = match client.digest(&r).await {
         Ok(d) => d,
         Err(e) => {

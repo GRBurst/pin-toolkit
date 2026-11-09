@@ -8,6 +8,7 @@ const D2: &str = "sha256:2222222222222222222222222222222222222222222222222222222
 const D3: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
 const D4: &str = "sha256:4444444444444444444444444444444444444444444444444444444444444444";
 const D5: &str = "sha256:5555555555555555555555555555555555555555555555555555555555555555";
+const D_GHCR: &str = "sha256:6666666666666666666666666666666666666666666666666666666666666666";
 const FIXTURE: &str = include_str!("fixtures/ci-e2e.yml");
 const UPDATE_FIXTURE: &str = include_str!("fixtures/ci-update.yml");
 
@@ -21,6 +22,13 @@ async fn mock_server() -> MockServer {
     Mock::given(method("HEAD"))
         .and(path("/v2/library/mystery/manifests/1.0"))
         .respond_with(ResponseTemplate::new(404))
+        .mount(&s)
+        .await;
+    // T2 flip: the fixture's ghcr.io line now resolves against the same
+    // mock (anonymous 200 digest) instead of being skipped.
+    Mock::given(method("HEAD"))
+        .and(path("/v2/org/img/manifests/v1"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D_GHCR))
         .mount(&s)
         .await;
     s
@@ -41,7 +49,11 @@ fn write_update_fixture(dir: &std::path::Path) -> PathBuf {
 fn mock_client(s: &MockServer) -> RegistryClient {
     RegistryClient::new(
         Default::default(),
-        std::collections::HashMap::from([("docker.io".to_string(), s.uri())]),
+        std::collections::HashMap::from([
+            ("docker.io".to_string(), s.uri()),
+            // T2: the fixtures' ghcr.io refs resolve, so map them to the mock.
+            ("ghcr.io".to_string(), s.uri()),
+        ]),
     )
 }
 
@@ -52,14 +64,17 @@ fn gitlab_dummy() -> pin_ci::gitlab::GitLabClient {
 }
 
 /// Mock server for the `ci-update.yml` fixture: alpine tag list with 3.24
-/// above 3.20, plus digests for alpine 3.20/3.24 and nginx:stable. The
-/// fixture's ghcr ref is skipped before any client call, so it needs no
-/// mock.
+/// above 3.20, plus digests for alpine 3.20/3.24, nginx:stable, and the
+/// fixture's ghcr ref (digest + current-tag-only tag list; T2: every host
+/// resolves).
 async fn update_mock_server() -> MockServer {
     let s = MockServer::start().await;
     tag_list_mock("library/alpine", &["3.16", "3.20", "3.24"])
         .mount(&s)
         .await;
+    // The fixture's ghcr tag `v1` is a parseable version, so --update fetches
+    // its tag list too; only the current tag -> no bump, plain pin.
+    tag_list_mock("org/img", &["v1"]).mount(&s).await;
     Mock::given(method("HEAD"))
         .and(path("/v2/library/alpine/manifests/3.20"))
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D1))
@@ -75,6 +90,11 @@ async fn update_mock_server() -> MockServer {
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D3))
         .mount(&s)
         .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/org/img/manifests/v1"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D_GHCR))
+        .mount(&s)
+        .await;
     s
 }
 
@@ -87,10 +107,15 @@ fn tag_list_mock(repo: &str, tags: &[&str]) -> Mock {
 
 #[tokio::test]
 async fn pins_and_reports_all_states() {
+    // T2 flip: the fixture's ghcr.io line is resolved against the mock
+    // (base_urls maps ghcr.io -> wiremock) and pinned, no longer skipped.
     let s = mock_server().await;
     let client = RegistryClient::new(
         Default::default(),
-        std::collections::HashMap::from([("docker.io".to_string(), s.uri())]),
+        std::collections::HashMap::from([
+            ("docker.io".to_string(), s.uri()),
+            ("ghcr.io".to_string(), s.uri()),
+        ]),
     );
     let dir = std::env::temp_dir().join(format!("pin-ci-e2e-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -108,7 +133,7 @@ async fn pins_and_reports_all_states() {
         .unwrap();
     let out = std::fs::read_to_string(&p).unwrap();
     let expected = format!(
-        "image: alpine:3.20@{D1}\nghcr-job:\n  image: ghcr.io/org/img:v1\nmissing-job:\n  image: mystery:1.0\ndup:\n  image: alpine:3.20@{D1}\n"
+        "image: alpine:3.20@{D1}\nghcr-job:\n  image: ghcr.io/org/img:v1@{D_GHCR}\nmissing-job:\n  image: mystery:1.0\ndup:\n  image: alpine:3.20@{D1}\n"
     );
     assert_eq!(out, expected);
     let by_status: std::collections::HashMap<&str, usize> = report
@@ -119,10 +144,21 @@ async fn pins_and_reports_all_states() {
             *m.entry(s).or_insert(0) += n;
             m
         });
-    assert_eq!(by_status.get("pinned"), Some(&2)); // two alpine lines, same digest
-    assert_eq!(by_status.get("skipped"), Some(&1)); // ghcr
+    assert_eq!(by_status.get("pinned"), Some(&3)); // two alpine lines + ghcr
+    assert_eq!(by_status.get("skipped"), None); // M1's ghcr skip is gone
     assert_eq!(by_status.get("unresolved"), Some(&1)); // mystery 404
     assert_eq!(exit_code(&report), 1);
+    // The flipped expectation: the ghcr.io line is pinned with the mock digest.
+    let ghcr = report
+        .results
+        .iter()
+        .find(|r| r.reference == "ghcr.io/org/img:v1")
+        .expect("ghcr ref present");
+    assert_eq!(ghcr.status, "pinned");
+    assert_eq!(
+        ghcr.new.as_deref(),
+        Some(format!("ghcr.io/org/img:v1@{D_GHCR}").as_str())
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -131,7 +167,10 @@ async fn second_run_is_noop() {
     let s = mock_server().await;
     let client = RegistryClient::new(
         Default::default(),
-        std::collections::HashMap::from([("docker.io".to_string(), s.uri())]),
+        std::collections::HashMap::from([
+            ("docker.io".to_string(), s.uri()),
+            ("ghcr.io".to_string(), s.uri()),
+        ]),
     );
     let dir = std::env::temp_dir().join(format!("pin-ci-e2e2-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -166,7 +205,10 @@ async fn dry_run_writes_nothing() {
     let s = mock_server().await;
     let client = RegistryClient::new(
         Default::default(),
-        std::collections::HashMap::from([("docker.io".to_string(), s.uri())]),
+        std::collections::HashMap::from([
+            ("docker.io".to_string(), s.uri()),
+            ("ghcr.io".to_string(), s.uri()),
+        ]),
     );
     let dir = std::env::temp_dir().join(format!("pin-ci-e2e3-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -183,7 +225,8 @@ async fn dry_run_writes_nothing() {
         .await
         .unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), FIXTURE);
-    assert_eq!(report.summary.pinned, 2);
+    // T2: the ghcr line resolves too, so three lines would be pinned.
+    assert_eq!(report.summary.pinned, 3);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -192,12 +235,14 @@ async fn templated_image_is_skipped_not_unresolved() {
     // Shell/YAML-templated image lines are syntactic candidates that fail
     // parse at resolve time: they must be reported as `skipped` (visible in
     // the report, file untouched) and must NOT make the run fail. No mock
-    // server needed — templated and non-hub refs never reach the client.
+    // server needed — templated refs never reach the client. (T2: the ghcr
+    // line that used to be skipped as "registry not enabled" now resolves,
+    // so it no longer belongs in this test.)
     let client = RegistryClient::new(Default::default(), std::collections::HashMap::new());
     let dir = std::env::temp_dir().join(format!("pin-ci-e2e4-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("ci-templated.yml");
-    let original = "job:\n  image: ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}\nghcr-job:\n  image: ghcr.io/org/img:v1\n";
+    let original = "job:\n  image: ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}\n";
     std::fs::write(&p, original).unwrap();
     let opts = PinOptions {
         dry_run: false,
@@ -210,7 +255,7 @@ async fn templated_image_is_skipped_not_unresolved() {
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
-    assert_eq!(report.summary.skipped, 2);
+    assert_eq!(report.summary.skipped, 1);
     assert_eq!(report.summary.unresolved, 0);
     assert_eq!(report.summary.pinned, 0);
     assert_eq!(exit_code(&report), 0);
@@ -220,7 +265,6 @@ async fn templated_image_is_skipped_not_unresolved() {
         .map(|r| r.reason.clone().unwrap_or_default())
         .collect();
     assert!(reasons.contains(&"unparseable reference".to_string()));
-    assert!(reasons.contains(&"registry not enabled: ghcr.io".to_string()));
     assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -256,6 +300,9 @@ async fn update_bumps_scalar_and_pins_digest() {
     tag_list_mock("library/alpine", &["3.16", "3.20", "3.24"])
         .mount(&s)
         .await;
+    // The fixture's ghcr tag `v1` is a parseable version, so --update fetches
+    // its tag list too; only the current tag -> no bump, plain pin.
+    tag_list_mock("org/img", &["v1"]).mount(&s).await;
     Mock::given(method("HEAD"))
         .and(path("/v2/library/alpine/manifests/3.20"))
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D1))
@@ -269,6 +316,11 @@ async fn update_bumps_scalar_and_pins_digest() {
     Mock::given(method("HEAD"))
         .and(path("/v2/library/nginx/manifests/stable"))
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D3))
+        .mount(&s)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/org/img/manifests/v1"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D_GHCR))
         .mount(&s)
         .await;
     let client = mock_client(&s);
@@ -287,14 +339,70 @@ async fn update_bumps_scalar_and_pins_digest() {
         .await
         .unwrap();
     let out = std::fs::read_to_string(&p).unwrap();
+    // T2: the fixture's ghcr ref resolves too; its tag list holds only the
+    // current tag, so it pins without bumping.
     let expected = format!(
-        "build:\n  image: alpine:3.24@{D2}\nsidecars:\n  services:\n    - alpine:3.24@{D2}\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1\n"
+        "build:\n  image: alpine:3.24@{D2}\nsidecars:\n  services:\n    - alpine:3.24@{D2}\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1@{D_GHCR}\n"
     );
     assert_eq!(out, expected);
     assert_eq!(report.summary.updated, 2);
-    assert_eq!(report.summary.pinned, 1);
-    assert_eq!(report.summary.skipped, 1);
+    assert_eq!(report.summary.pinned, 2);
+    assert_eq!(report.summary.skipped, 0);
     assert_eq!(report.summary.unresolved, 0);
+    assert_eq!(exit_code(&report), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// T2: `--update` works on a non-hub mock host — the tag list and digest
+/// lookups go through the same per-host base/auth path as Docker Hub.
+#[tokio::test]
+async fn update_works_on_nonhub() {
+    let s = MockServer::start().await;
+    tag_list_mock("org/img", &["1.0", "1.2", "2.0"])
+        .mount(&s)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/org/img/manifests/1.0"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D1))
+        .mount(&s)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/org/img/manifests/1.2"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D2))
+        .mount(&s)
+        .await;
+    let client = RegistryClient::new(
+        Default::default(),
+        std::collections::HashMap::from([("ghcr.io".to_string(), s.uri())]),
+    );
+    let dir = std::env::temp_dir().join(format!("pin-ci-e2e-update12-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("ci.yml");
+    std::fs::write(&p, "job:\n  image: ghcr.io/org/img:1.0\n").unwrap();
+    let opts = PinOptions {
+        dry_run: false,
+        json: false,
+        concurrency: 4,
+        update: true,
+        update_major: false,
+        gitlab_host: "gitlab.com".into(),
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
+        .await
+        .unwrap();
+    assert_eq!(report.summary.updated, 1);
+    assert_eq!(report.summary.unresolved, 0);
+    let row = &report.results[0];
+    assert_eq!(row.status, "updated");
+    // Same-major bump 1.0 -> 1.2 (2.0 is a higher major) + digest pin.
+    assert_eq!(
+        row.new.as_deref(),
+        Some(format!("ghcr.io/org/img:1.2@{D2}").as_str())
+    );
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        format!("job:\n  image: ghcr.io/org/img:1.2@{D2}\n")
+    );
     assert_eq!(exit_code(&report), 0);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -517,7 +625,6 @@ async fn update_json_report() {
         .collect();
     assert!(statuses.contains(&"updated"));
     assert!(statuses.contains(&"pinned"));
-    assert!(statuses.contains(&"skipped"));
     let want = format!("alpine:3.24@{D2}");
     let alpine_news: Vec<String> = results
         .iter()
@@ -552,9 +659,10 @@ async fn update_human_report_line() {
         out.lines().any(|l| l.contains(&want_line)),
         "human output:\n{out}"
     );
+    // T2: the fixture's ghcr ref pins instead of skipping.
     assert!(
         out.lines()
-            .any(|l| l.ends_with("pinned: 1, ok: 0, updated: 2, skipped: 1, unresolved: 0")),
+            .any(|l| l.ends_with("pinned: 2, ok: 0, updated: 2, skipped: 0, unresolved: 0")),
         "human output:\n{out}"
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -578,10 +686,10 @@ async fn update_dry_run_does_not_write() {
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
-    // The report shows what would change...
+    // The report shows what would change... (T2: ghcr pins, none skipped)
     assert_eq!(report.summary.updated, 2);
-    assert_eq!(report.summary.pinned, 1);
-    assert_eq!(report.summary.skipped, 1);
+    assert_eq!(report.summary.pinned, 2);
+    assert_eq!(report.summary.skipped, 0);
     // ...but the file bytes are untouched.
     assert_eq!(std::fs::read_to_string(&p).unwrap(), UPDATE_FIXTURE);
     std::fs::remove_dir_all(&dir).ok();
@@ -611,8 +719,9 @@ async fn update_idempotent_second_run() {
         .await
         .unwrap();
     // Pinned refs re-verify only: no second bump, no second write.
+    // T2: the ghcr line re-verifies as ok too.
     assert_eq!(report2.summary.updated, 0);
-    assert_eq!(report2.summary.ok, 3);
+    assert_eq!(report2.summary.ok, 4);
     assert_eq!(report2.summary.pinned, 0);
     assert!(
         report2
@@ -643,7 +752,7 @@ async fn update_exit_code() {
         gitlab_host: "gitlab.com".into(),
     };
 
-    // Mix of updated + pinned + skipped: nothing unresolved → exit 0.
+    // Mix of updated + pinned: nothing unresolved → exit 0.
     let s = update_mock_server().await;
     let client = mock_client(&s);
     let p = write_update_fixture(&dir);
@@ -651,7 +760,7 @@ async fn update_exit_code() {
         .await
         .unwrap();
     assert_eq!(report.summary.updated, 2);
-    assert_eq!(report.summary.skipped, 1);
+    assert_eq!(report.summary.skipped, 0); // T2: ghcr pins, nothing skips
     assert_eq!(report.summary.unresolved, 0);
     assert_eq!(exit_code(&report), 0);
 
@@ -664,6 +773,8 @@ async fn update_exit_code() {
         .respond_with(ResponseTemplate::new(500))
         .mount(&s2)
         .await;
+    // The ghcr ref still resolves on this server (no bump, plain pin).
+    tag_list_mock("org/img", &["v1"]).mount(&s2).await;
     Mock::given(method("HEAD"))
         .and(path("/v2/library/alpine/manifests/3.20"))
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D1))
@@ -674,6 +785,11 @@ async fn update_exit_code() {
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D3))
         .mount(&s2)
         .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/org/img/manifests/v1"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D_GHCR))
+        .mount(&s2)
+        .await;
     let client2 = mock_client(&s2);
     std::fs::write(&p, UPDATE_FIXTURE).unwrap();
     let report2 = pin_files(std::slice::from_ref(&p), &opts, &client2, &gitlab_dummy())
@@ -682,11 +798,11 @@ async fn update_exit_code() {
     assert_eq!(report2.summary.unresolved, 2);
     assert_eq!(exit_code(&report2), 1);
     // M1 partial-write semantics: the failing alpine refs stay as written;
-    // the resolvable nginx ref is still pinned and written.
+    // the resolvable nginx and ghcr refs are still pinned and written.
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
         format!(
-            "build:\n  image: alpine:3.20\nsidecars:\n  services:\n    - alpine:3.20\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1\n"
+            "build:\n  image: alpine:3.20\nsidecars:\n  services:\n    - alpine:3.20\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1@{D_GHCR}\n"
         )
     );
     std::fs::remove_dir_all(&dir).ok();
@@ -707,6 +823,11 @@ async fn update_off_keeps_m1_behavior() {
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D3))
         .mount(&s)
         .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/org/img/manifests/v1"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D_GHCR))
+        .mount(&s)
+        .await;
     let client = mock_client(&s);
     let dir = std::env::temp_dir().join(format!("pin-ci-e2e-update6-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -722,13 +843,14 @@ async fn update_off_keeps_m1_behavior() {
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
         .unwrap();
-    assert_eq!(report.summary.pinned, 3);
+    // T2: the ghcr line pins too (update off: no tag list, straight pin).
+    assert_eq!(report.summary.pinned, 4);
     assert_eq!(report.summary.updated, 0);
-    assert_eq!(report.summary.skipped, 1);
+    assert_eq!(report.summary.skipped, 0);
     assert_eq!(exit_code(&report), 0);
     let out = std::fs::read_to_string(&p).unwrap();
     let expected = format!(
-        "build:\n  image: alpine:3.20@{D1}\nsidecars:\n  services:\n    - alpine:3.20@{D1}\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1\n"
+        "build:\n  image: alpine:3.20@{D1}\nsidecars:\n  services:\n    - alpine:3.20@{D1}\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1@{D_GHCR}\n"
     );
     assert_eq!(out, expected);
     std::fs::remove_dir_all(&dir).ok();

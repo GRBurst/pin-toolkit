@@ -1,5 +1,7 @@
-//! Docker Hub v2 registry client: resolve an image reference to its immutable
-//! manifest digest.
+//! Registry v2 client: resolve an image reference to its immutable manifest
+//! digest on any registry host (M4a Task 2: the M1 Docker-Hub-only gate is
+//! gone; without a `base_urls` override the base is the Docker Hub default
+//! for `docker.io`, else `https://{host}`).
 //!
 //! Flow: anonymous `HEAD /v2/{repo}/manifests/{tag}`; on 401 parse
 //! `WWW-Authenticate`, fetch a bearer token with the ref's host's
@@ -196,8 +198,9 @@ fn entry_to_creds(entry: &serde_json::Value) -> Option<HostCreds> {
     None
 }
 
-/// Client for the registry HTTP v2 API (M1: Docker Hub; M4a: per-host
-/// credentials).
+/// Client for the registry HTTP v2 API (M4a: per-host credentials; every
+/// host resolves — `base_urls` override, Docker Hub default, else
+/// `https://{host}`).
 ///
 /// The token cache is a `tokio::sync::Mutex` so `digest` is concurrency-safe
 /// (M1's orchestrator calls it from concurrent tasks).
@@ -230,22 +233,24 @@ impl RegistryClient {
         }
     }
 
-    /// Registry base URL for `r`'s host: the `base_urls` map, falling back
-    /// to `DEFAULT_DOCKER_HUB_BASE` for `"docker.io"`.
-    fn base_for(&self, r: &ImageRef) -> Result<String, RegError> {
-        match self.base_urls.get(r.host_str()).cloned() {
-            Some(base) => Ok(base),
-            None if r.host_str() == "docker.io" => Ok(DEFAULT_DOCKER_HUB_BASE.to_string()),
-            None => Err(RegError::Unresolved(format!(
-                "no base URL for registry host {}",
-                r.host_str()
-            ))),
+    /// Registry base URL for `r`'s host: the `base_urls` override, then the
+    /// Docker Hub default for `"docker.io"`, then `https://{host}` (M4a
+    /// Task 2: every host resolves; the M1 "no base URL" error is gone).
+    fn base_for(&self, r: &ImageRef) -> String {
+        let host = r.host_str();
+        if let Some(base) = self.base_urls.get(host) {
+            return base.clone();
+        }
+        if host == "docker.io" {
+            DEFAULT_DOCKER_HUB_BASE.to_string()
+        } else {
+            format!("https://{host}")
         }
     }
 
     /// Resolve `r` to `"sha256:<64 hex>"`.
     pub async fn digest(&self, r: &ImageRef) -> Result<String, RegError> {
-        let base = self.base_for(r)?;
+        let base = self.base_for(r);
         let path = format!("/v2/{}/manifests/{}", r.api_repo(), r.effective_tag());
         let not_found =
             || RegError::Unresolved(format!("{}:{} not found", r.api_repo(), r.effective_tag()));
@@ -423,7 +428,7 @@ impl RegistryClient {
                 return Ok(tags.clone());
             }
         }
-        let base = self.base_for(r)?;
+        let base = self.base_for(r);
         let mut tags: Vec<String> = Vec::new();
         let mut url = format!("{base}/v2/{repo}/tags/list?n=1000");
         loop {
@@ -614,6 +619,36 @@ fn parse_link_next(header: Option<&reqwest::header::HeaderValue>) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_for_precedence() {
+        // A base_urls override wins for any host.
+        let c = RegistryClient::new(
+            Creds::none(),
+            HashMap::from([("ghcr.io".to_string(), "http://mock-ghcr".to_string())]),
+        );
+        let r = ImageRef::parse("ghcr.io/org/img:1.0").unwrap();
+        assert_eq!(c.base_for(&r), "http://mock-ghcr");
+        // No overrides: docker.io keeps its default; every other host is
+        // https://{host} (M4a Task 2).
+        let c = RegistryClient::new(Creds::none(), HashMap::new());
+        assert_eq!(
+            c.base_for(&ImageRef::parse("alpine:3.20").unwrap()),
+            DEFAULT_DOCKER_HUB_BASE
+        );
+        assert_eq!(
+            c.base_for(&ImageRef::parse("docker.io/alpine:3.20").unwrap()),
+            DEFAULT_DOCKER_HUB_BASE
+        );
+        assert_eq!(
+            c.base_for(&ImageRef::parse("ghcr.io/org/img:1.0").unwrap()),
+            "https://ghcr.io"
+        );
+        assert_eq!(
+            c.base_for(&ImageRef::parse("reg.example.com:5000/a/b:1").unwrap()),
+            "https://reg.example.com:5000"
+        );
+    }
 
     #[test]
     fn www_authenticate_parses_all_keys() {
