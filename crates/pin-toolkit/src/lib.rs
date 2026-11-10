@@ -4,6 +4,7 @@
 //! binary is a thin shell around [`main_with`].
 
 pub mod cli;
+pub mod config;
 pub mod known;
 
 use std::collections::BTreeMap;
