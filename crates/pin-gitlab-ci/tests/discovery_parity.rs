@@ -1,8 +1,10 @@
-//! M5c-y: discovery parity. The hand-rolled `discover()` is deleted at the
-//! end of M5c-y (spec §9), so its output over every fixture is recorded in
-//! `tests/parity/legacy-discover.txt` (written once, in Y1, by the old code,
-//! then frozen). Later tasks compare the `core::yaml` discovery against that
-//! record, modulo an exact exception table.
+//! M5c-y: discovery parity. The hand-rolled line scanner was deleted at the
+//! end of M5c-y (spec §9), so its output over every fixture is kept in
+//! `tests/parity/legacy-discover.txt` (written once, in Y1, by the old
+//! code, then frozen: never regenerate). The `core::yaml` discovery is
+//! compared against that record, modulo an exact exception table (R7, R8,
+//! R9; G1 adds `include: - component:` targets to `ADDED` or retires this
+//! test).
 //!
 //! Record format: line 1 is a header comment; then, per fixture (sorted),
 //! `## {name} bytes={len} hash={fake_hex(text, 16)}` followed by one
@@ -11,14 +13,12 @@ mod common;
 
 use common::*;
 use pin_core::text::LineIndex;
-use pin_gitlab_ci::discover::{PinTarget, discover, legacy_discover};
+use pin_gitlab_ci::discover::{PinTarget, discover};
 
 const RECORD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/parity/legacy-discover.txt"
 );
-const RECORD_HEADER: &str =
-    "# legacy discover() output, recorded in M5c-y Y1 before its deletion; never regenerate";
 
 fn kind(t: &PinTarget) -> &'static str {
     match t {
@@ -63,40 +63,6 @@ fn render(name: &str, text: &str, ts: &[PinTarget]) -> Vec<String> {
             )
         })
         .collect()
-}
-
-/// The record text built from the legacy `legacy_discover()`.
-fn legacy_record() -> String {
-    let mut out = format!("{RECORD_HEADER}\n");
-    for fx in fixtures() {
-        out.push_str(&format!(
-            "## {} bytes={} hash={}\n",
-            fx.name,
-            fx.text.len(),
-            fake_hex(&fx.text, 16)
-        ));
-        for line in render(&fx.name, &fx.text, &legacy_discover(&fx.text)) {
-            out.push_str(&line);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-/// Generator + guard: with `PIN_PARITY_RECORD=1` writes the record, otherwise
-/// asserts the file still equals the old code's output. Removed with the old
-/// code (Y11); the record file stays.
-#[test]
-fn legacy_record_matches_discover() {
-    let expected = legacy_record();
-    if std::env::var_os("PIN_PARITY_RECORD").is_some() {
-        std::fs::create_dir_all(std::path::Path::new(RECORD).parent().unwrap()).unwrap();
-        std::fs::write(RECORD, &expected).unwrap();
-        return;
-    }
-    let recorded = std::fs::read_to_string(RECORD)
-        .unwrap_or_else(|e| panic!("cannot read {RECORD}: {e} (PIN_PARITY_RECORD=1 writes it)"));
-    assert_eq!(recorded, expected);
 }
 
 /// Kinds compared by [`yaml_discovery_matches_legacy_except_documented`].
