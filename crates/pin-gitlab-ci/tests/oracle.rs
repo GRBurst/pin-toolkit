@@ -17,8 +17,9 @@ use std::process::Command;
 
 use pin_ci::{ImageRef, PinOptions, client_from_env, pin_files, versioning};
 
-/// Repo root at compile time; the old pipeline runs as-is from here.
-const REPO: &str = env!("CARGO_MANIFEST_DIR");
+/// Repo root at compile time (two levels above the crate); the old pipeline
+/// runs as-is from here.
+const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 const CI_YAML: &str = "\
 image: alpine:3.20
