@@ -307,7 +307,8 @@ Rules:
 - D38: the raw `RegistryClient`, `Creds`, `GitLabClient`, `GitLabHosts`, `Ctx::with_oci/with_gitlab` and
   `ResolverEnv::from_process` are `#[doc(hidden)] pub` only under the pin-core feature `test-support`,
   which only dev-dependencies enable; `scripts/gate.sh` checks it (`cargo check -p pin-gitlab-ci -p
-  pin-toolkit`; `cargo tree -e normal,build` must not show `test-support`).
+  pin-toolkit`; `cargo tree -e normal,build` must succeed and not show `test-support`; every cargo call
+  `--locked`).
 - Kind ids are constants (`pin_gitlab_ci::{IMAGE, SERVICE, COMPONENT, INCLUDE}`, review L10);
   `PinTarget::Image` carries its `kind` (`service` under `services:`, else `image`).
 

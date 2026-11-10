@@ -573,8 +573,11 @@ semantics).
   pin-core feature matrix, pin-toolkit `--no-default-features`), the
   pin-toolkit tests without plugins, the D38 checks (`cargo check -p
   pin-gitlab-ci -p pin-toolkit` and a `cargo tree` check that no normal
-  dependency enables pin-core's `test-support`) and
-  `RUSTDOCFLAGS=-D warnings cargo doc`. It uses the `cargo` on `PATH`;
+  dependency enables pin-core's `test-support`; `cargo tree` failing is a
+  failure too) and `RUSTDOCFLAGS=-D warnings cargo doc`. Every cargo call
+  is `--locked`. The tests must not leave `*.snap.new` files or change
+  anything under `crates/` (compared with the state before them, so the
+  gate also runs on uncommitted work). It uses the `cargo` on `PATH`;
   logs go to `.tmp/gate-*.log`.
 - `cargo test --workspace --all-features` — unit, mock-registry and
   end-to-end tests. Always runs without network, registry credentials, or
