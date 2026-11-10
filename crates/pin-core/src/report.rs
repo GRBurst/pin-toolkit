@@ -1,6 +1,6 @@
 //! Result records and report rendering (human + JSON).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
@@ -89,6 +89,12 @@ pub struct Report {
     pub plugins: BTreeMap<String, PluginReport>,
     #[serde(skip)]
     pub follow_ups: Vec<String>,
+    /// Plugins that had at least one routed file (review-2 L7): the
+    /// human per-plugin summary lines appear when more than one ran. An
+    /// entry in `plugins` holding only errors recorded outside the run
+    /// (routing conflicts, walk errors) is not in here. Never serialised.
+    #[serde(skip)]
+    pub ran: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -124,6 +130,7 @@ impl Report {
     /// Build a report: the total summary and one entry per plugin in `ran`
     /// (plugins with at least one routed file, an entry even without rows)
     /// or with a row or an error; per-plugin summaries partition the total.
+    /// [`Report::ran`] = `ran` plus the plugins of the rows.
     /// Follow-ups: the rows' `follow_up`, deduplicated, first seen first.
     pub fn assemble(
         results: Vec<Row>,
@@ -135,8 +142,10 @@ impl Report {
             .iter()
             .map(|p| (p.to_string(), PluginReport::default()))
             .collect();
+        let mut ran_set: BTreeSet<String> = ran.iter().map(|p| p.to_string()).collect();
         let mut follow_ups: Vec<String> = Vec::new();
         for r in &results {
+            ran_set.insert(r.plugin.to_string());
             summary.count(r.status);
             plugins
                 .entry(r.plugin.to_string())
@@ -158,6 +167,7 @@ impl Report {
             summary,
             plugins,
             follow_ups,
+            ran: ran_set,
         }
     }
 
@@ -176,9 +186,13 @@ impl Report {
         }
     }
 
-    /// One line per result, then the summary line:
-    /// `{file}:{line}  {status}{(reason)}  {old} -> {new or "-"}  # {reference}`
+    /// Human report (T-D21, spec §6.4): one line per result, the total
+    /// summary line, then one `{plugin}: …` summary line per plugin when
+    /// more than one plugin ran ([`Report::ran`]), then the follow-ups:
+    /// `{file}:{line}  {plugin}:{kind}  {status}{ (reason)}  {old} -> {new or "-"}  # {reference}`
     /// `pinned: {n}, ok: {n}, updated: {n}, skipped: {n}, unresolved: {n}`
+    /// `{plugin}: pinned: {n}, …`
+    /// `follow-up: {text}`
     pub fn render_human(&self) -> String {
         let mut out = String::new();
         for r in &self.results {
@@ -188,18 +202,23 @@ impl Report {
             };
             let new = r.new.as_deref().unwrap_or("-");
             out.push_str(&format!(
-                "{}:{}  {}  {} -> {}  # {}\n",
-                r.file, r.line, status, r.old, new, r.reference
+                "{}:{}  {}:{}  {}  {} -> {}  # {}\n",
+                r.file, r.line, r.plugin, r.kind, status, r.old, new, r.reference
             ));
         }
-        out.push_str(&format!(
-            "pinned: {}, ok: {}, updated: {}, skipped: {}, unresolved: {}\n",
-            self.summary.pinned,
-            self.summary.ok,
-            self.summary.updated,
-            self.summary.skipped,
-            self.summary.unresolved
-        ));
+        out.push_str(&summary_line(&self.summary));
+        if self.ran.len() > 1 {
+            for id in &self.ran {
+                let s = self.plugins.get(id).map(|p| &p.summary);
+                out.push_str(&format!(
+                    "{id}: {}",
+                    summary_line(s.unwrap_or(&Summary::default()))
+                ));
+            }
+        }
+        for f in &self.follow_ups {
+            out.push_str(&format!("follow-up: {f}\n"));
+        }
         out
     }
 
@@ -207,6 +226,14 @@ impl Report {
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("Report serializes to JSON")
     }
+}
+
+/// `pinned: {n}, ok: {n}, updated: {n}, skipped: {n}, unresolved: {n}\n`
+fn summary_line(s: &Summary) -> String {
+    format!(
+        "pinned: {}, ok: {}, updated: {}, skipped: {}, unresolved: {}\n",
+        s.pinned, s.ok, s.updated, s.skipped, s.unresolved
+    )
 }
 
 #[cfg(test)]
@@ -253,9 +280,9 @@ mod tests {
                 follow_up: None,
             },
         ]);
-        let expected = "ci/.gitlab-ci.yml:2  pinned  alpine:3.20 -> alpine:3.20@sha256:abc  # alpine:3.20\n\
-                    ci/.gitlab-ci.yml:4  updated  alpine:3.20 -> alpine:3.24@sha256:def  # alpine:3.20\n\
-                    ci/.gitlab-ci.yml:5  skipped (registry not enabled: ghcr.io)  ghcr.io/o/i:v1 -> -  # ghcr.io/o/i:v1\n\
+        let expected = "ci/.gitlab-ci.yml:2  gitlab-ci:image  pinned  alpine:3.20 -> alpine:3.20@sha256:abc  # alpine:3.20\n\
+                    ci/.gitlab-ci.yml:4  gitlab-ci:image  updated  alpine:3.20 -> alpine:3.24@sha256:def  # alpine:3.20\n\
+                    ci/.gitlab-ci.yml:5  gitlab-ci:image  skipped (registry not enabled: ghcr.io)  ghcr.io/o/i:v1 -> -  # ghcr.io/o/i:v1\n\
                     pinned: 1, ok: 0, updated: 1, skipped: 1, unresolved: 0\n";
         assert_eq!(r.render_human(), expected);
     }
@@ -411,6 +438,56 @@ mod tests {
         // `new` derives the plugin entries from the rows.
         let n = Report::new(vec![row_of("a", Status::Ok, None)]);
         assert_eq!(n.plugins.keys().collect::<Vec<_>>(), ["a"]);
+    }
+
+    /// T-D21 (§6.4, PR-L1): rows, the total line, one line per plugin when
+    /// more than one plugin ran, then the follow-ups. "Ran" = had a routed
+    /// file (review-2 L7): an entry holding only routing/walk errors does
+    /// not count.
+    #[test]
+    fn human_render_multi_plugin() {
+        let rows = vec![
+            row_of("a", Status::Pinned, Some("x")),
+            row_of("b", Status::Skipped, None),
+            row_of("a", Status::Ok, Some("x")),
+        ];
+        let r = Report::assemble(rows.clone(), &["a", "b"], vec![]);
+        assert_eq!(
+            r.render_human(),
+            "f:1  a:k  pinned  r -> -  # r\n\
+             f:1  b:k  skipped  r -> -  # r\n\
+             f:1  a:k  ok  r -> -  # r\n\
+             pinned: 1, ok: 1, updated: 0, skipped: 1, unresolved: 0\n\
+             a: pinned: 1, ok: 1, updated: 0, skipped: 0, unresolved: 0\n\
+             b: pinned: 0, ok: 0, updated: 0, skipped: 1, unresolved: 0\n\
+             follow-up: x\n"
+        );
+        // A plugin that ran over files without findings still counts.
+        let quiet = Report::assemble(vec![row_of("a", Status::Ok, None)], &["a", "b"], vec![]);
+        assert!(
+            quiet
+                .render_human()
+                .ends_with("b: pinned: 0, ok: 0, updated: 0, skipped: 0, unresolved: 0\n"),
+            "{}",
+            quiet.render_human()
+        );
+        // Single plugin: rows and the total line only.
+        let one = Report::assemble(vec![row_of("a", Status::Ok, None)], &["a"], vec![]);
+        assert_eq!(
+            one.render_human(),
+            "f:1  a:k  ok  r -> -  # r\n\
+             pinned: 0, ok: 1, updated: 0, skipped: 0, unresolved: 0\n"
+        );
+        // An entry with only errors recorded after the run (conflicts, walk
+        // errors) is not a plugin that ran.
+        let mut conflict = one.clone();
+        conflict
+            .plugins
+            .entry("b".into())
+            .or_default()
+            .errors
+            .push(entry("x"));
+        assert_eq!(conflict.render_human(), one.render_human());
     }
 
     #[test]

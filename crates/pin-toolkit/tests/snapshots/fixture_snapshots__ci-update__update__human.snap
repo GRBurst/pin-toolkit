@@ -2,8 +2,8 @@
 source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
-ci-update.yml:2  updated  alpine:3.20 -> alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba  # alpine:3.20
-ci-update.yml:5  updated  alpine:3.20 -> alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba  # alpine:3.20
-ci-update.yml:7  pinned  nginx:stable -> nginx:stable@sha256:c319109e08e2468156853f93d79fa8b280cf82067032f2fbda395c8db8753b94  # nginx:stable
-ci-update.yml:9  pinned  ghcr.io/org/img:v1 -> ghcr.io/org/img:v1@sha256:2a108285b4dd2ebf122192bc49df9768fb7083d68456a58109f098a3e9cc6be8  # ghcr.io/org/img:v1
+ci-update.yml:2  gitlab-ci:image  updated  alpine:3.20 -> alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba  # alpine:3.20
+ci-update.yml:5  gitlab-ci:image  updated  alpine:3.20 -> alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba  # alpine:3.20
+ci-update.yml:7  gitlab-ci:image  pinned  nginx:stable -> nginx:stable@sha256:c319109e08e2468156853f93d79fa8b280cf82067032f2fbda395c8db8753b94  # nginx:stable
+ci-update.yml:9  gitlab-ci:image  pinned  ghcr.io/org/img:v1 -> ghcr.io/org/img:v1@sha256:2a108285b4dd2ebf122192bc49df9768fb7083d68456a58109f098a3e9cc6be8  # ghcr.io/org/img:v1
 pinned: 2, ok: 0, updated: 2, skipped: 0, unresolved: 0

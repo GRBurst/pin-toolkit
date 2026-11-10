@@ -31,7 +31,7 @@ async fn pins_a_repo_end_to_end() {
     assert_eq!(
         out.stdout,
         format!(
-            ".gitlab-ci.yml:1  pinned  alpine:3.20 -> {pinned}  # alpine:3.20\n\
+            ".gitlab-ci.yml:1  gitlab-ci:image  pinned  alpine:3.20 -> {pinned}  # alpine:3.20\n\
              pinned: 1, ok: 0, updated: 0, skipped: 0, unresolved: 0\n"
         )
     );

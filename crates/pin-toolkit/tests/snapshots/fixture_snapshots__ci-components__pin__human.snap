@@ -2,11 +2,11 @@
 source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
-ci-components.yml:1  pinned  gitlab.com/g/p/name@1.0.0 -> gitlab.com/g/p/name@6daf17a74fa888c76d61a72274f7013ca6f4cdd0  # gitlab.com/g/p/name@1.0.0
-ci-components.yml:4  pinned  main -> 5b0d6dd77c40c7fdb58e102ab44cb15acd1af5b5  # main
-ci-components.yml:6  pinned  v1.2.3 -> ba85606ebd469ef2141146e48641c2ca4052d13b  # v1.2.3
-ci-components.yml:8  unresolved (g/missing:main not found (no tag or branch))  main -> -  # main
-ci-components.yml:10  skipped (templated reference)  $CI_COMMIT_REF_NAME -> -  # $CI_COMMIT_REF_NAME
-ci-components.yml:12  ok  e3262fdd0914fa823210cdb79a8c421e2cef79d8 -> -  # e3262fdd0914fa823210cdb79a8c421e2cef79d8
-ci-components.yml:14  pinned  v2.0.0 -> b38625b856e6250db7e23845951dc45ac99a8155  # v2.0.0
+ci-components.yml:1  gitlab-ci:component  pinned  gitlab.com/g/p/name@1.0.0 -> gitlab.com/g/p/name@6daf17a74fa888c76d61a72274f7013ca6f4cdd0  # gitlab.com/g/p/name@1.0.0
+ci-components.yml:4  gitlab-ci:include  pinned  main -> 5b0d6dd77c40c7fdb58e102ab44cb15acd1af5b5  # main
+ci-components.yml:6  gitlab-ci:include  pinned  v1.2.3 -> ba85606ebd469ef2141146e48641c2ca4052d13b  # v1.2.3
+ci-components.yml:8  gitlab-ci:include  unresolved (g/missing:main not found (no tag or branch))  main -> -  # main
+ci-components.yml:10  gitlab-ci:include  skipped (templated reference)  $CI_COMMIT_REF_NAME -> -  # $CI_COMMIT_REF_NAME
+ci-components.yml:12  gitlab-ci:include  ok  e3262fdd0914fa823210cdb79a8c421e2cef79d8 -> -  # e3262fdd0914fa823210cdb79a8c421e2cef79d8
+ci-components.yml:14  gitlab-ci:include  pinned  v2.0.0 -> b38625b856e6250db7e23845951dc45ac99a8155  # v2.0.0
 pinned: 4, ok: 1, updated: 0, skipped: 1, unresolved: 1

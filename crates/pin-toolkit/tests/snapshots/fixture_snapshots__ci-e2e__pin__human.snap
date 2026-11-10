@@ -2,8 +2,8 @@
 source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
-ci-e2e.yml:1  pinned  alpine:3.20 -> alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313  # alpine:3.20
-ci-e2e.yml:3  pinned  ghcr.io/org/img:v1 -> ghcr.io/org/img:v1@sha256:2a108285b4dd2ebf122192bc49df9768fb7083d68456a58109f098a3e9cc6be8  # ghcr.io/org/img:v1
-ci-e2e.yml:5  unresolved (library/mystery:1.0 not found)  mystery:1.0 -> -  # mystery:1.0
-ci-e2e.yml:7  pinned  alpine:3.20 -> alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313  # alpine:3.20
+ci-e2e.yml:1  gitlab-ci:image  pinned  alpine:3.20 -> alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313  # alpine:3.20
+ci-e2e.yml:3  gitlab-ci:image  pinned  ghcr.io/org/img:v1 -> ghcr.io/org/img:v1@sha256:2a108285b4dd2ebf122192bc49df9768fb7083d68456a58109f098a3e9cc6be8  # ghcr.io/org/img:v1
+ci-e2e.yml:5  gitlab-ci:image  unresolved (library/mystery:1.0 not found)  mystery:1.0 -> -  # mystery:1.0
+ci-e2e.yml:7  gitlab-ci:image  pinned  alpine:3.20 -> alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313  # alpine:3.20
 pinned: 3, ok: 0, updated: 0, skipped: 0, unresolved: 1

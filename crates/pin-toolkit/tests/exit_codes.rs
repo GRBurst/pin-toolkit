@@ -128,7 +128,8 @@ async fn exit_code_table() {
     let (_, out) = row(&f, "4", &missing, &[], &[]).await;
     code("4", &out, 1);
     assert!(
-        out.stdout.starts_with(".gitlab-ci.yml:1  unresolved ("),
+        out.stdout
+            .starts_with(".gitlab-ci.yml:1  gitlab-ci:image  unresolved ("),
         "row 4: {}",
         out.stdout
     );
@@ -229,7 +230,7 @@ async fn exit_code_table() {
     code("14", &out, 0);
     assert_eq!(
         out.stdout,
-        ".gitlab-ci.yml:1  skipped (unparseable reference)  $CI_REGISTRY_IMAGE:1 -> -  # $CI_REGISTRY_IMAGE:1\n\
+        ".gitlab-ci.yml:1  gitlab-ci:image  skipped (unparseable reference)  $CI_REGISTRY_IMAGE:1 -> -  # $CI_REGISTRY_IMAGE:1\n\
          pinned: 0, ok: 0, updated: 0, skipped: 1, unresolved: 0\n",
         "row 14"
     );

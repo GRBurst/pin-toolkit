@@ -309,7 +309,7 @@ async fn file_error_keeps_the_rows_of_earlier_files() {
     let stdout = out.stdout.expect("rows of the good file");
     assert!(
         stdout.starts_with(&format!(
-            "{}:2  skipped (unparseable reference)",
+            "{}:2  gitlab-ci:image  skipped (unparseable reference)",
             good.display()
         )),
         "{stdout}"
@@ -340,7 +340,11 @@ fn outcome_prints_partial_rows_before_the_file_error() {
     let ok = outcome(Ok(Report::new(vec![row()])), false);
     assert_eq!(ok.code, 0);
     assert!(ok.stderr.is_none());
-    assert!(ok.stdout.unwrap().starts_with("a.yml:2  skipped (r)"));
+    assert!(
+        ok.stdout
+            .unwrap()
+            .starts_with("a.yml:2  gitlab-ci:image  skipped (r)")
+    );
 
     let err = |rows: Vec<Row>| PinFilesError {
         partial: Report::new(rows),
@@ -352,7 +356,11 @@ fn outcome_prints_partial_rows_before_the_file_error() {
         out.stderr.as_deref(),
         Some("pin-ci: b.yml:1: invalid YAML: boom")
     );
-    assert!(out.stdout.unwrap().starts_with("a.yml:2  skipped (r)"));
+    assert!(
+        out.stdout
+            .unwrap()
+            .starts_with("a.yml:2  gitlab-ci:image  skipped (r)")
+    );
 
     let out = outcome(Err(err(vec![row()])), true);
     let json: serde_json::Value = serde_json::from_str(&out.stdout.unwrap()).unwrap();

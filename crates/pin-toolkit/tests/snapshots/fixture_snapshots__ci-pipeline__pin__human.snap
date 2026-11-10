@@ -2,14 +2,14 @@
 source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
-ci-pipeline.yml:23  pinned  docker:24 -> docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632  # docker:24
-ci-pipeline.yml:25  pinned  docker:dind -> docker:dind@sha256:09598440d4ea63ce9a92aa4c9ad934ac1def0c8328bb78d7c2e22213f94bcd4d  # docker:dind
-ci-pipeline.yml:39  pinned  php:8.2-cli -> php:8.2-cli@sha256:bc7d158ce52acfbaec53ea3276374f6fdb7129f33ae121252a48543e6f767195  # php:8.2-cli
-ci-pipeline.yml:47  pinned  php:8.2-cli -> php:8.2-cli@sha256:bc7d158ce52acfbaec53ea3276374f6fdb7129f33ae121252a48543e6f767195  # php:8.2-cli
-ci-pipeline.yml:49  pinned  mysql:8.0 -> mysql:8.0@sha256:613a049308bbe05e11b12e1809655f0c260fb7cc11c4335fef0238660f5af825  # mysql:8.0
-ci-pipeline.yml:54  pinned  redis:7 -> redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e  # redis:7
-ci-pipeline.yml:69  pinned  alpine -> alpine@sha256:ad64e3823df30f61db46f16ddc2c99dd4ddc3fc343ecad26304007c4bfb9d0f9  # alpine
-ci-pipeline.yml:77  skipped (unparseable reference)  ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA} -> -  # ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}
-ci-pipeline.yml:79  pinned  docker:dind -> docker:dind@sha256:09598440d4ea63ce9a92aa4c9ad934ac1def0c8328bb78d7c2e22213f94bcd4d  # docker:dind
-ci-pipeline.yml:90  pinned  ghcr.io/docker/buildx:v0.14.0 -> ghcr.io/docker/buildx:v0.14.0@sha256:133be97dfea713edb2f839b9ab65366526778c68bfcab0484c2761647ad5daad  # ghcr.io/docker/buildx:v0.14.0
+ci-pipeline.yml:23  gitlab-ci:image  pinned  docker:24 -> docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632  # docker:24
+ci-pipeline.yml:25  gitlab-ci:image  pinned  docker:dind -> docker:dind@sha256:09598440d4ea63ce9a92aa4c9ad934ac1def0c8328bb78d7c2e22213f94bcd4d  # docker:dind
+ci-pipeline.yml:39  gitlab-ci:image  pinned  php:8.2-cli -> php:8.2-cli@sha256:bc7d158ce52acfbaec53ea3276374f6fdb7129f33ae121252a48543e6f767195  # php:8.2-cli
+ci-pipeline.yml:47  gitlab-ci:image  pinned  php:8.2-cli -> php:8.2-cli@sha256:bc7d158ce52acfbaec53ea3276374f6fdb7129f33ae121252a48543e6f767195  # php:8.2-cli
+ci-pipeline.yml:49  gitlab-ci:image  pinned  mysql:8.0 -> mysql:8.0@sha256:613a049308bbe05e11b12e1809655f0c260fb7cc11c4335fef0238660f5af825  # mysql:8.0
+ci-pipeline.yml:54  gitlab-ci:image  pinned  redis:7 -> redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e  # redis:7
+ci-pipeline.yml:69  gitlab-ci:image  pinned  alpine -> alpine@sha256:ad64e3823df30f61db46f16ddc2c99dd4ddc3fc343ecad26304007c4bfb9d0f9  # alpine
+ci-pipeline.yml:77  gitlab-ci:image  skipped (unparseable reference)  ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA} -> -  # ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}
+ci-pipeline.yml:79  gitlab-ci:image  pinned  docker:dind -> docker:dind@sha256:09598440d4ea63ce9a92aa4c9ad934ac1def0c8328bb78d7c2e22213f94bcd4d  # docker:dind
+ci-pipeline.yml:90  gitlab-ci:image  pinned  ghcr.io/docker/buildx:v0.14.0 -> ghcr.io/docker/buildx:v0.14.0@sha256:133be97dfea713edb2f839b9ab65366526778c68bfcab0484c2761647ad5daad  # ghcr.io/docker/buildx:v0.14.0
 pinned: 9, ok: 0, updated: 0, skipped: 1, unresolved: 0

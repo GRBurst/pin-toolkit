@@ -2,6 +2,6 @@
 source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
-ci-r1-flow-include.yml:1  pinned  main -> 01c05e4d3720f3a64ebf3f2f3b52e5f1289e4767  # main
-ci-r1-flow-include.yml:1  pinned  dev -> d7cf18759d8f2c9a2f418dcf9df047638eb7fbdc  # dev
+ci-r1-flow-include.yml:1  gitlab-ci:include  pinned  main -> 01c05e4d3720f3a64ebf3f2f3b52e5f1289e4767  # main
+ci-r1-flow-include.yml:1  gitlab-ci:include  pinned  dev -> d7cf18759d8f2c9a2f418dcf9df047638eb7fbdc  # dev
 pinned: 2, ok: 0, updated: 0, skipped: 0, unresolved: 0
