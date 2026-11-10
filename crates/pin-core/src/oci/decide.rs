@@ -7,7 +7,7 @@ use crate::oci::registry::RegError;
 use crate::oci::{ImageRef, splice_update, splice_value};
 use crate::plugin::Finding;
 use crate::report::Status;
-use crate::run::Ctx;
+use crate::run::{AgePolicy, Ctx};
 use crate::ver::age::is_old_enough;
 use crate::ver::docker as versioning;
 
@@ -54,11 +54,27 @@ pub async fn decide_image(ctx: &Ctx, r: &ImageRef) -> Result<ImageDecision, Stri
             let allow_major = ctx.update.allow_major;
             let candidate = versioning::pick_latest_stable(tag, &tags, allow_major);
             // M4b-1 release-age guard (R3-R6): active iff `min_age_days > 0`
-            // AND the ref is docker.io — every other host stays pure M2.
+            // AND (the ref is docker.io OR `release_age.unknown = block`,
+            // §6.8) — otherwise every other host stays pure M2.
             // Double-pick: the unfiltered M2 candidate vs the candidate
             // picked from the tags old enough; a tag missing from the Hub
             // timestamp map is NOT old enough (timestamp-required parity).
-            let new_tag = if ctx.update.min_age_days > 0 && r.is_docker_hub() {
+            let guard = ctx.update.min_age_days > 0
+                && (r.is_docker_hub() || ctx.update.unknown_age == AgePolicy::Block);
+            let new_tag = if guard && !r.is_docker_hub() {
+                // No timestamps outside docker.io (no request): the age of
+                // an update candidate is unknown, so `block` skips it; no
+                // candidate → the M2 no-update path (pin).
+                match candidate {
+                    Some(c) if c != tag => {
+                        return Ok(ImageDecision::Skip(format!(
+                            "release age unknown ({}; release_age.unknown = block)",
+                            r.host_str()
+                        )));
+                    }
+                    _ => None,
+                }
+            } else if guard {
                 let stamps = ctx.oci_tag_times(r).await.map_err(|e| {
                     // tag_timestamps already prefixes its own errors with
                     // "hub api:"; the bare network message gets the prefix

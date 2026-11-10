@@ -9,7 +9,7 @@ use pin_core::oci::RegistryClient;
 use pin_core::oci::registry::Creds;
 use pin_core::plugin::KindSet;
 use pin_core::report::Report;
-use pin_core::run::{Ctx, ResolverEnv, RunOptions, UpdatePolicy, now_unix, pin_file};
+use pin_core::run::{AgePolicy, Ctx, ResolverEnv, RunOptions, UpdatePolicy, now_unix, pin_file};
 
 use crate::{GitlabCi, KINDS};
 
@@ -108,6 +108,7 @@ pub async fn pin_files(
         enabled: opts.update,
         allow_major: opts.update_major,
         min_age_days: u32::try_from(opts.min_age_days).unwrap_or(u32::MAX),
+        unknown_age: AgePolicy::Allow,
     };
     let ctx = Ctx::new(
         update,

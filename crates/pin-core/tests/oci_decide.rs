@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use pin_core::edit::Splice;
 use pin_core::oci::{ImageDecision, ImageRef, RegistryClient, decide_image, pin_inline_image};
 use pin_core::report::Status;
-use pin_core::run::{Ctx, ResolverEnv, UpdatePolicy};
+use pin_core::run::{AgePolicy, Ctx, ResolverEnv, UpdatePolicy};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -162,4 +162,64 @@ async fn inline_construction_error_is_unresolved() {
     assert_eq!(f.status, Status::Unresolved);
     assert_eq!(f.reason.as_deref(), Some("ca: x"));
     assert!(f.edits.is_empty());
+}
+
+/// ghcr.io `org/img` (tags v1, v2: v1 → D1, v2 → D2), the update policy
+/// `enabled, allow_major` (v1 → v2 is a major bump), `min_age_days = 7`,
+/// `unknown_age`, and a Hub API fake that must
+/// never be asked (`.expect(0)`: tag times come only from the Hub API).
+async fn ghcr_update(unknown_age: AgePolicy) -> (Result<ImageDecision, String>, MockServer) {
+    let s = MockServer::start().await;
+    head("org/img:v1", 200, Some(D1)).mount(&s).await;
+    head("org/img:v2", 200, Some(D2)).mount(&s).await;
+    tag_list("org/img", &["v1", "v2"]).mount(&s).await;
+    let hub = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&hub)
+        .await;
+    let client = RegistryClient::new(
+        Default::default(),
+        HashMap::from([("ghcr.io".to_string(), s.uri())]),
+    )
+    .with_hub_base(&hub.uri());
+    let update = UpdatePolicy {
+        enabled: true,
+        allow_major: true,
+        min_age_days: 7,
+        unknown_age,
+    };
+    let ctx = Ctx::new(update, 0, ResolverEnv::default()).with_oci(Ok(client));
+    let d = decide_image(&ctx, &parse("ghcr.io/org/img:v1")).await;
+    (d, hub)
+}
+
+/// §6.8: `release_age.unknown = block` — a non-docker.io host has no
+/// timestamps, so an update is skipped with its own reason; no Hub or
+/// tag-time request is made.
+#[tokio::test]
+async fn unknown_age_block_skips_non_hub_updates() {
+    let (d, hub) = ghcr_update(AgePolicy::Block).await;
+    assert_eq!(
+        d,
+        Ok(ImageDecision::Skip(
+            "release age unknown (ghcr.io; release_age.unknown = block)".to_string()
+        ))
+    );
+    hub.verify().await;
+}
+
+/// `allow` (the default) keeps today's no-op guard for non-docker.io hosts.
+#[tokio::test]
+async fn unknown_age_allow_keeps_todays_update() {
+    let (d, hub) = ghcr_update(AgePolicy::Allow).await;
+    assert_eq!(
+        d,
+        Ok(ImageDecision::Update {
+            tag: "v2".to_string(),
+            digest: D2.to_string()
+        })
+    );
+    hub.verify().await;
 }

@@ -23,6 +23,17 @@ use crate::oci::registry::{Creds, RegError, RegistryClient};
 use crate::plugin::{DynPlugin, Finding, KindSet};
 use crate::report::{Row, Status};
 
+/// `release_age.unknown` (spec §6.8): what the release-age guard does when
+/// a registry has no timestamps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AgePolicy {
+    /// Unknown age passes the guard (today's no-op for non-docker.io).
+    #[default]
+    Allow,
+    /// Unknown age blocks an update (skipped, `release age unknown (…)`).
+    Block,
+}
+
 /// `--update` policy for one run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UpdatePolicy {
@@ -30,6 +41,8 @@ pub struct UpdatePolicy {
     pub allow_major: bool,
     /// Release-age guard in days (0 = off).
     pub min_age_days: u32,
+    /// The guard for hosts without timestamps (every host but docker.io).
+    pub unknown_age: AgePolicy,
 }
 
 /// Prints as `<redacted>` (T-D29: tokens never reach `Debug` output).
