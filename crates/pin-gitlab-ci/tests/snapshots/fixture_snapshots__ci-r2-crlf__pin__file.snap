@@ -1,10 +1,10 @@
 ---
-source: tests/fixture_snapshots.rs
+source: crates/pin-gitlab-ci/tests/fixture_snapshots.rs
 expression: visible(&edited)
 ---
-component: gitlab.com/g/p/name@6daf17a74fa888c76d61a72274f7013ca6f4cdd0␍  # 1.0.0
+component: gitlab.com/g/p/name@6daf17a74fa888c76d61a72274f7013ca6f4cdd0  # 1.0.0␍
 image: alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313␍
-include: { project: g/p, ref: 5b0d6dd77c40c7fdb58e102ab44cb15acd1af5b5 }␍
+include: { project: g/p, ref: 5b0d6dd77c40c7fdb58e102ab44cb15acd1af5b5 }  # main␍
 include:␍
   - project: g/p␍
     ref: dev␍

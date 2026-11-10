@@ -3,7 +3,9 @@
 //! - byte-exact: an edit changes only reference bytes (plus one inserted
 //!   trailing comment per line);
 //! - idempotent: a second run edits nothing;
-//! - one comment per line (R1, C11): that inserted comment has one `#`.
+//! - one comment per line (R1, C11): that inserted comment has one `#`;
+//! - CRLF kept, comments before `\r\n` and present on every pinned
+//!   component/include line (R2, C12).
 mod common;
 
 use common::*;
@@ -94,6 +96,45 @@ async fn one_comment_per_line_over_all_fixtures() {
             std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
         }
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Run every fixture/mode once and apply `check` to (original, edited,
+/// report, insertions); collect failures.
+async fn over_all_fixtures(
+    tag: &str,
+    check: impl Fn(&str, &str, &Report, &[Option<Insertion>]) -> Result<(), String>,
+) -> Vec<String> {
+    let fakes = start_fakes().await;
+    let mut failures = Vec::new();
+    for fx in fixtures() {
+        for m in modes(&fx.name) {
+            let p = scratch_copy(&fx, m, tag);
+            let r1 = pin_once(&fakes, &p, m).await;
+            let e1 = read(&p);
+            let res = check_byte_exact(&fx.text, &e1, &r1)
+                .and_then(|ins| check(&fx.text, &e1, &r1, &ins));
+            if let Err(msg) = res {
+                failures.push(format!("{}/{}: {msg}", fx.name, m.tag()));
+            }
+            std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        }
+    }
+    failures
+}
+
+/// R2 (C12): CRLF lines keep `\r\n`; comments go before it.
+#[tokio::test]
+async fn crlf_preserved_over_all_fixtures() {
+    let failures = over_all_fixtures("crlf", |o, e, _, ins| check_crlf(o, e, ins)).await;
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// R2 (C12): every pinned component/include line without a comment gets one.
+#[tokio::test]
+async fn pinned_ref_comments_present_over_all_fixtures() {
+    let failures =
+        over_all_fixtures("comments", |o, _, r, ins| check_comments_present(o, r, ins)).await;
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 

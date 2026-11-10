@@ -152,6 +152,10 @@ M3 resolves and pins, in the same run as image pinning:
   `include: [{…, ref: <sha>}, {…, ref: <sha>}]  # main, dev` (fixed in
   M5c, R1; before: one comment per ref in reverse order).
 
+  CRLF files: the trailing comment goes before `\r\n` on every line (fixed
+  in M5c, R2; before: inside `\r\n` on line 1, dropped on later lines).
+  Known gap until M5c-y: block children in CRLF files are not discovered.
+
   A line that already has a trailing comment is left as-is (no second
   comment is added). Edits are byte-exact and idempotent — a second run
   reports everything `ok` and writes nothing.

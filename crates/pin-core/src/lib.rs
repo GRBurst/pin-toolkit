@@ -6,4 +6,5 @@ pub mod oci;
 pub mod plugin;
 pub mod report;
 pub mod run;
+pub mod text;
 pub mod ver;

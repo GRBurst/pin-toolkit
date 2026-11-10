@@ -371,3 +371,51 @@ pub fn check_idempotent(r1: &Report, e1: &str, r2: &Report, e2: &str) -> Result<
     }
     Ok(())
 }
+
+/// P-crlf (R2, C12): every CRLF line of `o` stays CRLF in `e`, and its
+/// inserted comment (from [`check_byte_exact`]) sits before the `\r\n`.
+pub fn check_crlf(o: &str, e: &str, ins: &[Option<Insertion>]) -> Result<(), String> {
+    let lines = o.split_inclusive('\n').zip(e.split_inclusive('\n'));
+    for (i, ((o_line, e_line), ins)) in lines.zip(ins).enumerate() {
+        if !o_line.ends_with("\r\n") {
+            continue;
+        }
+        if !e_line.ends_with("\r\n") {
+            return Err(format!("line {}: CRLF lost in {e_line:?}", i + 1));
+        }
+        if let Some(s) = ins
+            && s.at > o_line.len() - 2
+        {
+            return Err(format!(
+                "line {}: comment {:?} inside \\r\\n",
+                i + 1,
+                s.text
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// P-comment-present (R2, C12): a line with a pinned component/include row
+/// (`new` without `@sha256:`) and no `#` in the original gets an inserted
+/// comment (insertions from [`check_byte_exact`]).
+pub fn check_comments_present(
+    o: &str,
+    report: &Report,
+    ins: &[Option<Insertion>],
+) -> Result<(), String> {
+    for (i, (o_line, ins)) in o.split_inclusive('\n').zip(ins).enumerate() {
+        let needs = report.results.iter().any(|r| {
+            r.line == i + 1
+                && r.status == "pinned"
+                && r.new.as_deref().is_some_and(|n| !n.contains("@sha256:"))
+        });
+        if needs && !o_line.contains('#') && ins.is_none() {
+            return Err(format!(
+                "line {}: pinned ref without comment: {o_line:?}",
+                i + 1
+            ));
+        }
+    }
+    Ok(())
+}

@@ -2,6 +2,8 @@
 //! in one forward pass, quote-preserving re-quoting, trailing-comment
 //! placement and merging.
 
+use crate::text::LineIndex;
+
 /// One edit: replace `start..end` with `text` (`start == end` inserts).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Splice {
@@ -89,18 +91,13 @@ pub fn requote(old_token: &str, new_value: &str) -> String {
     }
 }
 
-/// The trailing-comment insertion (`"  # {orig}"`) for `line` after the token
-/// ending at `token_end`: placed at the line end (just before `\n`;
-/// `text.len()` for a final line without a newline). `None` when a `#` occurs
-/// after the token on the same line — a comment is already there.
-///
-/// R2: the line offset sums `text.lines()` lengths + 1, so CRLF files drift;
-/// fixed in C12.
+/// The trailing-comment insertion (`"  # {orig}"`) for `line` (0-based) after
+/// the token ending at `token_end`: placed at the line end per [`LineIndex`]
+/// (before `\n` or `\r\n` — R2, fixed in C12; `text.len()` for a final line
+/// without a newline). `None` when a `#` occurs after the token on the same
+/// line — a comment is already there — or the line does not exist.
 pub fn trailing_comment(text: &str, line: usize, token_end: usize, orig: &str) -> Option<Splice> {
-    let line_start = text.lines().take(line).map(|l| l.len() + 1).sum::<usize>();
-    let line_end = text[line_start..]
-        .find('\n')
-        .map_or(text.len(), |i| line_start + i);
+    let line_end = LineIndex::new(text).line_end(line)?;
     if token_end > line_end || text[token_end..line_end].contains('#') {
         return None;
     }
@@ -208,6 +205,19 @@ mod tests {
     fn trailing_comment_existing_comment() {
         let text = "  ref: main  # keep\n";
         assert_eq!(trailing_comment(text, 0, 11, "main"), None);
+    }
+
+    #[test]
+    fn trailing_comment_before_crlf() {
+        let text = "x: a\r\ny: b\r\n";
+        assert_eq!(
+            trailing_comment(text, 1, 10, "b"),
+            Some(Splice::insert(10, "  # b"))
+        );
+        assert_eq!(
+            trailing_comment(text, 0, 4, "a"),
+            Some(Splice::insert(4, "  # a"))
+        );
     }
 
     #[test]
