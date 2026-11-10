@@ -3,8 +3,11 @@ source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
 {
+  "schema_version": 1,
   "results": [
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-rich.yml",
       "line": 3,
       "reference": "alpine:3.20",
@@ -13,6 +16,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-rich.yml",
       "line": 4,
       "reference": "docker:24",
@@ -21,6 +26,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-rich.yml",
       "line": 4,
       "reference": "redis:7",
@@ -29,6 +36,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-rich.yml",
       "line": 8,
       "reference": "node:20",
@@ -37,6 +46,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-rich.yml",
       "line": 11,
       "reference": "docker:24",
@@ -45,6 +56,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-rich.yml",
       "line": 12,
       "reference": "redis:7",
@@ -53,6 +66,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "include",
       "file": "ci-rich.yml",
       "line": 17,
       "reference": "v1.0.0",
@@ -67,5 +82,18 @@ expression: redact(&stdout)
     "updated": 0,
     "skipped": 0,
     "unresolved": 0
-  }
+  },
+  "plugins": {
+    "gitlab-ci": {
+      "summary": {
+        "pinned": 7,
+        "ok": 0,
+        "updated": 0,
+        "skipped": 0,
+        "unresolved": 0
+      },
+      "errors": []
+    }
+  },
+  "follow_ups": []
 }

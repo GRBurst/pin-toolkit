@@ -36,13 +36,22 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     out
 }
 
-/// P-exit from a JSON report: 1 if anything is unresolved, or with `check`
-/// if anything would be pinned or updated; else 0 (file errors are not in
-/// the JSON until T28).
+/// P-exit from a JSON report: 2 if any `plugins.*.errors`; else 1 if
+/// anything is unresolved, or with `check` if anything would be pinned or
+/// updated; else 0 (PR-L8).
 fn p_exit(json: &str, check: bool) -> u8 {
     let v: serde_json::Value = serde_json::from_str(json).expect("stdout is one JSON report");
+    let errors = v["plugins"]
+        .as_object()
+        .expect("plugins object")
+        .values()
+        .any(|p| !p["errors"].as_array().expect("errors array").is_empty());
     let n = |k: &str| v["summary"][k].as_u64().expect("summary count");
-    u8::from(n("unresolved") > 0 || (check && n("pinned") + n("updated") > 0))
+    if errors {
+        2
+    } else {
+        u8::from(n("unresolved") > 0 || (check && n("pinned") + n("updated") > 0))
+    }
 }
 
 /// Row `n`: a fresh repo with `files`, then `pin-toolkit {args}` with the
@@ -160,6 +169,15 @@ async fn exit_code_table() {
         out.stderr,
         "pin-toolkit: bad.gitlab-ci.yml:2: invalid YAML: mapping values are not allowed in this context\n",
         "row 6"
+    );
+
+    // 6j: row 6 with --json → 2, P-exit recomputed from the JSON (PR-L8).
+    let (_, out) = row(&f, "6j", &bad, &["--json"], &[]).await;
+    code("6j", &out, 2);
+    assert_eq!(
+        p_exit(&out.stdout, false),
+        out.code,
+        "row 6j: P-exit from JSON"
     );
 
     // 7: an explicit missing file → 2.

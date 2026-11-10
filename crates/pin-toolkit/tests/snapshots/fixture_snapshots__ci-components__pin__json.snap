@@ -3,8 +3,11 @@ source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
 {
+  "schema_version": 1,
   "results": [
     {
+      "plugin": "gitlab-ci",
+      "kind": "component",
       "file": "ci-components.yml",
       "line": 1,
       "reference": "gitlab.com/g/p/name@1.0.0",
@@ -13,6 +16,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "include",
       "file": "ci-components.yml",
       "line": 4,
       "reference": "main",
@@ -21,6 +26,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "include",
       "file": "ci-components.yml",
       "line": 6,
       "reference": "v1.2.3",
@@ -29,6 +36,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "include",
       "file": "ci-components.yml",
       "line": 8,
       "reference": "main",
@@ -38,6 +47,8 @@ expression: redact(&stdout)
       "reason": "g/missing:main not found (no tag or branch)"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "include",
       "file": "ci-components.yml",
       "line": 10,
       "reference": "$CI_COMMIT_REF_NAME",
@@ -47,6 +58,8 @@ expression: redact(&stdout)
       "reason": "templated reference"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "include",
       "file": "ci-components.yml",
       "line": 12,
       "reference": "e3262fdd0914fa823210cdb79a8c421e2cef79d8",
@@ -55,6 +68,8 @@ expression: redact(&stdout)
       "status": "ok"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "include",
       "file": "ci-components.yml",
       "line": 14,
       "reference": "v2.0.0",
@@ -69,5 +84,18 @@ expression: redact(&stdout)
     "updated": 0,
     "skipped": 1,
     "unresolved": 1
-  }
+  },
+  "plugins": {
+    "gitlab-ci": {
+      "summary": {
+        "pinned": 4,
+        "ok": 1,
+        "updated": 0,
+        "skipped": 1,
+        "unresolved": 1
+      },
+      "errors": []
+    }
+  },
+  "follow_ups": []
 }

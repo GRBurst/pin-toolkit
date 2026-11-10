@@ -142,3 +142,61 @@ async fn same_image_in_two_files_is_one_lookup() {
         .collect();
     assert_eq!(hits, ["HEAD"], "one manifest lookup for two files (P-memo)");
 }
+
+/// §6.3/§6.4: a file error is listed under its plugin in the JSON report
+/// (T22 row 6 with `--json`).
+#[tokio::test]
+async fn json_lists_file_errors() {
+    let f = start_fakes().await;
+    let root = repo("run-json-errors");
+    write(&root, ".gitlab-ci.yml", "image: alpine:3.20\n");
+    write(&root, "bad.gitlab-ci.yml", "a: 1\nb: c: d\n");
+    let out = run_tuned(&root, &["pin-toolkit", "--json"], &[], tune(&f)).await;
+    assert_eq!(out.code, 2, "stderr: {}", out.stderr);
+    let v: serde_json::Value = serde_json::from_str(&out.stdout).expect("one JSON report");
+    assert_eq!(
+        v["plugins"]["gitlab-ci"]["errors"],
+        serde_json::json!([{
+            "file": "bad.gitlab-ci.yml",
+            "line": 2,
+            "message": "invalid YAML: mapping values are not allowed in this context"
+        }])
+    );
+    assert_eq!(v["plugins"]["gitlab-ci"]["summary"]["pinned"], 1);
+}
+
+/// Review-2 L7 (main): the JSON `plugins` keys are the enabled plugins,
+/// also when nothing was routed (zero summary, no errors).
+#[tokio::test]
+async fn json_plugins_are_the_enabled_plugins() {
+    let f = start_fakes().await;
+    let zero = serde_json::json!({
+        "summary": {"pinned": 0, "ok": 0, "updated": 0, "skipped": 0, "unresolved": 0},
+        "errors": []
+    });
+    let root = repo("run-json-empty");
+    for argv in [
+        vec!["pin-toolkit", "--json"],
+        vec!["pin-toolkit", "gitlab-ci", "--json"],
+    ] {
+        let out = run_tuned(&root, &argv, &[], tune(&f)).await;
+        assert_eq!(out.code, 0, "{argv:?}: {}", out.stderr);
+        let v: serde_json::Value = serde_json::from_str(&out.stdout).expect("one JSON report");
+        assert_eq!(
+            v["plugins"],
+            serde_json::json!({"gitlab-ci": zero}),
+            "{argv:?}"
+        );
+        assert_eq!(v["results"], serde_json::json!([]), "{argv:?}");
+    }
+    // Disabled → no entry.
+    write(
+        &root,
+        ".pin-toolkit.toml",
+        "version = 1\n[plugins.gitlab-ci]\nrun = false\n",
+    );
+    let out = run_tuned(&root, &["pin-toolkit", "--json"], &[], tune(&f)).await;
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let v: serde_json::Value = serde_json::from_str(&out.stdout).expect("one JSON report");
+    assert_eq!(v["plugins"], serde_json::json!({}));
+}

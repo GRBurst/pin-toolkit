@@ -3,8 +3,11 @@ source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
 {
+  "schema_version": 1,
   "results": [
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-anchors.yml",
       "line": 1,
       "reference": "alpine:3.20",
@@ -13,6 +16,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-anchors.yml",
       "line": 3,
       "reference": "ubuntu:24.04",
@@ -21,6 +26,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-anchors.yml",
       "line": 9,
       "reference": "redis:7",
@@ -35,5 +42,18 @@ expression: redact(&stdout)
     "updated": 0,
     "skipped": 0,
     "unresolved": 0
-  }
+  },
+  "plugins": {
+    "gitlab-ci": {
+      "summary": {
+        "pinned": 3,
+        "ok": 0,
+        "updated": 0,
+        "skipped": 0,
+        "unresolved": 0
+      },
+      "errors": []
+    }
+  },
+  "follow_ups": []
 }

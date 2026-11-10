@@ -3,8 +3,11 @@ source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
 {
+  "schema_version": 1,
   "results": [
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 23,
       "reference": "docker:24",
@@ -13,6 +16,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 25,
       "reference": "docker:dind",
@@ -21,6 +26,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 39,
       "reference": "php:8.2-cli",
@@ -29,6 +36,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 47,
       "reference": "php:8.2-cli",
@@ -37,6 +46,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 49,
       "reference": "mysql:8.0",
@@ -45,6 +56,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 54,
       "reference": "redis:7",
@@ -53,6 +66,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 69,
       "reference": "alpine",
@@ -61,6 +76,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 77,
       "reference": "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}",
@@ -70,6 +87,8 @@ expression: redact(&stdout)
       "reason": "unparseable reference"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 79,
       "reference": "docker:dind",
@@ -78,6 +97,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-pipeline.yml",
       "line": 90,
       "reference": "ghcr.io/docker/buildx:v0.14.0",
@@ -92,5 +113,18 @@ expression: redact(&stdout)
     "updated": 0,
     "skipped": 1,
     "unresolved": 0
-  }
+  },
+  "plugins": {
+    "gitlab-ci": {
+      "summary": {
+        "pinned": 9,
+        "ok": 0,
+        "updated": 0,
+        "skipped": 1,
+        "unresolved": 0
+      },
+      "errors": []
+    }
+  },
+  "follow_ups": []
 }

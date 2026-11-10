@@ -144,6 +144,7 @@ async fn run_mode(
             found.errors.into_iter().map(|e| (*first, e)).collect(),
         );
     }
+    finish_report(&mut report, &plan.ids());
     out.stdout = if eff.json {
         report.to_json() + "\n"
     } else {
@@ -165,6 +166,21 @@ fn record_file_errors(report: &mut Report, errors: Vec<(&'static str, ErrorEntry
             .or_default()
             .errors
             .push(e);
+    }
+}
+
+/// The report's final shape (review-2 L7, main): every enabled plugin has
+/// an entry (the JSON `plugins` keys are the enabled plugins; a seeded
+/// entry is not a plugin that ran), and each plugin's errors are ordered by
+/// (file, line) whatever their origin, so the JSON and stderr are
+/// deterministic.
+fn finish_report(report: &mut Report, enabled: &[&'static str]) {
+    for id in enabled {
+        report.plugins.entry(id.to_string()).or_default();
+    }
+    for p in report.plugins.values_mut() {
+        p.errors
+            .sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     }
 }
 
@@ -286,5 +302,53 @@ mod tests {
         assert_eq!(report.exit_code(false), 2, "PR-L11: exit 2");
         assert_eq!(report.plugins["p1"].errors, [entry("x.yml", None, msg)]);
         assert_eq!(error_lines(&report), format!("pin-toolkit: x.yml: {msg}\n"));
+    }
+
+    /// Review-2 L7 and main: every enabled plugin has an entry; each
+    /// plugin's errors are ordered by (file, line) whatever their origin
+    /// (run errors, routing conflicts, walk errors), stderr likewise.
+    #[test]
+    fn finish_seeds_enabled_plugins_and_sorts_errors() {
+        let mut report = Report::assemble(
+            vec![],
+            &["p1"],
+            vec![
+                ("p1", entry("b.yml", Some(9), "parse")),
+                ("p1", entry("c.yml", None, "read")),
+            ],
+        );
+        record_file_errors(
+            &mut report,
+            vec![
+                ("p1", entry("b.yml", None, "conflict")),
+                ("p1", entry("a/", None, "walk")),
+                ("p1", entry("b.yml", Some(2), "parse")),
+            ],
+        );
+        finish_report(&mut report, &["p1", "p2"]);
+        assert_eq!(
+            report
+                .plugins
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["p1", "p2"]
+        );
+        assert!(report.plugins["p2"].errors.is_empty());
+        assert_eq!(
+            report.plugins["p1"].errors,
+            [
+                entry("a/", None, "walk"),
+                entry("b.yml", None, "conflict"),
+                entry("b.yml", Some(2), "parse"),
+                entry("b.yml", Some(9), "parse"),
+                entry("c.yml", None, "read"),
+            ]
+        );
+        assert!(
+            error_lines(&report)
+                .starts_with("pin-toolkit: a/: walk\npin-toolkit: b.yml: conflict\n")
+        );
+        assert!(!report.ran.contains("p2"), "seeded entries did not run");
     }
 }

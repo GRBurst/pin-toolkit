@@ -3,8 +3,11 @@ source: crates/pin-toolkit/tests/fixture_snapshots.rs
 expression: redact(&stdout)
 ---
 {
+  "schema_version": 1,
   "results": [
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-unicode.yml",
       "line": 4,
       "reference": "alpine:3.20",
@@ -13,6 +16,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-unicode.yml",
       "line": 6,
       "reference": "node:20",
@@ -21,6 +26,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-unicode.yml",
       "line": 7,
       "reference": "ü-sidecar",
@@ -30,6 +37,8 @@ expression: redact(&stdout)
       "reason": "unparseable reference"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "image",
       "file": "ci-unicode.yml",
       "line": 7,
       "reference": "docker:24",
@@ -38,6 +47,8 @@ expression: redact(&stdout)
       "status": "pinned"
     },
     {
+      "plugin": "gitlab-ci",
+      "kind": "include",
       "file": "ci-unicode.yml",
       "line": 8,
       "reference": "main",
@@ -52,5 +63,18 @@ expression: redact(&stdout)
     "updated": 0,
     "skipped": 1,
     "unresolved": 0
-  }
+  },
+  "plugins": {
+    "gitlab-ci": {
+      "summary": {
+        "pinned": 4,
+        "ok": 0,
+        "updated": 0,
+        "skipped": 1,
+        "unresolved": 0
+      },
+      "errors": []
+    }
+  },
+  "follow_ups": []
 }

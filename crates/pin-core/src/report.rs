@@ -36,11 +36,9 @@ impl std::fmt::Display for Status {
 /// One report row: one discovered reference and what happened to it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Row {
-    /// Plugin that found the reference. Not serialised until M5d.
-    #[serde(skip)]
+    /// Plugin that found the reference.
     pub plugin: &'static str,
-    /// Reference kind within the plugin. Not serialised until M5d.
-    #[serde(skip)]
+    /// Reference kind within the plugin.
     pub kind: &'static str,
     /// As passed on the CLI.
     pub file: String,
@@ -77,17 +75,15 @@ pub struct PluginReport {
     pub errors: Vec<ErrorEntry>,
 }
 
-/// The report of one run (v1 model, spec §6.4). `schema_version`,
-/// `plugins` and `follow_ups` are not serialised yet (T-D19).
+/// The report of one run: JSON schema v1 (spec §6.4, D15), fields in
+/// this order.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Report {
-    #[serde(skip)]
+    /// [`Report::SCHEMA_VERSION`].
     pub schema_version: u32,
     pub results: Vec<Row>,
     pub summary: Summary,
-    #[serde(skip)]
     pub plugins: BTreeMap<String, PluginReport>,
-    #[serde(skip)]
     pub follow_ups: Vec<String>,
     /// Plugins that had at least one routed file (review-2 L7): the
     /// human per-plugin summary lines appear when more than one ran. An
@@ -324,6 +320,104 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&r.to_json()).unwrap();
         assert_eq!(v["summary"]["unresolved"], 1);
         assert_eq!(v["results"][0]["reason"], "boom");
+        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["results"][0]["plugin"], "gitlab-ci");
+        assert_eq!(v["results"][0]["kind"], "image");
+        assert_eq!(v["plugins"]["gitlab-ci"]["summary"]["unresolved"], 1);
+    }
+
+    /// The keys of a pretty-printed JSON object, in order (lines indented
+    /// by exactly two spaces).
+    fn keys<T: Serialize>(value: &T) -> Vec<String> {
+        serde_json::to_string_pretty(value)
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.strip_prefix("  \""))
+            .map(|l| l[..l.find('"').unwrap()].to_string())
+            .collect()
+    }
+
+    /// Spec §6.4, D15: JSON v1 fields and their order; `ran` and a row's
+    /// `follow_up` are not part of it; every plugin entry of the report is
+    /// serialised (review-2 L7: the toolkit seeds the enabled plugins).
+    #[test]
+    fn json_schema_v1() {
+        let rows = vec![
+            row_of("a", Status::Pinned, Some("x")),
+            Row {
+                reason: Some("why".into()),
+                ..row_of("a", Status::Skipped, None)
+            },
+        ];
+        let with_line = ErrorEntry {
+            line: Some(2),
+            ..entry("e")
+        };
+        let r = Report::assemble(
+            rows,
+            &["a", "b"],
+            vec![("a", with_line.clone()), ("a", entry("f"))],
+        );
+        assert_eq!(
+            keys(&r),
+            [
+                "schema_version",
+                "results",
+                "summary",
+                "plugins",
+                "follow_ups"
+            ]
+        );
+        assert_eq!(
+            keys(&r.results[1]),
+            [
+                "plugin",
+                "kind",
+                "file",
+                "line",
+                "reference",
+                "old",
+                "new",
+                "status",
+                "reason"
+            ]
+        );
+        assert_eq!(
+            keys(&r.results[0]),
+            [
+                "plugin",
+                "kind",
+                "file",
+                "line",
+                "reference",
+                "old",
+                "new",
+                "status"
+            ]
+        );
+        assert_eq!(keys(&r.plugins["a"]), ["summary", "errors"]);
+        assert_eq!(keys(&with_line), ["file", "line", "message"]);
+        assert_eq!(keys(&entry("f")), ["file", "message"]);
+        let v: serde_json::Value = serde_json::from_str(&r.to_json()).unwrap();
+        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["follow_ups"], serde_json::json!(["x"]));
+        let zero =
+            serde_json::json!({"pinned": 0, "ok": 0, "updated": 0, "skipped": 0, "unresolved": 0});
+        assert_eq!(
+            v["plugins"],
+            serde_json::json!({
+                "a": {
+                    "summary": {"pinned": 1, "ok": 0, "updated": 0, "skipped": 1, "unresolved": 0},
+                    "errors": [
+                        {"file": "e", "line": 2, "message": "m"},
+                        {"file": "f", "message": "m"}
+                    ]
+                },
+                "b": {"summary": zero, "errors": []}
+            })
+        );
+        assert_eq!(v["results"][0]["plugin"], "a");
+        assert_eq!(v["results"][0]["kind"], "k");
     }
 
     const ALL: [Status; 5] = [
