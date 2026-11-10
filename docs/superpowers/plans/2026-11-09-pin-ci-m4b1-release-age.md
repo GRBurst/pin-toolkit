@@ -72,6 +72,7 @@ fn is_old_enough(ts_unix: i64, now_unix: i64, min_days: u64) -> bool;  // ts <= 
 
 // src/lib.rs (T2)
 pub struct PinOptions { /* existing + */ pub min_age_days: u64 }
+impl Default for PinOptions { /* every field at its off/default value (pin-toolkit spec §9) */ }
 // update path, after list_tags:
 //   let candidate = versioning::pick_latest_stable(tag, &tags, opts.update_major);
 //   if guard active (min_age_days>0 && host docker.io):
@@ -143,9 +144,9 @@ guard_nonhub_noop               ghcr host mock, flag set → M2 behavior (no hub
 flag_default_zero               build_opts default min_age_days == 0; "--min-age-days 7" → 7
 ```
 
-**GREEN** — per Interfaces (double-pick) + constraint 3; main.rs flag.
+**GREEN** — per Interfaces (double-pick) + constraint 3; main.rs flag. Also (pin-toolkit spec §9, 2026-11-09): add `impl Default for PinOptions` (every field at its off/default value, `min_age_days = 0`) and convert ALL existing `PinOptions { … }` literals (build_opts + test files) to `..Default::default()` style, keeping currently-explicit fields explicit — this shrinks the M5 workspace-extraction churn. And remove the `#[allow(dead_code)]` on `registry::is_old_enough` (the guard now uses it).
 
-HARD REQUIREMENT: all pre-existing tests green unchanged (R4).
+HARD REQUIREMENT: all pre-existing tests green unchanged (R4; the literal conversion is compile-checked).
 
 **Check:** same cargo test + fmt + clippy.
 
