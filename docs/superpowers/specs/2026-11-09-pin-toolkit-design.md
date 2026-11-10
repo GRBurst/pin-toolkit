@@ -1,6 +1,6 @@
 # pin-toolkit — pin CI and Helm references to immutable ids
 
-Status: draft, owner questions answered 2026-11-09 ([§13](#13-owner-answers-2026-11-09)). Owner approval of the whole document pending.
+Status: approved by owner 2026-11-10 (owner answers in [§13](#13-owner-answers-2026-11-09)). M4b-1 merged (0e2047b); next: M5a–c plan.
 All sizes, milestones and the decisions table are proposals until the owner approves.
 Date: 2026-11-09. Supersedes the "Helm chart pinning — separate tool" note in
 `2026-11-01-pin-ci-design.md`. That spec remains the contract for existing `pin-ci` behaviour.
