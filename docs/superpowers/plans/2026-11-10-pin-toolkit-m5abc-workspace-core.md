@@ -45,7 +45,7 @@ builds that net on today's code; M5b and M5c must leave it green, except the two
 | `crates/pin-core/src/edit.rs` | `Splice`, `apply`, `requote`, `trailing_comment`, `coalesce_comments` | C5, C11, C12 |
 | `crates/pin-core/src/text.rs` | `LineIndex` | C12 |
 | `crates/pin-core/src/plugin.rs` | `KindSpec`, `KindSet`, `Finding`, `Plugin`, `DynPlugin`, `join_all` | C6 |
-| `crates/pin-core/src/run.rs` | `UpdatePolicy`, `AgePolicy`, `ResolverEnv`, `Ctx` (lazy), `RunOptions`, `FileError`, `pin_file`, `now_unix` | C6, C7 |
+| `crates/pin-core/src/run.rs` | `UpdatePolicy`, `ResolverEnv`, `Ctx` (lazy), `RunOptions`, `FileError`, `pin_file`, `now_unix` | C6, C7 |
 | `crates/pin-gitlab-ci/src/lib.rs` | `GitlabCi: Plugin` (scan = `discover` filtered by kind) | C9, C10 |
 | `crates/pin-gitlab-ci/src/policy.rs` | component/include policy, `is_catalog_managed` | C9, C10 |
 | `crates/pin-gitlab-ci/src/driver.rs` (`#[doc(hidden)]`, deleted in M5d) | `PinOptions`, `pin_files`, `exit_code`, `client_from_env`, `gitlab_from_env` for the `pin-ci` bin and tests | C10 |
@@ -82,7 +82,7 @@ for f in "" "--features oci" "--features gitlab"; do
 ```
 
 Baseline (measured 2026-11-10 on main 451609a with this env): `cargo exit 0`, **passed 150 failed 0**, fmt and clippy clean.
-Expected passed after each task (= previous + tests the task adds): A1 153 · A2 156 · A3 156 · B1 157 · C1 157 · C2 157 · C3 158 · C4 159 · C5 160 · C6 169 · C7 172 · C8 181 · C9 185 · C10 185 · C11 187 · C12 191. A lower number is a failure (silently skipped tests) unless the task explains it.
+Expected passed after each task (= previous + tests the task adds): A1 153 · A2 156 · A3 156 · B1 157 · C1 157 · C2 157 · C3 158 · C4 159 · C5 160 · C6 169 · C7 172 · C8 180 · C9 184 · C10 184 · C11 186 · C12 190. A lower number is a failure (silently skipped tests) unless the task explains it.
 
 ## Decisions
 
@@ -101,13 +101,13 @@ Expected passed after each task (= previous + tests the task adds): A1 153 · A2
 | P11 | `RegistryClient`, `GitLabClient`, `Creds` become `Clone` (caches → `Arc<Mutex<…>>`) | driver's `pin_files(&reg, &gitlab)` clones into `Ctx`; ~40 test call sites stay verbatim; shared caches = today's semantics | changing every e2e call site |
 | P12 | `pin_files` survives in `#[doc(hidden)] pub mod driver` (re-exported at the crate root) until M5d | the `pin-ci` bin and tests need it; spec: "test helper until M5d, not API" | keep it in lib.rs as API |
 | P13 | `GitLabHosts { primary, clients }`; host gate = `GitlabCi.gitlab_hosts` (plugin config); includes resolve on the primary | §6.2 "plugin owns host gates"; M5d fills both from `gitlab-hosts`/D31 | gate inside core |
-| P14 | `AgePolicy::Block` = a non-docker.io ref under an active guard has no timestamps ⇒ no candidate is old enough (R5 skip) | §6.2 field exists; 4 lines; default `Allow` = today | omitting the variant (struct ≠ §6.2) |
+| P14 | `UpdatePolicy` has no `unknown_age`/`AgePolicy` in M5c (main, 2026-11-10) | YAGNI: `Block` has no switch before the M5d config; M5d adds field + enum + switch together; behaviour = today's (`allow`) | implementing `Block` now without a switch |
 | P15 | Overlap check pairwise in `pin_file`; today's `BTreeMap` dedup-by-start dropped | §6.2 rule; discover never yields equal starts, so no output change | keep silent dedup |
 | P16 | C5 core `apply`/`trailing_comment` are bug-compatible; C11/C12 change them | keeps each fix its own commit with its own snapshot diff | fixing while moving |
 | P17 | `LineIndex` arrives with R2 (C12); `discover.rs` keeps its own line split | discover is verbatim until M5c-y (§9) | rewiring discover in M5c |
 | P18 | README: test commands fixed in C2; one note each in C11/C12; rest in M5f | spec: README note per fix; full rewrite is M5f | leaving broken commands until M5f |
 
-Recorded, not fixed (see Open questions): **R8** — under CRLF, `discover()` treats `key:\r` as a key with a value, so block children are not discovered (`include:` blocks, `services:` blocks, every job-nested `image:`); and `.base: &base` children are not discovered (anchor counts as a value). A3 snapshots record both.
+Recorded, not fixed (main, 2026-11-10: left to M5c-y; spec §9 row R8): **R8** — under CRLF, `discover()` treats `key:\r` as a key with a value, so block children are not discovered (`include:` blocks, `services:` blocks, every job-nested `image:`); and `.base: &base` children are not discovered (anchor counts as a value). A3 snapshots record both.
 
 ## Gate (spec §11; the repo has no principles document)
 
@@ -355,9 +355,8 @@ pub trait DynPlugin { fn id(&self) -> &'static str; fn kinds(&self) -> &'static 
 impl<P: Plugin> DynPlugin for P { /* UFCS to Plugin::*; plan = scan → Semaphore(concurrency.max(1)) → join_all(resolve), target order */ }
 
 // run (C6; resolvers C7)
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)] pub enum AgePolicy { #[default] Allow, Block }
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct UpdatePolicy { pub enabled: bool, pub allow_major: bool, pub min_age_days: u32, pub unknown_age: AgePolicy }
+pub struct UpdatePolicy { pub enabled: bool, pub allow_major: bool, pub min_age_days: u32 }   // M5d adds `unknown_age: AgePolicy` (P14)
 #[derive(Debug, Clone, Default)] pub struct ResolverEnv { pub home: Option<PathBuf>, pub gitlab_host: String }
 impl ResolverEnv { pub fn from_process(gitlab_host: &str) -> Self }   // home = $HOME
 pub struct Ctx { pub update: UpdatePolicy, pub now_unix: i64, env: ResolverEnv,
@@ -384,7 +383,7 @@ gitlab = `Ok(GitLabHosts::single(&env.gitlab_host, GitLabClient::from_env(format
 3. Overlap: for splices a, b of **different** findings, overlap ⇔ (both replacements ∧ a.start < b.end ∧ b.start < a.end) ∨ (one insertion at q, one replacement [s,e) ∧ s < q < e). Each finding involved → `status Unresolved`, `reason "internal: overlapping edits"`, `new None`, `edits` cleared.
 4. `splices` = all remaining edits in finding order (C11: `coalesce_comments(splices)`).
 5. If `!o.dry_run && !o.check && !splices.is_empty()`: write `apply(&text, &splices)` → `FileError::Write {..}` on error.
-6. Rows: `Row { plugin: p.id(), kind: f.kind, file: path.display().to_string(), line: f.line + 1, .. }` (`follow_up` is dropped: see Open questions).
+6. Rows: `Row { plugin: p.id(), kind: f.kind, file: path.display().to_string(), line: f.line + 1, .. }` (`follow_up` is dropped; decided: widen the return when M8b needs it).
 
 ### pin-gitlab-ci interface (C9/C10)
 
@@ -403,7 +402,7 @@ impl Plugin for GitlabCi { type Target = PinTarget; /* id "gitlab-ci"; scan = di
 // driver
 pub async fn pin_files(paths: &[PathBuf], opts: &PinOptions, reg: &RegistryClient, gitlab: &GitLabClient) -> Result<Report, String>;
 //   ctx = Ctx::new(UpdatePolicy{ enabled: opts.update, allow_major: opts.update_major,
-//                  min_age_days: u32::try_from(opts.min_age_days).unwrap_or(u32::MAX), unknown_age: Allow },
+//                  min_age_days: u32::try_from(opts.min_age_days).unwrap_or(u32::MAX) },
 //                  now_unix(), ResolverEnv::from_process(&opts.gitlab_host))
 //           .with_oci(Ok(reg.clone())).with_gitlab(Ok(GitLabHosts::single(&opts.gitlab_host, gitlab.clone())));
 //   plugin = GitlabCi { gitlab_hosts: vec![opts.gitlab_host.clone()] }; on = KindSet::defaults(&KINDS);
@@ -567,12 +566,12 @@ Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flig
 
 **Files:** create `crates/pin-core/src/oci/decide.rs`, `crates/pin-core/tests/oci_decide.rs` (`required-features = ["oci"]`; wiremock as in `tests/e2e.rs:15-106`, client via `Ctx::new(..).with_oci(Ok(RegistryClient::new(Default::default(), {docker.io, ghcr.io → mock})))`).
 
-`decide_image` = today's `resolve_image` (`lib.rs:165-341`) from the `digest` call on, with `ctx.oci()` (Err → `Err(e.to_string())`), `ctx.update` for `opts.update`/`update_major`/`min_age_days` (`u64::from`), `ctx.now_unix` for `now_unix()`, and the guard condition widened by P14: active iff `min_age_days > 0 ∧ (r.is_docker_hub() ∨ unknown_age == Block)`; non-hub ⇒ empty timestamp map (no Hub call). `pin_inline_image`: parse first (Err → Skipped `unparseable reference`, no client), then map `ImageDecision` → `Finding` (`Pin` → `splice_value`, `Update` → `splice_update`, one `Splice::replace(start, end, token)`; `Current` → Ok; `Skip(r)` → Skipped r; `Err(m)` → Unresolved m). The old `resolve_image` stays in gitlab-ci until C10 (one-commit duplication, deleted there).
+`decide_image` = today's `resolve_image` (`lib.rs:165-341`) from the `digest` call on, with `ctx.oci()` (Err → `Err(e.to_string())`), `ctx.update` for `opts.update`/`update_major`/`min_age_days` (`u64::from`), `ctx.now_unix` for `now_unix()`; guard condition unchanged (`min_age_days > 0 ∧ r.is_docker_hub()`). `pin_inline_image`: parse first (Err → Skipped `unparseable reference`, no client), then map `ImageDecision` → `Finding` (`Pin` → `splice_value`, `Update` → `splice_update`, one `Splice::replace(start, end, token)`; `Current` → Ok; `Skip(r)` → Skipped r; `Err(m)` → Unresolved m). The old `resolve_image` stays in gitlab-ci until C10 (one-commit duplication, deleted there).
 
-- [ ] RED: `decide_pin_unpinned` (alpine:3.20 → `Pin{D1}`) · `decide_current_when_digest_matches` · `decide_update_bumps_to_latest_stable` (tags 3.16/3.20/3.24, enabled → `Update{"3.24", D2}`) · `decide_tag_list_error_is_prefixed` (tags/list 500 → `Err` starting `tag list: `) · `decide_digest_error_is_inner_message` (`mystery:1.0` 404 → `Err("library/mystery:1.0 not found")`) · `decide_unknown_age_block_skips_nonhub` (ghcr `org/img:v1`, tags v1/v2, `min_age_days 14`: `Block` → `Skip("release age: no candidate ≥ 14d")`; `Allow` → `Update{"v2", …}`) · `inline_unparseable_builds_no_client` (value `${X}:${Y}` on a ctx without presets → Skipped, `resolvers_built()` empty) · `inline_pin_single_splice_keeps_quotes` (text `image: "alpine:3.20"\n`, span 7..20 → `edits == [Splice::replace(7, 20, "\"alpine:3.20@{D1}\"")]`, `new` same) · `inline_construction_error_is_unresolved` (`with_oci(Err("ca: x"))` → Unresolved, reason `ca: x`).
+- [ ] RED: `decide_pin_unpinned` (alpine:3.20 → `Pin{D1}`) · `decide_current_when_digest_matches` · `decide_update_bumps_to_latest_stable` (tags 3.16/3.20/3.24, enabled → `Update{"3.24", D2}`) · `decide_tag_list_error_is_prefixed` (tags/list 500 → `Err` starting `tag list: `) · `decide_digest_error_is_inner_message` (`mystery:1.0` 404 → `Err("library/mystery:1.0 not found")`) · `inline_unparseable_builds_no_client` (value `${X}:${Y}` on a ctx without presets → Skipped, `resolvers_built()` empty) · `inline_pin_single_splice_keeps_quotes` (text `image: "alpine:3.20"\n`, span 7..20 → `edits == [Splice::replace(7, 20, "\"alpine:3.20@{D1}\"")]`, `new` same) · `inline_construction_error_is_unresolved` (`with_oci(Err("ca: x"))` → Unresolved, reason `ca: x`).
 - [ ] GREEN as above.
 - [ ] Planted: drop the `tag list: ` prefix → its test FAILS ☐; revert.
-- [ ] Gate + matrix → 181. Commit: `feat: M5c oci::decide_image + pin_inline_image (image policy in core)`.
+- [ ] Gate + matrix → 180. Commit: `feat: M5c oci::decide_image + pin_inline_image (image policy in core)`.
 
 ### Task C9 — `GitlabCi: Plugin` + `policy.rs`
 
@@ -581,7 +580,7 @@ Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flig
 - [ ] RED: `scan_filters_by_kind` (pure): `ci-rich.yml` with `on = defaults` → 7 targets; with `include` off → 6, none `IncludeRef`; with `image` off → 1 · `ids_kinds_and_files`: `id() == "gitlab-ci"`, kind ids `["image", "component", "include"]` all `default_on`, `default_files() == DEFAULT_FILES` · `component_other_host_builds_no_client`: `component: example.org/g/p/c@1.0.0` → Skipped `host not enabled: example.org`, `resolvers_built()` empty · `include_pin_has_replacement_and_comment`: fakes + `include:\n  project: g/p\n  ref: main\n` → Pinned, `edits == [replace(span, sha), insert(line_end, "  # main")]`.
 - [ ] GREEN per the gitlab-ci snippet and policy list.
 - [ ] Planted: make `scan` ignore `on` → `scan_filters_by_kind` FAILS ☐; revert.
-- [ ] Gate + matrix → 185. Commit: `feat: M5c GitlabCi plugin (pure scan, policy on Ctx)`.
+- [ ] Gate + matrix → 184. Commit: `feat: M5c GitlabCi plugin (pure scan, policy on Ctx)`.
 
 ### Task C10 — switch to `pin_file` + driver; delete the old path (refactor)
 
@@ -598,9 +597,9 @@ Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flig
 
 - [ ] Evidence before: `INSTA_UPDATE=no cargo test --workspace --all-features` log saved as `.tmp/c10-before.log`.
 - [ ] Do the switch per the driver snippet; remove the C1 re-exports from lib.rs.
-- [ ] Evidence after: same passed count (185), zero snapshot/property change, `diff <(grep '^test ' .tmp/c10-before.log | sort) <(grep '^test ' .tmp/c10-after.log | sort)` lists only renamed module paths of moved unit tests. `git diff --stat` shows lib.rs shrinking by ≥ 400 lines.
+- [ ] Evidence after: same passed count (184), zero snapshot/property change, `diff <(grep '^test ' .tmp/c10-before.log | sort) <(grep '^test ' .tmp/c10-after.log | sort)` lists only renamed module paths of moved unit tests. `git diff --stat` shows lib.rs shrinking by ≥ 400 lines.
 - [ ] By hand (coverage gap 3): `cargo run -p pin-gitlab-ci --bin pin-ci -- --dry-run --json crates/pin-gitlab-ci/tests/fixtures/ci-simple.yml` → JSON report, no panic.
-- [ ] Gate + matrix → 185. Commit: `refactor: M5c pin-gitlab-ci runs through pin_core::run::pin_file; pin_files kept as doc-hidden driver until M5d`.
+- [ ] Gate + matrix → 184. Commit: `refactor: M5c pin-gitlab-ci runs through pin_core::run::pin_file; pin_files kept as doc-hidden driver until M5d`.
 
 ### Task C11 — fix R1: one combined trailing comment per line, source order
 
@@ -611,7 +610,7 @@ Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flig
 - [ ] Snapshot: `INSTA_UPDATE=always cargo test --test fixture_snapshots`; `git diff` must touch **only** `ci-r1-flow-include__pin__file.snap`, line becomes `…, ref: <sha> }]  # main, dev`.
 - [ ] README (Components & includes): "Several refs pinned on one line (e.g. a flow `include:` sequence) get **one** trailing comment with the originals in source order: `include: [{…, ref: <sha>}, {…, ref: <sha>}]  # main, dev` (fixed in M5c, R1; before: one comment per ref in reverse order)."
 - [ ] Planted (spec §11): revert the `coalesce_comments` call → snapshot + `one_comment_per_line…` FAIL ☐; restore.
-- [ ] Gate + matrix → 187. Commit: `fix: R1 one combined trailing comment per line in source order (snapshot updated)`.
+- [ ] Gate + matrix → 186. Commit: `fix: R1 one combined trailing comment per line in source order (snapshot updated)`.
 
 ### Task C12 — fix R2: `LineIndex`, comment before `\r\n`
 
@@ -622,7 +621,7 @@ Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flig
 - [ ] Snapshot: accept; `git diff` touches only `ci-r2-crlf__pin__file.snap`: line 1 `component: …@<sha>  # 1.0.0␍`, line 3 `include: { project: g/p, ref: <sha> }  # main␍`.
 - [ ] README: "CRLF files: the trailing comment goes before `\r\n` on every line (fixed in M5c, R2; before: inside `\r\n` on line 1, dropped on later lines). Known gap until M5c-y: block children in CRLF files are not discovered."
 - [ ] Planted (spec §11): restore the `lines()` offset in `trailing_comment` → snapshot + both properties FAIL ☐; revert.
-- [ ] Gate + matrix → 191. Commit: `fix: R2 CRLF-safe trailing comments via shared LineIndex (snapshot updated)`.
+- [ ] Gate + matrix → 190. Commit: `fix: R2 CRLF-safe trailing comments via shared LineIndex (snapshot updated)`.
 
 ## Close-out (controller, before merge)
 
@@ -634,14 +633,25 @@ Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flig
 ## Self-review
 
 - **Spec coverage:** §9 M5a (snapshots A1/A3, redaction A1, properties A2, R1/R2/anchor fixtures A3, tag A3); M5b (B1 move, root manifest/lock, `oracle.rs:21`); M5c (move-only C1, `is_sha` dedup C3, `Status`/`Row` C4, `Splice`/edit C5, `Plugin`/`pin_file` C6, lazy `Ctx` C7, `decide_image`/`pin_inline_image` C8, `GitlabCi` C9, `pin_files` as helper C10, rename + `[[bin]] pin-ci` C2, discover verbatim, test split C1, R1 C11, R2 C12, README notes C11/C12). §11 rows mapped in the Gate table.
-- **Smallest calls where spec and code differ (noted, not escalated):** (a) `UpdatePolicy.min_age_days` is `u32` (spec) while `--min-age-days` stays `u64` until M5d — driver converts with saturation; (b) `RegistryClient::new` cannot fail today, so the `Result` in the `OnceCell` is exercised only through `with_oci(Err(..))` until F3 adds CA files; (c) spec §6.2 lists `memo` in `Ctx` and `run(routes, ..)` — both belong to M5d per §9, omitted (P9); (d) `Row.plugin`/`kind` exist but are not serialised, because §9 requires unchanged M5c snapshots (P8); (e) `GitLabHosts` and `ResolverEnv` are not specified field-by-field in the spec — shapes chosen to carry exactly today's single-host semantics (P13); (f) `Status` gains `PartialEq<&str>` beyond §6.2 to keep existing tests verbatim (P7).
+- **Smallest calls where spec and code differ (noted, not escalated):** (a) `UpdatePolicy.min_age_days` is `u32` (spec) while `--min-age-days` stays `u64` until M5d — driver converts with saturation; (b) `RegistryClient::new` cannot fail today, so the `Result` in the `OnceCell` is exercised only through `with_oci(Err(..))` until F3 adds CA files; (c) spec §6.2 lists `memo` in `Ctx` and `run(routes, ..)` — both belong to M5d per §9, omitted (P9); (d) `Row.plugin`/`kind` exist but are not serialised, because §9 requires unchanged M5c snapshots (P8); (e) `GitLabHosts` and `ResolverEnv` are not specified field-by-field in the spec — shapes chosen to carry exactly today's single-host semantics (P13); (f) `Status` gains `PartialEq<&str>` beyond §6.2 to keep existing tests verbatim (P7); (g) `UpdatePolicy` omits §6.2's `unknown_age` until M5d (main's call, P14).
 - **Type consistency:** `Row` (not `RefResult`) from C4 on; `Splice::{replace, insert}` used identically in C5/C8/C9/C11/C12; `GitLabHosts::{single, primary, get}` in C7/C9/C10; `KindSet::defaults(&KINDS)` in C9/C10; `pin_file(p, ctx, path, on, o)` in C6/C7/C10.
 - **Planted violations:** every new check has a box; C10 is a pure refactor and carries before/after evidence instead.
 - **Proportion:** bodies appear only for the fake-server rules, `line_diff`, `pin_file`, the overlap rule and `apply`'s forward build — algorithms the signatures and tests do not determine.
 
-## Open questions (for main / owner)
+## Decisions by main (2026-11-10; formerly open questions)
 
-1. **R8 (new finding):** under CRLF, `discover()` misses every block child (`include:`/`services:` blocks, job-nested `image:`), and children of an anchored key (`.base: &base`) are never discovered. Plan: record in A3 snapshots, leave discover verbatim, M5c-y fixes it — but M5c-y's parity test must then list R8 next to R7. Alternative: one-line `discover` fix (`strip_suffix('\r')` on each line) as an extra M5c commit with its own snapshot diff. Which?
-2. **`Finding.follow_up`** is dropped by `pin_file -> Result<Vec<Row>, FileError>` (spec signature). Fine until M8b; M5d/M8b must widen the return (e.g. `FileOutcome { rows, follow_ups }`) or add a field to `Row`. Keep the spec signature now?
-3. **`Row.plugin`/`kind` not serialised in M5c** (P8) — confirm that M5d, not M5c, adds them to JSON/human output.
-4. **`AgePolicy::Block`** (P14) is implemented minimally in M5c with no CLI/config switch until M5d. OK, or drop it from M5c?
+1. **R8:** not fixed in M5c (no change to hand-rolled discover code that M5c-y deletes); recorded in the A3 snapshots and in spec §9 (row R8).
+2. **`Finding.follow_up`:** `pin_file -> Result<Vec<Row>, FileError>` stays as specified; widen the return when M8b needs follow-ups.
+3. **`Row.plugin`/`kind` in output:** M5d.
+4. **`AgePolicy::Block`:** dropped from M5c (P14); arrives with the config switch.
+
+## Handoff note for M5c-y (discovery parity)
+
+The parity test (spec §11) compares parser discovery with `discover.rs`. These fixture cases are **expected to differ** and must be listed as documented exceptions, each with its reviewed snapshot diff:
+
+| Bug | Fixture (A3) | `discover.rs` today | Parser discovery (expected) |
+|---|---|---|---|
+| R7 | `ci-anchors.yml` lines 1, 9 | targets `&img alpine:3.20`, `&redis redis:7` (anchor inside the value) → `skipped (unparseable reference)` | targets `alpine:3.20`, `redis:7` (properties skipped) → pinned |
+| R7 | `ci-anchors.yml` lines 6, 10 | aliases `*img`, `*redis` are targets → skipped | aliases are not targets (no row) |
+| R8 | `ci-anchors.yml` line 3 | `image: ubuntu:24.04` under `.base: &base` not discovered | discovered → pinned |
+| R8 | `ci-r2-crlf.yml` lines 5–10 | `include:\r` block (`ref: dev`), `services:\r` block (`redis:7`), job-nested `image: "node:20"` not discovered | discovered → pinned (comments before `\r\n`, per C12) |
