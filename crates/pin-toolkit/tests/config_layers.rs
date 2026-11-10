@@ -6,8 +6,12 @@ mod support;
 use std::path::Path;
 
 use pin_toolkit::Process;
+#[cfg(feature = "gitlab-ci")]
+use pin_toolkit::cli::Mode;
 use pin_toolkit::cli::parse;
 use pin_toolkit::config::{Effective, Fatal, load};
+#[cfg(feature = "gitlab-ci")]
+use pin_toolkit::enable::enable;
 use support::{args, env, repo, run_in, write};
 
 /// `load` for `argv` in `cwd` (git root `root`) with the env map `vars`.
@@ -164,4 +168,196 @@ fn no_config_skips_repo_file() {
             ".pin-toolkit.toml: unsupported version 2 (expected 1)".into()
         ))
     );
+}
+
+#[cfg(feature = "gitlab-ci")]
+#[tokio::test]
+async fn run_false_disables_but_subcommand_runs() {
+    let root = repo("enable-run-false");
+    write(
+        &root,
+        ".pin-toolkit.toml",
+        "version = 1\n[plugins.gitlab-ci]\nrun = false\n",
+    );
+    let out = run_in(&root, &["pin-toolkit", "plugins"], &[]).await;
+    assert_eq!(out.code, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout.lines().next(), Some("gitlab-ci: disabled"));
+
+    let eff = load_in(&root, &root, &["pin-toolkit"], &[]).unwrap();
+    assert_eq!(enable(&eff, &Mode::All).unwrap().ids(), Vec::<&str>::new());
+    assert_eq!(
+        enable(&eff, &Mode::Plugin("gitlab-ci")).unwrap().ids(),
+        ["gitlab-ci"]
+    );
+
+    let out = run_in(
+        &root,
+        &["pin-toolkit", "plugins", "--kind", "gitlab-ci:include=off"],
+        &[],
+    )
+    .await;
+    let include = pin_gitlab_ci::KINDS
+        .iter()
+        .find(|k| k.id == "include")
+        .unwrap();
+    assert!(
+        out.stdout
+            .contains(&format!("\n  include: off — {}\n", include.help)),
+        "kind state from the config: {}",
+        out.stdout
+    );
+
+    let eff = load_in(&root, &root, &["pin-toolkit", "--no-config"], &[]).unwrap();
+    assert_eq!(enable(&eff, &Mode::All).unwrap().ids(), ["gitlab-ci"]);
+    write(
+        &root,
+        ".pin-toolkit.toml",
+        "version = 1\n[plugins.gitlab-ci]\nfiles = [\"[\"]\n",
+    );
+    let eff = load_in(&root, &root, &["pin-toolkit"], &[]).unwrap();
+    let err = enable(&eff, &Mode::All)
+        .err()
+        .expect("invalid glob is fatal");
+    assert!(
+        err.0
+            .starts_with("invalid glob `[` in plugins.gitlab-ci.files: "),
+        "{}",
+        err.0
+    );
+}
+
+#[cfg(feature = "gitlab-ci")]
+#[tokio::test]
+async fn only_and_subcommand_rules() {
+    let root = repo("enable-only");
+    let known = "(known: gitlab-ci, helm, github-actions)";
+    let conflict = "pin-toolkit: --only/--skip cannot be combined with a plugin subcommand\n";
+    // (argv, env, code, stderr)
+    type Row<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)], u8, String);
+    let rows: Vec<Row> = vec![
+        (
+            &["pin-toolkit", "--only", "helm"],
+            &[],
+            2,
+            "pin-toolkit: plugin helm not in this build\n".into(),
+        ),
+        (
+            &["pin-toolkit", "--only", "nope"],
+            &[],
+            2,
+            format!("pin-toolkit: unknown plugin `nope` {known}\n"),
+        ),
+        (
+            &["pin-toolkit", "--skip", "nope"],
+            &[],
+            2,
+            format!("pin-toolkit: unknown plugin `nope` {known}\n"),
+        ),
+        (&["pin-toolkit", "--skip", "helm"], &[], 0, String::new()),
+        (
+            &["pin-toolkit", "gitlab-ci", "--skip", "x"],
+            &[],
+            2,
+            conflict.into(),
+        ),
+        (
+            &["pin-toolkit", "--only", "gitlab-ci", "gitlab-ci"],
+            &[],
+            2,
+            conflict.into(),
+        ),
+        (
+            &["pin-toolkit", "helm"],
+            &[],
+            2,
+            "pin-toolkit: plugin helm not in this build\n".into(),
+        ),
+        // PR-L6: env ONLY/SKIP are ignored in subcommand/alias mode ...
+        (
+            &["pin-toolkit", "gitlab-ci", "--dry-run"],
+            &[("PIN_TOOLKIT_SKIP", "gitlab-ci")],
+            0,
+            String::new(),
+        ),
+        (
+            &["pin-ci"],
+            &[("PIN_TOOLKIT_ONLY", "helm")],
+            0,
+            String::new(),
+        ),
+        // ... and apply without one.
+        (
+            &["pin-toolkit"],
+            &[("PIN_TOOLKIT_ONLY", "helm")],
+            2,
+            "pin-toolkit: plugin helm not in this build\n".into(),
+        ),
+    ];
+    for (argv, vars, code, stderr) in rows {
+        let out = run_in(&root, argv, vars).await;
+        assert_eq!(
+            (out.code, out.stderr.as_str()),
+            (code, stderr.as_str()),
+            "{argv:?} {vars:?}"
+        );
+        if code == 2 {
+            assert_eq!(out.stdout, "", "{argv:?}");
+        }
+    }
+    let eff = load_in(
+        &root,
+        &root,
+        &["pin-toolkit"],
+        &[("PIN_TOOLKIT_SKIP", "gitlab-ci")],
+    )
+    .unwrap();
+    assert_eq!(
+        enable(&eff, &Mode::Plugin("gitlab-ci")).unwrap().ids(),
+        ["gitlab-ci"]
+    );
+    assert_eq!(enable(&eff, &Mode::All).unwrap().ids(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn not_built_plugin_in_config_is_a_notice() {
+    let root = repo("enable-notice");
+    let notice = "pin-toolkit: skipped (plugin helm not in this build)\n";
+    for (table, count) in [
+        ("run = true\n", 1),
+        ("kinds = { values-image = false }\n", 1),
+        ("run = false\n", 0),
+    ] {
+        write(
+            &root,
+            ".pin-toolkit.toml",
+            &format!("version = 1\n[plugins.helm]\n{table}"),
+        );
+        let out = run_in(&root, &["pin-toolkit"], &[]).await;
+        assert_eq!(out.code, 0, "{table}: {}", out.stderr);
+        assert_eq!(
+            out.stderr.matches(notice).count(),
+            count,
+            "{table}: {}",
+            out.stderr
+        );
+        assert_eq!(
+            out.stderr.len(),
+            notice.len() * count,
+            "{table}: {}",
+            out.stderr
+        );
+    }
+}
+
+#[cfg(not(feature = "gitlab-ci"))]
+#[tokio::test]
+async fn gitlab_ci_subcommand_not_in_build() {
+    let root = repo("enable-nodefault");
+    let out = run_in(&root, &["pin-toolkit", "gitlab-ci"], &[]).await;
+    assert_eq!(out.code, 2);
+    assert_eq!(
+        out.stderr,
+        "pin-toolkit: plugin gitlab-ci not in this build\n"
+    );
+    assert_eq!(out.stdout, "");
 }

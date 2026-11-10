@@ -5,6 +5,7 @@
 
 pub mod cli;
 pub mod config;
+pub mod enable;
 pub mod known;
 pub mod walk;
 
@@ -12,11 +13,11 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use pin_core::plugin::KindSet;
 use pin_core::run::ResolverEnv;
 
 use crate::cli::{Cli, Mode};
-use crate::config::{Fatal, env};
+use crate::config::{Effective, Fatal, env};
+use crate::enable::{enable, selection};
 use crate::known::{KNOWN, compiled_plugin};
 
 /// What one invocation sees of the process: read once, at the edge.
@@ -74,11 +75,21 @@ pub async fn execute(p: Process, tune: impl FnOnce(&mut ResolverEnv)) -> Output 
 
 /// Everything after parsing; a `Fatal` leaves stdout empty (T-D22).
 fn run_mode(p: &Process, cli: &Cli, mode: Mode, out: &mut Output) -> Result<(), Fatal> {
+    // CLI values only: env ONLY/SKIP are ignored in this mode (T-D28).
+    if matches!(mode, Mode::Plugin(_)) && (cli.opts.only.is_some() || cli.opts.skip.is_some()) {
+        return Err(Fatal(
+            "--only/--skip cannot be combined with a plugin subcommand".into(),
+        ));
+    }
     let root = walk::git_root(&p.cwd).unwrap_or_else(|| p.cwd.clone());
-    let _eff = config::load(p, &root, cli)?;
-    match mode {
-        Mode::Plugins => out.stdout = plugins_listing(),
-        Mode::All | Mode::Plugin(_) => {}
+    let eff = config::load(p, &root, cli)?;
+    if mode == Mode::Plugins {
+        out.stdout = plugins_listing(&eff)?;
+        return Ok(());
+    }
+    let plan = enable(&eff, &mode)?;
+    for n in &plan.notices {
+        out.stderr.push_str(&format!("pin-toolkit: {n}\n"));
     }
     Ok(())
 }
@@ -100,23 +111,34 @@ fn usage(e: &clap::Error) -> Output {
     }
 }
 
-/// `pin-toolkit plugins` (T-D27): per known plugin `{id}: {state}`, then
-/// per compiled kind `  {kind}: {on|off} — {help}`.
-fn plugins_listing() -> String {
+/// `pin-toolkit plugins` (T-D27): per known plugin `{id}: {enabled |
+/// disabled | not in this build}` (the state a run without a subcommand
+/// would have), then per compiled kind `  {kind}: {on|off} — {help}`.
+fn plugins_listing(eff: &Effective) -> Result<String, Fatal> {
+    let enabled = enable(eff, &Mode::Plugins)?.ids();
     let mut out = String::new();
     for k in &KNOWN {
         let Some(p) = compiled_plugin(k.id) else {
             out.push_str(&format!("{}: not in this build\n", k.id));
             continue;
         };
-        out.push_str(&format!("{}: enabled\n", k.id));
-        let on = KindSet::defaults(p.kinds());
+        let state = if enabled.contains(&k.id) {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        out.push_str(&format!("{}: {state}\n", k.id));
+        let sel = selection(eff, p);
         for kind in p.kinds() {
-            let state = if on.contains(kind.id) { "on" } else { "off" };
-            out.push_str(&format!("  {}: {state} — {}\n", kind.id, kind.help));
+            let on = if sel.kinds.contains(kind.id) {
+                "on"
+            } else {
+                "off"
+            };
+            out.push_str(&format!("  {}: {on} — {}\n", kind.id, kind.help));
         }
     }
-    out
+    Ok(out)
 }
 
 /// [`execute`] on a current-thread runtime (`Ctx` is not `Send`: the run is
