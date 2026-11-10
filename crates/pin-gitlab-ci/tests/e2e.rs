@@ -1,5 +1,5 @@
 use pin_core::oci::RegistryClient;
-use pin_gitlab_ci::{PinOptions, exit_code, pin_files};
+use pin_gitlab_ci::{PinOptions, exit_code, outcome, pin_files};
 use std::path::PathBuf;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -271,6 +271,51 @@ async fn templated_image_is_skipped_not_unresolved() {
         .collect();
     assert!(reasons.contains(&"unparseable reference".to_string()));
     assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Review L2: a file error still stops the run, but the rows of the files
+/// before it are kept and printed; the exit code stays 1.
+#[tokio::test]
+async fn file_error_keeps_the_rows_of_earlier_files() {
+    let client = RegistryClient::new(Default::default(), std::collections::HashMap::new());
+    let dir = std::env::temp_dir().join(format!("pin-ci-e2e-partial-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = dir.join("good.yml");
+    let bad = dir.join("bad.yml");
+    let later = dir.join("later.yml");
+    let text = "job:\n  image: ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}\n";
+    std::fs::write(&good, text).unwrap();
+    std::fs::write(&bad, "image: alpine:3.20\nb: c: d\n").unwrap();
+    std::fs::write(&later, text).unwrap();
+    let opts = PinOptions::default();
+    let paths = [good.clone(), bad.clone(), later];
+    let err = pin_files(&paths, &opts, &client, &gitlab_dummy())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "{}:2: invalid YAML: mapping values are not allowed in this context",
+            bad.display()
+        )
+    );
+    assert_eq!(err.partial.results.len(), 1);
+    assert_eq!(err.partial.results[0].file, good.display().to_string());
+    assert_eq!(err.partial.summary.skipped, 1);
+
+    let out = outcome(Err(err), false);
+    assert_eq!(out.code, 1);
+    let stdout = out.stdout.expect("rows of the good file");
+    assert!(
+        stdout.starts_with(&format!(
+            "{}:2  skipped (unparseable reference)",
+            good.display()
+        )),
+        "{stdout}"
+    );
+    assert!(stdout.ends_with("pinned: 0, ok: 0, updated: 0, skipped: 1, unresolved: 0\n"));
+    assert!(out.stderr.unwrap().starts_with("pin-ci: "));
     std::fs::remove_dir_all(&dir).ok();
 }
 

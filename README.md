@@ -301,8 +301,10 @@ Nothing secret is written to files or logs.
 
 A file that is not valid YAML (e.g. a tab as block indentation) is an error
 for that file (`<path>:<line>: invalid YAML: …`); nothing in it is changed.
-`pin-ci` exits `1` on it. A tab as separator after `key:` (`image:<TAB>alpine`)
-is valid YAML and is read as such.
+`pin-ci` stops at the first such file (per-file continuation comes with
+M5d), prints the rows of the files before it, and exits `1`. A tab as
+separator after `key:` (`image:<TAB>alpine`) is valid YAML and is read as
+such.
 
 ## Tests
 

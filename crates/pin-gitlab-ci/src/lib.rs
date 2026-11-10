@@ -4,7 +4,10 @@ pub mod driver;
 mod policy;
 
 #[doc(hidden)]
-pub use driver::{PinOptions, client_from_env, exit_code, gitlab_from_env, pin_files};
+pub use driver::{
+    Outcome, PinFilesError, PinOptions, client_from_env, exit_code, gitlab_from_env, outcome,
+    pin_files,
+};
 
 use std::path::Path;
 
