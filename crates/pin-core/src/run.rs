@@ -1,10 +1,20 @@
 //! One file through one plugin (spec §6.2/§6.3): read, plan (scan → bounded
 //! resolve), overlap check, write, rows. `Ctx` carries the run's policy.
 
+#[cfg(any(feature = "oci", feature = "gitlab"))]
+use std::cell::OnceCell;
+#[cfg(feature = "oci")]
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::edit::{Splice, apply};
+#[cfg(feature = "gitlab")]
+use crate::gitlab::{GitLabClient, GitLabHosts};
+#[cfg(feature = "oci")]
+use crate::oci::ImageRef;
+#[cfg(feature = "oci")]
+use crate::oci::registry::{Creds, RegError, RegistryClient};
 use crate::plugin::{DynPlugin, Finding, KindSet};
 use crate::report::{Row, Status};
 
@@ -20,15 +30,32 @@ pub struct UpdatePolicy {
 /// What resolvers are built from: read once per run.
 #[derive(Debug, Clone, Default)]
 pub struct ResolverEnv {
+    /// Home directory (`~/.docker/config.json` credentials).
     pub home: Option<PathBuf>,
+    /// The primary GitLab instance (`--gitlab-host`).
     pub gitlab_host: String,
 }
 
-/// Per-run context: policy, clock and (from C7) lazily built resolvers.
+impl ResolverEnv {
+    /// `home` from `$HOME`; tokens are read by the client builders.
+    pub fn from_process(gitlab_host: &str) -> Self {
+        Self {
+            home: std::env::var("HOME").ok().map(PathBuf::from),
+            gitlab_host: gitlab_host.to_string(),
+        }
+    }
+}
+
+/// Per-run context: policy, clock and lazily built, feature-gated resolvers
+/// (D36). Plugins resolve only through its entry points (D38).
 pub struct Ctx {
     pub update: UpdatePolicy,
     pub now_unix: i64,
     env: ResolverEnv,
+    #[cfg(feature = "oci")]
+    oci: OnceCell<Result<RegistryClient, String>>,
+    #[cfg(feature = "gitlab")]
+    gitlab: OnceCell<Result<GitLabHosts, String>>,
 }
 
 impl Ctx {
@@ -38,11 +65,131 @@ impl Ctx {
             update,
             now_unix,
             env,
+            #[cfg(feature = "oci")]
+            oci: OnceCell::new(),
+            #[cfg(feature = "gitlab")]
+            gitlab: OnceCell::new(),
         }
     }
 
     pub fn env(&self) -> &ResolverEnv {
         &self.env
+    }
+
+    /// The resolvers built so far (attempted, including construction
+    /// errors), in the order `oci`, `gitlab`.
+    pub fn resolvers_built(&self) -> Vec<&'static str> {
+        #[allow(unused_mut)] // no resolver feature: nothing is pushed
+        let mut v = Vec::new();
+        #[cfg(feature = "oci")]
+        if self.oci.get().is_some() {
+            v.push("oci");
+        }
+        #[cfg(feature = "gitlab")]
+        if self.gitlab.get().is_some() {
+            v.push("gitlab");
+        }
+        v
+    }
+
+    /// The registry client, built from `env` on first use; a construction
+    /// error is cached.
+    #[cfg(feature = "oci")]
+    pub(crate) fn oci(&self) -> Result<&RegistryClient, &str> {
+        self.oci
+            .get_or_init(|| {
+                Ok(RegistryClient::new(
+                    Creds::load_from(self.env.home.as_deref()),
+                    HashMap::new(),
+                ))
+            })
+            .as_ref()
+            .map_err(String::as_str)
+    }
+
+    /// Preset the registry client (or its construction error).
+    #[cfg(feature = "oci")]
+    pub fn with_oci(self, c: Result<RegistryClient, String>) -> Self {
+        Self {
+            oci: OnceCell::from(c),
+            ..self
+        }
+    }
+
+    /// The GitLab clients, built from `env` on first use; a construction
+    /// error is cached.
+    #[cfg(feature = "gitlab")]
+    pub(crate) fn gitlab(&self) -> Result<&GitLabHosts, &str> {
+        self.gitlab
+            .get_or_init(|| {
+                let host = &self.env.gitlab_host;
+                Ok(GitLabHosts::single(
+                    host,
+                    GitLabClient::from_env(format!("https://{host}/api/v4")),
+                ))
+            })
+            .as_ref()
+            .map_err(String::as_str)
+    }
+
+    /// Preset the client of the primary GitLab host (or its construction
+    /// error).
+    #[cfg(feature = "gitlab")]
+    pub fn with_gitlab(self, primary_host: &str, c: Result<GitLabClient, String>) -> Self {
+        Self {
+            gitlab: OnceCell::from(c.map(|c| GitLabHosts::single(primary_host, c))),
+            ..self
+        }
+    }
+
+    /// Manifest digest of `r`; a construction error is `RegError::Unresolved`.
+    #[cfg(feature = "oci")]
+    pub async fn oci_digest(&self, r: &ImageRef) -> Result<String, RegError> {
+        self.oci()
+            .map_err(|e| RegError::Unresolved(e.to_string()))?
+            .digest(r)
+            .await
+    }
+
+    /// Tag list of `r`'s repository.
+    #[cfg(feature = "oci")]
+    pub async fn oci_tags(&self, r: &ImageRef) -> Result<Vec<String>, RegError> {
+        self.oci()
+            .map_err(|e| RegError::Unresolved(e.to_string()))?
+            .list_tags(r)
+            .await
+    }
+
+    /// Tag push times (unix seconds) of `r`'s repository (Docker Hub API).
+    #[cfg(feature = "oci")]
+    pub async fn oci_tag_times(&self, r: &ImageRef) -> Result<BTreeMap<String, i64>, RegError> {
+        self.oci()
+            .map_err(|e| RegError::Unresolved(e.to_string()))?
+            .tag_timestamps(r)
+            .await
+    }
+
+    /// Resolve `git_ref` in `project` on GitLab `host` (`None` = the primary
+    /// host) to a commit SHA. Errors are the client's texts, the cached
+    /// construction error, or `gitlab: no client for {host}`.
+    #[cfg(feature = "gitlab")]
+    pub async fn gitlab_resolve(
+        &self,
+        host: Option<&str>,
+        project: &str,
+        git_ref: &str,
+    ) -> Result<String, String> {
+        let hosts = self.gitlab().map_err(str::to_string)?;
+        let client = match host {
+            None => hosts.primary(),
+            Some(h) => hosts
+                .get(h)
+                .ok_or_else(|| format!("gitlab: no client for {h}"))?,
+        };
+        client
+            .resolve(project, git_ref)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -189,5 +336,128 @@ fn mark_overlaps(findings: &mut [Finding]) {
             f.new = None;
             f.edits.clear();
         }
+    }
+}
+
+#[cfg(all(test, feature = "oci", feature = "gitlab"))]
+mod resolver_tests {
+    use super::*;
+    use crate::gitlab::GitLabClient;
+    use crate::oci::ImageRef;
+    use crate::oci::registry::RegError;
+    use crate::plugin::{KindSpec, Plugin, PluginMeta, ScanError};
+
+    static KINDS: [KindSpec; 1] = [KindSpec {
+        id: "x",
+        default_on: true,
+        help: "",
+    }];
+
+    /// One target; `resolve` touches `ctx.oci()` iff `touch_oci`.
+    struct Fake {
+        touch_oci: bool,
+    }
+
+    impl PluginMeta for Fake {
+        fn id(&self) -> &'static str {
+            "fake"
+        }
+        fn kinds(&self) -> &'static [KindSpec] {
+            &KINDS
+        }
+        fn default_files(&self) -> &'static [&'static str] {
+            &[]
+        }
+    }
+
+    impl Plugin for Fake {
+        type Target = ();
+
+        fn scan(&self, _: &Path, _: &str, _: &KindSet) -> Result<Vec<()>, ScanError> {
+            Ok(vec![()])
+        }
+
+        async fn resolve(&self, ctx: &Ctx, _: &str, _: &()) -> Finding {
+            if self.touch_oci {
+                let _ = ctx.oci();
+            }
+            Finding {
+                line: 0,
+                kind: "x",
+                reference: "r".into(),
+                old: "r".into(),
+                new: None,
+                status: Status::Ok,
+                reason: None,
+                edits: vec![],
+                follow_up: None,
+            }
+        }
+    }
+
+    fn env() -> ResolverEnv {
+        ResolverEnv {
+            gitlab_host: "gitlab.com".into(),
+            ..Default::default()
+        }
+    }
+
+    async fn run_fake(test: &str, fake: &Fake, ctx: &Ctx) {
+        let dir = PathBuf::from(format!(".tmp/run-resolvers-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("f.yml");
+        std::fs::write(&p, "x: r\n").unwrap();
+        let o = RunOptions {
+            dry_run: false,
+            check: false,
+            concurrency: 4,
+        };
+        pin_file(fake, ctx, &p, &KindSet::defaults(&KINDS), &o)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn no_resolver_needed_builds_none() {
+        let ctx = Ctx::new(Default::default(), 0, env());
+        run_fake("none", &Fake { touch_oci: false }, &ctx).await;
+        assert_eq!(ctx.resolvers_built(), Vec::<&str>::new());
+    }
+
+    #[tokio::test]
+    async fn oci_target_builds_only_oci() {
+        let ctx = Ctx::new(Default::default(), 0, env());
+        run_fake("oci", &Fake { touch_oci: true }, &ctx).await;
+        assert_eq!(ctx.resolvers_built(), ["oci"]);
+    }
+
+    #[tokio::test]
+    async fn construction_error_is_cached() {
+        let ctx = Ctx::new(Default::default(), 0, env()).with_oci(Err("ca: unreadable".into()));
+        assert_eq!(ctx.oci().err(), Some("ca: unreadable"));
+        assert_eq!(ctx.oci().err(), Some("ca: unreadable"));
+        let r = ImageRef::parse("alpine:3.20").unwrap();
+        assert!(matches!(
+            ctx.oci_digest(&r).await,
+            Err(RegError::Unresolved(m)) if m == "ca: unreadable"
+        ));
+        assert_eq!(ctx.resolvers_built(), ["oci"]);
+    }
+
+    #[tokio::test]
+    async fn gitlab_resolve_errors_without_request() {
+        let client = GitLabClient::new("http://127.0.0.1:9".into(), None, false);
+        let ctx = Ctx::new(Default::default(), 0, env()).with_gitlab("gitlab.com", Ok(client));
+        assert_eq!(
+            ctx.gitlab_resolve(Some("example.org"), "g/p", "main").await,
+            Err("gitlab: no client for example.org".to_string())
+        );
+        let ctx =
+            Ctx::new(Default::default(), 0, env()).with_gitlab("gitlab.com", Err("ca: x".into()));
+        assert_eq!(
+            ctx.gitlab_resolve(None, "g/p", "main").await,
+            Err("ca: x".to_string())
+        );
     }
 }

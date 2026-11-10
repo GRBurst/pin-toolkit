@@ -18,7 +18,7 @@
 //! Only successful resolutions are cached, per `(project, ref)`, so
 //! repeated refs across files cost one API call.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::time::Duration;
 
@@ -313,6 +313,32 @@ impl GitLabClient {
     /// The base URL without a trailing slash (callers append paths).
     fn base(&self) -> &str {
         self.base_url.trim_end_matches('/')
+    }
+}
+
+/// The GitLab clients of one run, keyed by host; `primary` is the
+/// `--gitlab-host` instance (includes resolve there). Crate-private: plugins
+/// reach it only through `Ctx::gitlab_resolve` (D38).
+pub(crate) struct GitLabHosts {
+    primary: String,
+    clients: BTreeMap<String, GitLabClient>,
+}
+
+impl GitLabHosts {
+    /// One host, which is also the primary.
+    pub(crate) fn single(host: &str, client: GitLabClient) -> Self {
+        Self {
+            primary: host.to_string(),
+            clients: BTreeMap::from([(host.to_string(), client)]),
+        }
+    }
+
+    pub(crate) fn primary(&self) -> &GitLabClient {
+        &self.clients[&self.primary]
+    }
+
+    pub(crate) fn get(&self, host: &str) -> Option<&GitLabClient> {
+        self.clients.get(host)
     }
 }
 
