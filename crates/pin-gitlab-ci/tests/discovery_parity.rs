@@ -11,7 +11,7 @@ mod common;
 
 use common::*;
 use pin_core::text::LineIndex;
-use pin_gitlab_ci::discover::{PinTarget, discover, discover_yaml};
+use pin_gitlab_ci::discover::{PinTarget, discover, legacy_discover};
 
 const RECORD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -65,7 +65,7 @@ fn render(name: &str, text: &str, ts: &[PinTarget]) -> Vec<String> {
         .collect()
 }
 
-/// The record text built from the current `discover()`.
+/// The record text built from the legacy `legacy_discover()`.
 fn legacy_record() -> String {
     let mut out = format!("{RECORD_HEADER}\n");
     for fx in fixtures() {
@@ -75,7 +75,7 @@ fn legacy_record() -> String {
             fx.text.len(),
             fake_hex(&fx.text, 16)
         ));
-        for line in render(&fx.name, &fx.text, &discover(&fx.text)) {
+        for line in render(&fx.name, &fx.text, &legacy_discover(&fx.text)) {
             out.push_str(&line);
             out.push('\n');
         }
@@ -169,7 +169,7 @@ fn matches_exc(line: &str, e: &Exc) -> bool {
 }
 
 /// P-parity: per recorded fixture, `legacy ∖ REMOVED` equals
-/// `render(discover_yaml) ∖ ADDED` as ordered lists, and every exception
+/// `render(discover) ∖ ADDED` as ordered lists, and every exception
 /// matches exactly one line (a stale exception is a failure too).
 #[test]
 fn yaml_discovery_matches_legacy_except_documented() {
@@ -187,10 +187,10 @@ fn yaml_discovery_matches_legacy_except_documented() {
             ));
             continue;
         }
-        let new = match discover_yaml(&fx.text) {
+        let new = match discover(&fx.text) {
             Ok(t) => render(&fx.name, &fx.text, &t),
             Err(e) => {
-                failures.push(format!("{}: discover_yaml failed: {e:?}", fx.name));
+                failures.push(format!("{}: discover failed: {e:?}", fx.name));
                 continue;
             }
         };
@@ -239,10 +239,10 @@ fn yaml_discovery_matches_legacy_except_documented() {
 fn spans_are_tokens_over_all_fixtures() {
     let mut failures = Vec::new();
     for fx in fixtures() {
-        let targets = match discover_yaml(&fx.text) {
+        let targets = match discover(&fx.text) {
             Ok(t) => t,
             Err(e) => {
-                failures.push(format!("{}: discover_yaml failed: {e:?}", fx.name));
+                failures.push(format!("{}: discover failed: {e:?}", fx.name));
                 continue;
             }
         };

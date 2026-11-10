@@ -22,37 +22,18 @@ expression: redact(&r.to_json())
     },
     {
       "file": "ci-tags.yml",
-      "line": 5,
-      "reference": "!reference [.base, image]",
-      "old": "!reference [.base, image]",
-      "new": null,
-      "status": "skipped",
-      "reason": "unparseable reference"
-    },
-    {
-      "file": "ci-tags.yml",
-      "line": 6,
-      "reference": "!reference [.base, services]",
-      "old": "!reference [.base, services]",
-      "new": null,
-      "status": "skipped",
-      "reason": "unparseable reference"
-    },
-    {
-      "file": "ci-tags.yml",
       "line": 8,
-      "reference": "!!str node:20",
-      "old": "!!str node:20",
-      "new": null,
-      "status": "skipped",
-      "reason": "unparseable reference"
+      "reference": "node:20",
+      "old": "node:20",
+      "new": "node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08",
+      "status": "pinned"
     }
   ],
   "summary": {
-    "pinned": 2,
+    "pinned": 3,
     "ok": 0,
     "updated": 0,
-    "skipped": 3,
+    "skipped": 0,
     "unresolved": 0
   }
 }

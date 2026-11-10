@@ -216,7 +216,7 @@ pub fn scratch_copy(fx: &Fixture, mode: Mode, tag: &str) -> PathBuf {
 /// network).
 pub async fn pin_once(f: &Fakes, path: &Path, mode: Mode) -> Report {
     let text = std::fs::read_to_string(path).unwrap();
-    for t in discover(&text) {
+    for t in discover(&text).expect("fixture parses") {
         if let PinTarget::Image { .. } = t
             && let Ok(r) = ImageRef::parse(t.value())
             && !MAPPED_HOSTS.contains(&r.host_str())
@@ -458,7 +458,7 @@ pub async fn plan_once(f: &Fakes, name: &str, text: &str, mode: Mode) -> Vec<Fin
 ///   replacement start)))` equals `e1`: the combined comment is in byte
 ///   order whatever the scan order.
 pub fn check_spans(o: &str, e1: &str, findings: &[Finding]) -> Result<(), String> {
-    let targets = discover(o);
+    let targets = discover(o).expect("fixture parses");
     let lines = LineIndex::new(o);
     let mut claimed: Vec<Option<usize>> = vec![None; targets.len()];
     let mut ordered: Vec<(usize, usize, &Finding)> = Vec::new();

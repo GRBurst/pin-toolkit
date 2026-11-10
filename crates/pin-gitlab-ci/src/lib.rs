@@ -72,9 +72,10 @@ impl PluginMeta for GitlabCi {
 impl Plugin for GitlabCi {
     type Target = PinTarget;
 
-    /// `discover(text)` filtered by kind; never `Err` until M5c-y.
+    /// `discover(text)` filtered by kind. `Err` = the file is not valid YAML
+    /// (§6.9): no partial targets.
     fn scan(&self, _path: &Path, text: &str, on: &KindSet) -> Result<Vec<PinTarget>, ScanError> {
-        Ok(discover(text)
+        Ok(discover(text)?
             .into_iter()
             .filter(|t| on.contains(target_kind(t)))
             .collect())

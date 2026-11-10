@@ -9,4 +9,4 @@ job:
   image: !reference [.base, image]
   services: !reference [.base, services]
 tagged:
-  image: !!str node:20
+  image: !!str node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08

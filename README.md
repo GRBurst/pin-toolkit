@@ -154,7 +154,13 @@ M3 resolves and pins, in the same run as image pinning:
 
   CRLF files: the trailing comment goes before `\r\n` on every line (fixed
   in M5c, R2; before: inside `\r\n` on line 1, dropped on later lines).
-  Known gap until M5c-y: block children in CRLF files are not discovered.
+
+  Discovery reads the YAML structure (M5c-y): anchored values (`&a`,
+  `!!str`) are pinned at their definition; aliases (`*a`), merge keys
+  (`<<:`) and `!reference [...]` are not targets. CRLF files, children of
+  anchored keys (`.base: &base`) and a first key after a BOM are
+  discovered (R7, R8, R9; before: missed or
+  `skipped (unparseable reference)`).
 
   A line that already has a trailing comment is left as-is (no second
   comment is added). Edits are byte-exact and idempotent — a second run
@@ -182,6 +188,10 @@ Skipped targets are left untouched and keep the exit code `0`:
   `ref: ${CI_REF}`): `skipped (templated reference)`.
 - **unparseable component references** — no `@`, too few path segments,
   or an empty version: `skipped (unparseable reference)`.
+- **block scalars** — a `|` / `>` value at an image, component or include
+  path is never rewritten: `skipped (block scalar)`.
+- **multi-line scalars** — a quoted or plain value continued on the next
+  line is never rewritten: `skipped (multi-line scalar)`.
 
 Never targets at all (not even reported): include mappings with
 `project` but no `ref` (bare `{project}`); include items that are plain
@@ -288,6 +298,10 @@ Nothing secret is written to files or logs.
 
 - `0` — nothing was `unresolved` (and no IO error).
 - `1` — at least one reference was `unresolved`, or an IO error occurred.
+
+A file that is not valid YAML (e.g. tab indentation) is an error for that
+file (`<path>:<line>: invalid YAML: …`); nothing in it is changed.
+`pin-ci` exits `1` on it.
 
 ## Tests
 

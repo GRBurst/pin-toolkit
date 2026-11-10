@@ -165,7 +165,7 @@ impl PinTarget {
 /// becomes [`PinTarget::Unsupported`] (range cut at the first line break).
 /// Aliases, merge keys and `!reference` nodes are not scalars here, so they
 /// are never targets.
-pub fn discover_yaml(text: &str) -> Result<Vec<PinTarget>, ScanError> {
+pub fn discover(text: &str) -> Result<Vec<PinTarget>, ScanError> {
     let nodes = yaml::scan(
         text,
         ScanOpts {
@@ -328,7 +328,8 @@ fn is_component_path(p: &[PathSeg]) -> bool {
 /// the `ref` VALUE token (quotes in the span, stripped in the value).
 /// String, remote, template and local items — and mappings lacking either
 /// `project` or `ref` — yield no target.
-pub fn discover(text: &str) -> Vec<PinTarget> {
+#[doc(hidden)]
+pub fn legacy_discover(text: &str) -> Vec<PinTarget> {
     // Precompute each line's byte offset in `text` (line text excl. newline).
     let mut lines: Vec<(usize, &str)> = Vec::new();
     let mut off = 0usize;
@@ -1149,7 +1150,7 @@ mod tests {
     #[test]
     fn image_targets_survive_enum_migration() {
         // M1/M2 image expectations, unchanged: ci-simple.yml …
-        let t = discover(SIMPLE);
+        let t = discover(SIMPLE).unwrap();
         let got: Vec<(usize, &str)> = t.iter().map(|x| (x.line(), x.value())).collect();
         assert_eq!(
             got,
@@ -1168,7 +1169,7 @@ mod tests {
             assert_eq!(unquoted, x.value());
         }
         // … and ci-rich.yml.
-        let t = discover(RICH);
+        let t = discover(RICH).unwrap();
         let got: Vec<(usize, &str)> = t
             .iter()
             .filter_map(|x| match x {
@@ -1197,7 +1198,7 @@ mod tests {
         // (unparseable reference)`), not here — discover must not silently
         // drop lines the user should see in the report.
         let text = "job:\n  image: ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         assert_eq!(t.len(), 1, "templated value must stay a target");
         assert_eq!(t[0].value(), "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}");
     }
@@ -1208,7 +1209,7 @@ mod tests {
     fn include_flow_single_mapping() {
         // { project: x, ref: y } → target, flow=true, span on the ref value
         let text = "include: { project: gitlab-org/example, ref: main }  # flow single mapping\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         assert_eq!(t.len(), 1);
         match &t[0] {
             PinTarget::IncludeRef {
@@ -1233,7 +1234,7 @@ mod tests {
     fn include_flow_sequence_mixed() {
         // [ {p+ref}, "str", {p only} ] → exactly 1 target (the flow mapping item)
         let text = "include: [ { project: g/p, ref: main }, \"local.yml\", { project: g/q } ]\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         assert_eq!(t.len(), 1);
         match &t[0] {
             PinTarget::IncludeRef {
@@ -1255,7 +1256,7 @@ mod tests {
         // - project: x / ref: y (+file:) → target on the ref value, flow=false
         let text =
             "include:\n  - project: gitlab-org/example2\n    ref: v1.2.3\n    file: /ci/test.yml\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         assert_eq!(t.len(), 1);
         match &t[0] {
             PinTarget::IncludeRef {
@@ -1280,7 +1281,7 @@ mod tests {
     fn include_block_single_mapping() {
         // ref before project → still a target; span on the ref line
         let text = "include:\n  ref: develop\n  project: gitlab-org/single\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         assert_eq!(t.len(), 1);
         match &t[0] {
             PinTarget::IncludeRef {
@@ -1305,21 +1306,21 @@ mod tests {
     fn include_string_and_remote_not_targets() {
         // "x.yml", remote:, template:, local: items → no IncludeRef at all
         let text = "include:\n  - \"x.yml\"\n  - remote: https://example.com/ci.yml\n  - template: something.yml\n  - local: /x.yml\n";
-        assert!(discover(text).is_empty());
+        assert!(discover(text).unwrap().is_empty());
     }
 
     #[test]
     fn include_indented_not_a_target() {
         // Job-internal includes (indented) are out of scope: indent-0 only
         let text = "job:\n  include: { project: gitlab-org/indented, ref: main }\n";
-        assert!(discover(text).is_empty());
+        assert!(discover(text).unwrap().is_empty());
     }
 
     #[test]
     fn include_templated_ref_still_a_target() {
         // ref: ${CI_REF} → still a target (syntactic discovery, no expansion)
         let text = "include:\n  project: g/p\n  ref: ${CI_REF}\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         assert_eq!(t.len(), 1);
         match &t[0] {
             PinTarget::IncludeRef { value, project, .. } => {
@@ -1334,7 +1335,7 @@ mod tests {
     fn include_quoted_values() {
         // Quoted project/ref → target; span includes the quotes, value does not
         let text = "include:\n  project: \"g/p\"\n  ref: 'main'\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         assert_eq!(t.len(), 1);
         match &t[0] {
             PinTarget::IncludeRef {
@@ -1360,7 +1361,7 @@ mod tests {
         // image + component + include in one text: one global (line, start)
         // sort across all three kinds
         let text = "image: alpine:3.20\ncomponent: gitlab.com/g/p/name@1.0.0\ninclude: { project: g/p, ref: main }\ninclude:\n  project: g/p2\n  ref: v9\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         let got: Vec<(usize, usize, &str)> = t
             .iter()
             .map(|x| match x {
@@ -1387,7 +1388,7 @@ mod tests {
     fn include_fixture_all_forms() {
         // The fixture exercises every documented form: exactly the three
         // annotated targets, nothing else (indented include excluded).
-        let t = discover(INCLUDE_FIXTURE);
+        let t = discover(INCLUDE_FIXTURE).unwrap();
         assert_eq!(t.len(), 3);
         let got: Vec<(usize, &str, &str, bool)> = t
             .iter()
@@ -1411,7 +1412,7 @@ mod tests {
     #[test]
     fn rich_include_block_is_include_target() {
         // M3: ci-rich.yml's include block (project + ref) is now a target
-        let t = discover(RICH);
+        let t = discover(RICH).unwrap();
         let got: Vec<(usize, &str, &str)> = t
             .iter()
             .filter_map(|x| match x {
@@ -1426,13 +1427,13 @@ mod tests {
 
     #[test]
     fn script_items_are_not_targets() {
-        let t = discover(RICH);
+        let t = discover(RICH).unwrap();
         assert!(t.iter().all(|x| x.value() != "echo hi"));
     }
 
     #[test]
     fn trailing_comment_preserved_in_spans() {
-        let t = discover(RICH);
+        let t = discover(RICH).unwrap();
         let first = &t[0];
         assert_eq!(&RICH[first.start()..first.end()], "alpine:3.20");
     }
@@ -1440,7 +1441,7 @@ mod tests {
     #[test]
     fn component_top_level_target() {
         let text = "component: gitlab.com/g/sub/p/name@1.0.0\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         assert_eq!(t.len(), 1);
         match &t[0] {
             PinTarget::Component {
@@ -1471,7 +1472,7 @@ mod tests {
     #[test]
     fn component_indented_is_not_a_target() {
         let text = "job:\n  component: gitlab.com/g/p/name@1.0.0\n";
-        assert!(discover(text).is_empty());
+        assert!(discover(text).unwrap().is_empty());
     }
 
     #[test]
@@ -1483,7 +1484,7 @@ mod tests {
             "gitlab.com/g/p/name@",  // empty version
         ] {
             let text = format!("component: {v}\n");
-            let t = discover(&text);
+            let t = discover(&text).unwrap();
             assert_eq!(t.len(), 1, "value {v} must stay a target");
             match &t[0] {
                 PinTarget::Component { parts, value, .. } => {
@@ -1498,7 +1499,7 @@ mod tests {
     #[test]
     fn component_quoted_and_comment() {
         let text = "component: \"gitlab.com/g/p/name@2.0\"  # from docs\n";
-        let t = discover(text);
+        let t = discover(text).unwrap();
         assert_eq!(t.len(), 1);
         match &t[0] {
             PinTarget::Component {
@@ -1542,10 +1543,10 @@ mod tests {
         }
     }
 
-    // ---- M5c-y: discovery over `core::yaml` (`discover_yaml`)
+    // ---- M5c-y: discovery over `core::yaml` (`discover`)
 
     fn yaml(text: &str) -> Vec<PinTarget> {
-        discover_yaml(text).unwrap()
+        discover(text).unwrap()
     }
 
     #[test]
@@ -1616,7 +1617,7 @@ mod tests {
     #[test]
     fn yaml_aliases_and_references_are_not_targets() {
         let text = ".x: &x alpine:3.20\na:\n  image: *x\nb:\n  image: !reference [.base, image]\n  services: !reference [.base, services]\n";
-        assert_eq!(discover_yaml(text), Ok(vec![]));
+        assert_eq!(discover(text), Ok(vec![]));
     }
 
     /// Review M3: a quoted or plain value continued on the next line is

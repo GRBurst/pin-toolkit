@@ -4,7 +4,5 @@ expression: redact(&r.render_human())
 ---
 ci-tags.yml:2  pinned  alpine:3.20 -> alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313  # alpine:3.20
 ci-tags.yml:3  pinned  docker:24 -> docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632  # docker:24
-ci-tags.yml:5  skipped (unparseable reference)  !reference [.base, image] -> -  # !reference [.base, image]
-ci-tags.yml:6  skipped (unparseable reference)  !reference [.base, services] -> -  # !reference [.base, services]
-ci-tags.yml:8  skipped (unparseable reference)  !!str node:20 -> -  # !!str node:20
-pinned: 2, ok: 0, updated: 0, skipped: 3, unresolved: 0
+ci-tags.yml:8  pinned  node:20 -> node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08  # node:20
+pinned: 3, ok: 0, updated: 0, skipped: 0, unresolved: 0

@@ -27,10 +27,34 @@ expression: redact(&r.to_json())
       "old": "main",
       "new": "5b0d6dd77c40c7fdb58e102ab44cb15acd1af5b5",
       "status": "pinned"
+    },
+    {
+      "file": "ci-r2-crlf.yml",
+      "line": 6,
+      "reference": "dev",
+      "old": "dev",
+      "new": "d66dff33eb0a674aacefbde90c45000fda3603c7",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-r2-crlf.yml",
+      "line": 9,
+      "reference": "redis:7",
+      "old": "redis:7",
+      "new": "redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-r2-crlf.yml",
+      "line": 10,
+      "reference": "node:20",
+      "old": "\"node:20\"",
+      "new": "\"node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08\"",
+      "status": "pinned"
     }
   ],
   "summary": {
-    "pinned": 3,
+    "pinned": 6,
     "ok": 0,
     "updated": 0,
     "skipped": 0,

@@ -7,9 +7,9 @@ use std::path::Path;
 
 use common::*;
 use pin_core::edit::Splice;
-use pin_core::plugin::{DynPlugin, KindSet, Plugin, PluginMeta};
+use pin_core::plugin::{DynPlugin, KindSet, Plugin, PluginMeta, ScanError};
 use pin_core::report::Status;
-use pin_core::run::{Ctx, ResolverEnv};
+use pin_core::run::{Ctx, FileError, ResolverEnv, RunOptions, pin_file};
 use pin_gitlab_ci::discover::PinTarget;
 use pin_gitlab_ci::{DEFAULT_FILES, GitlabCi, KINDS};
 
@@ -134,4 +134,68 @@ async fn unsupported_target_is_skipped_without_client() {
     assert_eq!(f.line, 1);
     assert!(f.edits.is_empty());
     assert_eq!(ctx.resolvers_built(), Vec::<&str>::new());
+}
+
+/// §6.9: a file that is not valid YAML is a scan error with the parser's
+/// line (1-based) — no partial targets, no fallback to line scanning.
+#[test]
+fn scan_invalid_yaml_is_scan_error() {
+    let p = GitlabCi::default();
+    let on = KindSet::defaults(&KINDS);
+    assert_eq!(
+        p.scan(Path::new("x.yml"), "a: 1\nb: c: d\n", &on),
+        Err(ScanError {
+            line: Some(2),
+            msg: "invalid YAML: mapping values are not allowed in this context".into()
+        })
+    );
+    let err = p
+        .scan(Path::new("x.yml"), "job:\n\timage: alpine:3.20\n", &on)
+        .unwrap_err();
+    assert_eq!(err.line, Some(2));
+    assert!(err.msg.starts_with("invalid YAML: "), "{}", err.msg);
+}
+
+/// A parse error becomes `FileError::Parse` with path and line; nothing is
+/// written and no resolver is built.
+#[tokio::test]
+async fn invalid_yaml_file_is_parse_error_and_untouched() {
+    let dir = std::path::PathBuf::from(format!(".tmp/plugin-badyaml-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ci.yml");
+    let text = "image: alpine:3.20\nb: c: d\n";
+    std::fs::write(&path, text).unwrap();
+
+    let ctx = Ctx::new(Default::default(), 0, env());
+    let opts = RunOptions {
+        dry_run: false,
+        check: false,
+        concurrency: 4,
+    };
+    let err = pin_file(
+        &GitlabCi::default(),
+        &ctx,
+        &path,
+        &KindSet::defaults(&KINDS),
+        &opts,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err,
+        FileError::Parse {
+            path: path.display().to_string(),
+            line: Some(2),
+            msg: "invalid YAML: mapping values are not allowed in this context".into()
+        }
+    );
+    assert!(
+        err.to_string()
+            .ends_with(":2: invalid YAML: mapping values are not allowed in this context"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(ctx.resolvers_built(), Vec::<&str>::new());
+    let _ = std::fs::remove_dir_all(&dir);
 }
