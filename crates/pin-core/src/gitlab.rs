@@ -116,7 +116,7 @@ impl fmt::Debug for GitLabClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GitLabClient")
             .field("base_url", &self.base_url)
-            .field("token", &crate::run::redact(&self.token))
+            .field("token", &crate::secret::redact(&self.token))
             .field("job_token", &self.job_token)
             .field("http", &self.http)
             .field("cache", &self.cache)

@@ -23,6 +23,7 @@ use crate::oci::ImageRef;
 use crate::oci::registry::{Creds, RegError, RegistryClient};
 use crate::plugin::{DynPlugin, Finding, Selection};
 use crate::report::{ErrorEntry, Report, Row, Status};
+use crate::secret::{Redacted, redact};
 
 /// `release_age.unknown` (spec §6.8): what the release-age guard does when
 /// a registry has no timestamps.
@@ -44,20 +45,6 @@ pub struct UpdatePolicy {
     pub min_age_days: u32,
     /// The guard for hosts without timestamps (every host but docker.io).
     pub unknown_age: AgePolicy,
-}
-
-/// Prints as `<redacted>` (T-D29: tokens never reach `Debug` output).
-pub(crate) struct Redacted;
-
-impl fmt::Debug for Redacted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-/// `Some(<redacted>)` / `None` for an optional secret.
-pub(crate) fn redact(secret: &Option<String>) -> Option<impl fmt::Debug> {
-    secret.as_ref().map(|_| Redacted)
 }
 
 /// The credential one GitLab host gets (D31, D37). Pure data, no client.

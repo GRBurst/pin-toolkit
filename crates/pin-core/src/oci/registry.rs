@@ -66,7 +66,7 @@ pub enum HostCreds {
 
 impl fmt::Debug for HostCreds {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let secret = crate::run::Redacted;
+        let secret = crate::secret::Redacted;
         match self {
             HostCreds::Basic { user, .. } => f
                 .debug_struct("Basic")
@@ -236,7 +236,7 @@ impl fmt::Debug for RegistryClient {
             .field("creds", &self.creds)
             .field("base_urls", &self.base_urls)
             .field("hub_base", &self.hub_base)
-            .field("tokens", &crate::run::Redacted)
+            .field("tokens", &crate::secret::Redacted)
             .finish_non_exhaustive()
     }
 }

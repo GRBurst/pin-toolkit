@@ -6,6 +6,7 @@ pub mod oci;
 pub mod plugin;
 pub mod report;
 pub mod run;
+pub(crate) mod secret;
 pub mod text;
 pub mod ver;
 #[cfg(feature = "yaml")]
