@@ -648,6 +648,7 @@ pub async fn pin_file(
             new: f.new,
             status: f.status,
             reason: f.reason,
+            follow_up: f.follow_up,
         })
         .collect())
 }

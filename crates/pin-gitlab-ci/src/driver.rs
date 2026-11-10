@@ -190,6 +190,7 @@ mod tests {
             new: None,
             status: Status::Skipped,
             reason: Some("r".into()),
+            follow_up: None,
         }
     }
 

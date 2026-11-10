@@ -25,6 +25,7 @@ fn row(line: usize, old: &str, new: &str) -> Row {
         new: Some(new.into()),
         status: Status::Pinned,
         reason: None,
+        follow_up: None,
     }
 }
 
