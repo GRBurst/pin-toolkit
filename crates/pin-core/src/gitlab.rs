@@ -114,32 +114,48 @@ pub struct GitLabClient {
 impl GitLabClient {
     /// Client for `base_url` (e.g. `https://gitlab.com/api/v4`). `token` is
     /// sent as `JOB-TOKEN` when `job_token` is set, else as
-    /// `PRIVATE-TOKEN`; 30s request timeout.
+    /// `PRIVATE-TOKEN`; 30s request timeout. Panics if the HTTP client
+    /// cannot be built (test convenience; see [`GitLabClient::try_new`]).
     pub fn new(base_url: String, token: Option<String>, job_token: bool) -> Self {
+        Self::try_new(base_url, token, job_token).expect("reqwest client builds")
+    }
+
+    /// Like [`GitLabClient::new`], but an HTTP client construction error is
+    /// returned as `"http client: {e}"` (review L5).
+    pub fn try_new(
+        base_url: String,
+        token: Option<String>,
+        job_token: bool,
+    ) -> Result<Self, String> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .expect("reqwest client builds");
-        Self {
+            .map_err(|e| format!("http client: {e}"))?;
+        Ok(Self {
             base_url,
             token,
             job_token,
             http,
             cache: Arc::new(Mutex::new(HashMap::new())),
-        }
+        })
     }
 
     /// Client from the environment: `GITLAB_TOKEN` (sent as `PRIVATE-TOKEN`)
     /// takes precedence over `CI_JOB_TOKEN` (sent as `JOB-TOKEN`); neither
     /// set (or empty) → anonymous (public projects work).
     pub fn from_env(base_url: String) -> Self {
+        Self::try_from_env(base_url).expect("reqwest client builds")
+    }
+
+    /// [`GitLabClient::from_env`] without the panic: the `Ctx` path (L5).
+    pub(crate) fn try_from_env(base_url: String) -> Result<Self, String> {
         if let Some(t) = std::env::var("GITLAB_TOKEN").ok().filter(|t| !t.is_empty()) {
-            return Self::new(base_url, Some(t), false);
+            return Self::try_new(base_url, Some(t), false);
         }
         if let Some(t) = std::env::var("CI_JOB_TOKEN").ok().filter(|t| !t.is_empty()) {
-            return Self::new(base_url, Some(t), true);
+            return Self::try_new(base_url, Some(t), true);
         }
-        Self::new(base_url, None, false)
+        Self::try_new(base_url, None, false)
     }
 
     /// Resolve `ref_name` in `project` to a full 40-hex commit SHA.

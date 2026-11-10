@@ -35,7 +35,8 @@ fn hub_tags_url(base: &str, repo: &str) -> String {
 const MANIFEST_ACCEPT: &str = "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json";
 
 /// Errors from registry lookups. Plain enum + manual `Display`; no thiserror.
-#[derive(Debug)]
+/// `Clone` so the per-run memo can cache failed lookups (§6.7, review L4).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegError {
     /// The reference could not be resolved (404, bad token response, ...).
     Unresolved(String),
@@ -234,19 +235,27 @@ pub struct RegistryClient {
 impl RegistryClient {
     /// `base_urls` maps a registry host key (e.g. `"docker.io"`) to a base URL;
     /// a missing `"docker.io"` entry falls back to `https://registry-1.docker.io`.
+    /// Panics if the HTTP client cannot be built (test convenience; see
+    /// [`RegistryClient::try_new`]).
     pub fn new(creds: Creds, base_urls: HashMap<String, String>) -> Self {
+        Self::try_new(creds, base_urls).expect("reqwest client builds")
+    }
+
+    /// Like [`RegistryClient::new`], but an HTTP client construction error
+    /// is returned as `"http client: {e}"` (review L5).
+    pub fn try_new(creds: Creds, base_urls: HashMap<String, String>) -> Result<Self, String> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .expect("reqwest client builds");
-        Self {
+            .map_err(|e| format!("http client: {e}"))?;
+        Ok(Self {
             http,
             creds,
             base_urls,
             hub_base: None,
             tokens: Arc::new(Mutex::new(HashMap::new())),
             tag_lists: Arc::new(Mutex::new(HashMap::new())),
-        }
+        })
     }
 
     /// Test hook: point the Docker Hub API (M4b-1 `tag_timestamps`) at a
@@ -760,6 +769,13 @@ fn parse_link_next(header: Option<&reqwest::header::HeaderValue>) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reg_error_is_clone_and_eq() {
+        let e = RegError::Network("x".into());
+        assert_eq!(e.clone(), e);
+        assert_ne!(e, RegError::Unresolved("x".into()));
+    }
 
     #[test]
     fn base_for_precedence() {

@@ -96,10 +96,7 @@ impl Ctx {
     pub(crate) fn oci(&self) -> Result<&RegistryClient, &str> {
         self.oci
             .get_or_init(|| {
-                Ok(RegistryClient::new(
-                    Creds::load_from(self.env.home.as_deref()),
-                    HashMap::new(),
-                ))
+                RegistryClient::try_new(Creds::load_from(self.env.home.as_deref()), HashMap::new())
             })
             .as_ref()
             .map_err(String::as_str)
@@ -121,10 +118,8 @@ impl Ctx {
         self.gitlab
             .get_or_init(|| {
                 let host = &self.env.gitlab_host;
-                Ok(GitLabHosts::single(
-                    host,
-                    GitLabClient::from_env(format!("https://{host}/api/v4")),
-                ))
+                GitLabClient::try_from_env(format!("https://{host}/api/v4"))
+                    .map(|c| GitLabHosts::single(host, c))
             })
             .as_ref()
             .map_err(String::as_str)
