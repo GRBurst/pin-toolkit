@@ -22,6 +22,7 @@
 use std::collections::BTreeMap;
 
 use pin_core::plugin::ScanError;
+use pin_core::text::LineIndex;
 use pin_core::yaml::{self, Node, PathSeg, ScalarRef, ScanOpts, Style};
 
 /// One discovered reference location in a CI file (M3: image, component or
@@ -53,6 +54,8 @@ pub enum PinTarget {
         /// the value is unparseable (reported `skipped` at resolve time —
         /// the target is kept so the report stays complete).
         parts: Option<ComponentParts>,
+        /// See [`PinTarget::comment_ok`].
+        comment_ok: bool,
     },
     /// A classic top-level (indent 0) `include:` mapping with explicit
     /// `project` and `ref` keys: the span points at the `ref` VALUE token
@@ -71,6 +74,8 @@ pub enum PinTarget {
         /// True when the mapping is a flow mapping
         /// (`{ project: ..., ref: ... }`).
         flow: bool,
+        /// See [`PinTarget::comment_ok`].
+        comment_ok: bool,
     },
     /// A reference at a target path that cannot be spliced (a block or
     /// multi-line scalar): reported `skipped (<reason>)`, never edited.
@@ -139,6 +144,17 @@ impl PinTarget {
         }
     }
 
+    /// A trailing comment may be inserted at the end of the target's line:
+    /// that line break is not inside another scalar of the file (a
+    /// multi-line sibling in a flow mapping; review M2). Always true for
+    /// kinds that never get a comment.
+    pub fn comment_ok(&self) -> bool {
+        match self {
+            Self::Component { comment_ok, .. } | Self::IncludeRef { comment_ok, .. } => *comment_ok,
+            Self::Image { .. } | Self::Unsupported { .. } => true,
+        }
+    }
+
     /// The value with quotes stripped.
     ///
     /// For `IncludeRef` this is the `ref` value (not `project`).
@@ -176,6 +192,12 @@ pub fn discover(text: &str) -> Result<Vec<PinTarget>, ScanError> {
             mask_templates: false,
         },
     )?;
+    let lines = LineIndex::new(text);
+    let comment_ok = |line: usize| {
+        lines
+            .line_end(line)
+            .is_none_or(|end| !yaml::inside_token(&nodes, end))
+    };
     let mut out = Vec::new();
     // include mappings by their collection id: (first `project`, first `ref`)
     let mut includes: BTreeMap<usize, (Option<&ScalarRef>, Option<&ScalarRef>)> = BTreeMap::new();
@@ -185,9 +207,9 @@ pub fn discover(text: &str) -> Result<Vec<PinTarget>, ScanError> {
             continue;
         }
         if is_image_path(&s.path) {
-            out.push(yaml_target(text, s, "image"));
+            out.push(yaml_target(text, s, "image", true));
         } else if is_component_path(&s.path) {
-            out.push(yaml_target(text, s, "component"));
+            out.push(yaml_target(text, s, "component", comment_ok(s.line)));
         } else if let [m @ .., PathSeg::Key(k)] = &s.path[..]
             && is_include_mapping(m)
         {
@@ -211,6 +233,7 @@ pub fn discover(text: &str) -> Result<Vec<PinTarget>, ScanError> {
                 value: git_ref.value.clone(),
                 project: project.value.clone(),
                 flow: git_ref.in_flow,
+                comment_ok: comment_ok(git_ref.line),
             }),
         );
     }
@@ -240,7 +263,7 @@ fn unsupported(text: &str, s: &ScalarRef, kind: &'static str) -> Option<PinTarge
 }
 
 /// The `image` or `component` target for `s`.
-fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str) -> PinTarget {
+fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str, comment_ok: bool) -> PinTarget {
     if let Some(u) = unsupported(text, s, kind) {
         return u;
     }
@@ -252,6 +275,7 @@ fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str) -> PinTarget {
             end,
             parts: parse_component_ref(&value),
             value,
+            comment_ok,
         }
     } else {
         PinTarget::Image {
@@ -412,6 +436,31 @@ mod tests {
         );
     }
 
+    /// Review M2: `comment_ok` is false when the line break after the
+    /// target lies inside another scalar (a multi-line flow sibling).
+    #[test]
+    fn comment_ok_is_false_inside_a_multiline_sibling() {
+        let ok = |text: &str| match &discover(text).unwrap()[..] {
+            [PinTarget::IncludeRef { comment_ok, .. }] => *comment_ok,
+            other => panic!("{other:?}"),
+        };
+        assert!(ok("include: {project: g/p, ref: main}\n"));
+        assert!(ok("include: {project: g/p, ref: main,\n  file: a.yml}\n"));
+        assert!(ok("include:\n  project: g/p\n  ref: main\n  file: a.yml\n"));
+        assert!(!ok("include: {project: g/p, ref: main, file: a\n  .yml}\n"));
+        assert!(!ok(
+            "include: {project: g/p, ref: main, file: \"a\\\n  .yml\"}\n"
+        ));
+        let c = discover("component: \"gitlab.com/g/p/c@1.0.0\"\n").unwrap();
+        assert!(matches!(
+            &c[..],
+            [PinTarget::Component {
+                comment_ok: true,
+                ..
+            }]
+        ));
+    }
+
     // ── M3 Task 2: classic include: discovery ───────────────────────
 
     #[test]
@@ -428,6 +477,7 @@ mod tests {
                 value,
                 project,
                 flow,
+                ..
             } => {
                 assert_eq!(value, "main");
                 assert_eq!(project, "gitlab-org/example");
@@ -475,6 +525,7 @@ mod tests {
                 value,
                 project,
                 flow,
+                ..
             } => {
                 assert_eq!(value, "v1.2.3");
                 assert_eq!(project, "gitlab-org/example2");
@@ -500,6 +551,7 @@ mod tests {
                 value,
                 project,
                 flow,
+                ..
             } => {
                 assert_eq!(value, "develop");
                 assert_eq!(project, "gitlab-org/single");
@@ -554,6 +606,7 @@ mod tests {
                 value,
                 project,
                 flow,
+                ..
             } => {
                 assert_eq!(value, "main");
                 assert_eq!(project, "g/p");
@@ -659,6 +712,7 @@ mod tests {
                 start,
                 end,
                 line,
+                ..
             } => {
                 assert_eq!(value, "gitlab.com/g/sub/p/name@1.0.0");
                 let p = parts.as_ref().expect("parts");

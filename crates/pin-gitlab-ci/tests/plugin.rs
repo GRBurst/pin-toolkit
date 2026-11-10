@@ -137,6 +137,72 @@ async fn include_pin_with_tab_separators() {
     );
 }
 
+/// Review M2: a trailing comment must not land inside a multi-line sibling
+/// scalar of a flow include; that include is `skipped (no safe place for
+/// comment)` and untouched, the rest of the file is still pinned, and the
+/// result still parses.
+#[tokio::test]
+async fn include_without_a_safe_comment_place_is_skipped() {
+    let fakes = start_fakes().await;
+    let dir = std::path::PathBuf::from(format!(".tmp/plugin-nocomment-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, nl) in [("lf.yml", "\n"), ("crlf.yml", "\r\n")] {
+        let path = dir.join(name);
+        let text = [
+            "include:",
+            "  - {project: g/p, ref: main, file: a",
+            "      .yml}",
+            "  - {project: g/r, ref: dev, file: \"b\\",
+            "      .yml\"}",
+            "  - project: g/q",
+            "    ref: dev",
+            "",
+        ]
+        .join(nl);
+        std::fs::write(&path, &text).unwrap();
+        let ctx = Ctx::new(Default::default(), 0, env())
+            .with_gitlab("gitlab.com", Ok(gitlab_client(&fakes)));
+        let opts = RunOptions {
+            dry_run: false,
+            check: false,
+            concurrency: 4,
+        };
+        let rows = pin_file(
+            &GitlabCi::default(),
+            &ctx,
+            &path,
+            &KindSet::defaults(&KINDS),
+            &opts,
+        )
+        .await
+        .unwrap();
+        let got: Vec<(usize, Status, Option<&str>)> = rows
+            .iter()
+            .map(|r| (r.line, r.status, r.reason.as_deref()))
+            .collect();
+        let no_place = Some("no safe place for comment");
+        assert_eq!(
+            got,
+            [
+                (2, Status::Skipped, no_place),
+                (4, Status::Skipped, no_place),
+                (7, Status::Pinned, None),
+            ],
+            "{name}"
+        );
+        let out = std::fs::read_to_string(&path).unwrap();
+        let sha = fake_hex("g%2Fq@dev", 40);
+        // only the safe include changed: its ref and its comment
+        let want = text.replace("ref: dev\n", &format!("ref: {sha}  # dev\n"));
+        let want = want.replace("ref: dev\r\n", &format!("ref: {sha}  # dev\r\n"));
+        assert_eq!(out, want, "{name}");
+        // the pinned file still parses
+        assert!(pin_gitlab_ci::discover::discover(&out).is_ok(), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A reference at a target path that cannot be spliced (block scalar) is
 /// reported `skipped (<reason>)`; no resolver is built and nothing is edited.
 #[tokio::test]

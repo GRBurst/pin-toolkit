@@ -522,6 +522,20 @@ impl Walker<'_> {
     }
 }
 
+/// Whether the byte `at` lies strictly inside the token of a scalar or alias
+/// in `nodes`: a line break there is part of a multi-line scalar (or of a
+/// quoted one's escape), so nothing — a comment — may be inserted at it
+/// (review M2). Keys and the subtrees of [`Node::Tagged`] are not nodes
+/// and not covered.
+pub fn inside_token(nodes: &[Node], at: usize) -> bool {
+    nodes.iter().any(|n| match n {
+        Node::Scalar(ScalarRef { span, .. }) | Node::Alias { span, .. } => {
+            span.start < at && at < span.end
+        }
+        Node::Tagged { .. } => false,
+    })
+}
+
 /// The parser's message for a tab after `:` (and no space): YAML allows a
 /// tab as separation there, saphyr does not (review H1).
 const TAB_AFTER_COLON: &str = "':' must be followed by a valid YAML whitespace";
@@ -1113,6 +1127,33 @@ mod tests {
         assert_eq!(templated("[x, {{ .z }}]\n", "[0]"), no("x"));
         assert_eq!(templated("a: x  # {{ c }}\n", "a"), no("x"));
         assert_eq!(templated("a: x\n{{- if .z }}\nb: y\n", "a"), no("x"));
+    }
+
+    /// Review M2: a line break inside a scalar token is not a place for a
+    /// comment; the end of the token's own line (or of a one-line sibling)
+    /// is.
+    #[test]
+    fn inside_token_finds_line_breaks_in_scalars() {
+        let at = |t: &str, i: usize| inside_token(&scan(t, ScanOpts::default()).unwrap(), i);
+
+        // multi-line plain sibling in a flow mapping: the break is inside
+        let t = "include: {project: g/p, ref: main, file: a\n  .yml}\n";
+        let brk = t.find('\n').unwrap();
+        assert!(at(t, brk));
+        // … also CRLF (the `\r` of the break), and double-quoted
+        let t = "include: {project: g/p, ref: main, file: a\r\n  .yml}\r\n";
+        assert!(at(t, t.find('\r').unwrap()));
+        let t = "include: {project: g/p, ref: main, file: \"a\\\n  .yml\"}\n";
+        assert!(at(t, t.find('\n').unwrap()));
+        // a comma at the line end, a one-line value, a block collection
+        let t = "include: {project: g/p, ref: main,\n  file: a.yml}\n";
+        assert!(!at(t, t.find('\n').unwrap()));
+        let t = "a: x\nb: \"y\" # c\n";
+        assert!(!at(t, t.find('\n').unwrap()));
+        assert!(!at(t, t.len() - 1));
+        // token bounds are not inside: start and end of a one-line scalar
+        let t = "a: xy\n";
+        assert!(!at(t, 3) && !at(t, 5) && at(t, 4));
     }
 
     /// Characterisation (M8a decides what to report): an unquoted

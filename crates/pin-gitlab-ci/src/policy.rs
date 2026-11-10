@@ -52,11 +52,17 @@ fn with(mut f: Finding, status: Status, reason: Option<String>) -> Finding {
 
 /// `f` pinned to `new_value` (re-quoted like the token), plus the trailing
 /// `  # {orig}` comment when the line has room for one (M3 constraint 4).
+/// A comment that has no safe place (the line break is inside another
+/// scalar, review M2) makes the finding `skipped`: nothing is written.
 fn pinned(mut f: Finding, text: &str, t: &PinTarget, new_value: &str, orig: &str) -> Finding {
+    let comment = trailing_comment(text, t.line(), t.end(), orig);
+    if comment.is_some() && !t.comment_ok() {
+        return with(f, Status::Skipped, Some("no safe place for comment".into()));
+    }
     let new_token = requote(&text[t.start()..t.end()], new_value);
     f.status = Status::Pinned;
     f.edits = std::iter::once(Splice::replace(t.start(), t.end(), new_token.clone()))
-        .chain(trailing_comment(text, t.line(), t.end(), orig))
+        .chain(comment)
         .collect();
     f.new = Some(new_token);
     f
