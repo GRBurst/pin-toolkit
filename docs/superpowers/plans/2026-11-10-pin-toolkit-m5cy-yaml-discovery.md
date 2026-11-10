@@ -472,3 +472,5 @@ Tests use a local `fn scalars(t: &str) -> Vec<(String /*path "job.services[1].na
 5. **Parse errors keep exit 1 in `pin-ci`** and the driver stops at the first file error until M5d. **Accept** (M5d owns exit 2 and per-file continuation).
 6. **Keep the parity test and the frozen record after M5c-y** (G1 adds `include: - component:` targets → G1 adds them to `ADDED` or retires the test). **Keep until G1.**
 7. **Review L3 deferred to M5d** (Y-D14). **Accept.**
+
+**Decided by main (2026-11-10):** all seven recommended defaults accepted (R9 = third parity exception with spec §9 row at close-out; R7 covers `!!str`/`!reference`; `ScanError`; `ScalarRef` extra fields; exit 1 until M5d; parity test kept until G1; L3 → M5d).
