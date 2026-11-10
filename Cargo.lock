@@ -914,7 +914,6 @@ dependencies = [
 name = "pin-gitlab-ci"
 version = "0.1.0"
 dependencies = [
- "clap",
  "insta",
  "pin-core",
  "serde_json",

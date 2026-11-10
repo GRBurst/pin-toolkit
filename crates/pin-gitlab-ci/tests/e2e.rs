@@ -1,6 +1,8 @@
+mod common;
+
+use common::driver::{PinFilesError, PinOptions, exit_code, outcome, pin_files};
 use pin_core::oci::RegistryClient;
-use pin_core::report::Status;
-use pin_gitlab_ci::{PinOptions, exit_code, outcome, pin_files};
+use pin_core::report::{Report, Row, Status};
 use std::path::PathBuf;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -315,6 +317,51 @@ async fn file_error_keeps_the_rows_of_earlier_files() {
     assert!(stdout.ends_with("pinned: 0, ok: 0, updated: 0, skipped: 1, unresolved: 0\n"));
     assert!(out.stderr.unwrap().starts_with("pin-ci: "));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+fn row() -> Row {
+    Row {
+        plugin: "gitlab-ci",
+        kind: "image",
+        file: "a.yml".into(),
+        line: 2,
+        reference: "x".into(),
+        old: "x".into(),
+        new: None,
+        status: Status::Skipped,
+        reason: Some("r".into()),
+        follow_up: None,
+    }
+}
+
+/// Review L2: what `pin-ci` prints and exits with.
+#[test]
+fn outcome_prints_partial_rows_before_the_file_error() {
+    let ok = outcome(Ok(Report::new(vec![row()])), false);
+    assert_eq!(ok.code, 0);
+    assert!(ok.stderr.is_none());
+    assert!(ok.stdout.unwrap().starts_with("a.yml:2  skipped (r)"));
+
+    let err = |rows: Vec<Row>| PinFilesError {
+        partial: Report::new(rows),
+        error: "b.yml:1: invalid YAML: boom".into(),
+    };
+    let out = outcome(Err(err(vec![row()])), false);
+    assert_eq!(out.code, 1);
+    assert_eq!(
+        out.stderr.as_deref(),
+        Some("pin-ci: b.yml:1: invalid YAML: boom")
+    );
+    assert!(out.stdout.unwrap().starts_with("a.yml:2  skipped (r)"));
+
+    let out = outcome(Err(err(vec![row()])), true);
+    let json: serde_json::Value = serde_json::from_str(&out.stdout.unwrap()).unwrap();
+    assert_eq!(json["results"][0]["file"], "a.yml");
+
+    // nothing processed before the error: nothing to print
+    let out = outcome(Err(err(vec![])), false);
+    assert_eq!((out.code, out.stdout), (1, None));
+    assert!(out.stderr.is_some());
 }
 
 #[tokio::test]

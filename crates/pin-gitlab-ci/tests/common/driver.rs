@@ -1,4 +1,4 @@
-//! Test and `pin-ci` binary helper until M5d (spec §9): runs [`GitlabCi`]
+//! Test helper (the former `pin-ci` driver, moved here in M5d T24): runs [`GitlabCi`]
 //! through [`pin_core::run::pin_file`] with preset clients. Not API.
 
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use pin_core::plugin::{KindSet, Selection};
 use pin_core::report::Report;
 use pin_core::run::{AgePolicy, Ctx, ResolverEnv, RunOptions, UpdatePolicy, now_unix, pin_file};
 
-use crate::{GitlabCi, KINDS};
+use pin_gitlab_ci::{GitlabCi, KINDS};
 
 /// Options for a pin run.
 #[derive(Debug, Clone)]
@@ -172,55 +172,4 @@ pub fn outcome(result: Result<Report, PinFilesError>, json: bool) -> Outcome {
 /// Exit code for a report: 1 when anything was unresolved, else 0.
 pub fn exit_code(report: &Report) -> i32 {
     if report.summary.unresolved > 0 { 1 } else { 0 }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pin_core::report::{Row, Status};
-
-    fn row() -> Row {
-        Row {
-            plugin: "gitlab-ci",
-            kind: "image",
-            file: "a.yml".into(),
-            line: 2,
-            reference: "x".into(),
-            old: "x".into(),
-            new: None,
-            status: Status::Skipped,
-            reason: Some("r".into()),
-            follow_up: None,
-        }
-    }
-
-    /// Review L2: what `pin-ci` prints and exits with.
-    #[test]
-    fn outcome_prints_partial_rows_before_the_file_error() {
-        let ok = outcome(Ok(Report::new(vec![row()])), false);
-        assert_eq!(ok.code, 0);
-        assert!(ok.stderr.is_none());
-        assert!(ok.stdout.unwrap().starts_with("a.yml:2  skipped (r)"));
-
-        let err = |rows: Vec<Row>| PinFilesError {
-            partial: Report::new(rows),
-            error: "b.yml:1: invalid YAML: boom".into(),
-        };
-        let out = outcome(Err(err(vec![row()])), false);
-        assert_eq!(out.code, 1);
-        assert_eq!(
-            out.stderr.as_deref(),
-            Some("pin-ci: b.yml:1: invalid YAML: boom")
-        );
-        assert!(out.stdout.unwrap().starts_with("a.yml:2  skipped (r)"));
-
-        let out = outcome(Err(err(vec![row()])), true);
-        let json: serde_json::Value = serde_json::from_str(&out.stdout.unwrap()).unwrap();
-        assert_eq!(json["results"][0]["file"], "a.yml");
-
-        // nothing processed before the error: nothing to print
-        let out = outcome(Err(err(vec![])), false);
-        assert_eq!((out.code, out.stdout), (1, None));
-        assert!(out.stderr.is_some());
-    }
 }

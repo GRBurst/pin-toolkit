@@ -11,13 +11,15 @@
 //! update. The oracle therefore compares what both tools must agree on: for
 //! every `image:tag@sha256:...` the old pipeline wrote, the new tool's
 //! resolver must return the *same digest* for the *same* `image:tag`.
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use common::driver::{PinOptions, client_from_env, pin_files};
 use pin_core::oci::ImageRef;
 use pin_core::ver::docker as versioning;
-use pin_gitlab_ci::{PinOptions, client_from_env, pin_files};
 
 /// Repo root at compile time (two levels above the crate); the old pipeline
 /// runs as-is from here.

@@ -1,12 +1,14 @@
 //! Opt-in live tests (real Docker Hub). Gate: `PIN_CI_LIVE=1 cargo test --test live`.
 //! Without the env var they print a notice and pass without doing anything.
+mod common;
+
 use std::path::Path;
 use std::process::Command;
 
 use pin_core::report::Status;
 
 fn client_from_env() -> pin_core::oci::RegistryClient {
-    pin_gitlab_ci::client_from_env()
+    common::driver::client_from_env()
 }
 
 /// GitLab client for the M3 signature: the live fixtures contain no
@@ -94,9 +96,9 @@ async fn live_update_docker_hub() {
         eprintln!("SKIP live (set PIN_CI_LIVE=1)");
         return;
     }
+    use common::driver::{PinOptions, pin_files};
     use pin_core::oci::ImageRef;
     use pin_core::ver::docker as versioning;
-    use pin_gitlab_ci::{PinOptions, pin_files};
 
     // Scratch dir: std::env::temp_dir() when readable+writable; sandboxes
     // where /tmp is write-only get the repo's gitignored .tmp/ instead.
@@ -239,9 +241,9 @@ async fn live_guarded_update() {
         );
         return;
     }
+    use common::driver::{PinOptions, pin_files};
     use pin_core::oci::ImageRef;
     use pin_core::ver::docker as versioning;
-    use pin_gitlab_ci::{PinOptions, pin_files};
 
     // Scratch dir: std::env::temp_dir() when readable+writable; sandboxes
     // where /tmp is write-only get the repo's gitignored .tmp/ instead.

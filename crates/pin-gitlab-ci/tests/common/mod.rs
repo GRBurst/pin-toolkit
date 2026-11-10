@@ -3,6 +3,8 @@
 //! normalisers that make reports snapshot-stable.
 #![allow(dead_code)] // each test crate uses a subset
 
+pub mod driver;
+
 use std::path::{Path, PathBuf};
 
 use pin_core::edit::{Splice, apply, coalesce_comments};
@@ -13,9 +15,11 @@ use pin_core::report::{Report, Row, Status};
 use pin_core::run::{Ctx, ResolverEnv, UpdatePolicy, now_unix};
 use pin_core::text::LineIndex;
 use pin_gitlab_ci::discover::{PinTarget, discover};
-use pin_gitlab_ci::{GitlabCi, KINDS, PinOptions, pin_files};
+use pin_gitlab_ci::{GitlabCi, KINDS};
 use wiremock::matchers::path_regex;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+use driver::{PinOptions, pin_files};
 
 /// Registry hosts the fake registry answers for. Fixtures must stay within
 /// this set (checked in [`pin_once`]) so no test ever touches the network.

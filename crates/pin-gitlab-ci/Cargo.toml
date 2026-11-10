@@ -3,17 +3,12 @@ name = "pin-gitlab-ci"
 version.workspace = true
 edition.workspace = true
 
-[[bin]]
-name = "pin-ci"
-path = "src/main.rs"
-
 [dependencies]
 pin-core = { workspace = true, features = ["oci", "gitlab", "yaml"] }
-clap = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 pin-core = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 serde_json = { workspace = true }
 wiremock = { workspace = true }
 insta = { workspace = true }

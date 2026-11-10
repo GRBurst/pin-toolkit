@@ -2,12 +2,14 @@
 //!
 //! wiremock registry (digests) + wiremock GitLab (tags/branches) against a
 //! temp CI file in the repo's gitignored `.tmp/` scratch.
+mod common;
+
 use std::path::{Path, PathBuf};
 
+use common::driver::{PinOptions, exit_code, pin_files};
 use pin_core::gitlab::GitLabClient;
 use pin_core::oci::RegistryClient;
 use pin_core::report::Status;
-use pin_gitlab_ci::{PinOptions, exit_code, pin_files};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
