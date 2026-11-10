@@ -1,4 +1,4 @@
-use pin_ci::{PinOptions, RegistryClient, exit_code, pin_files};
+use pin_gitlab_ci::{PinOptions, RegistryClient, exit_code, pin_files};
 use std::path::PathBuf;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -59,8 +59,8 @@ fn mock_client(s: &MockServer) -> RegistryClient {
 
 /// GitLab client for the M3 signature: the M1/M2 fixtures contain no
 /// component/include targets, so it is never contacted (dead local base).
-fn gitlab_dummy() -> pin_ci::gitlab::GitLabClient {
-    pin_ci::gitlab::GitLabClient::new("http://127.0.0.1:9".into(), None, false)
+fn gitlab_dummy() -> pin_gitlab_ci::gitlab::GitLabClient {
+    pin_gitlab_ci::gitlab::GitLabClient::new("http://127.0.0.1:9".into(), None, false)
 }
 
 /// Mock server for the `ci-update.yml` fixture: alpine tag list with 3.24

@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use pin_ci::{PinOptions, client_from_env, exit_code, gitlab_from_env, pin_files};
+use pin_gitlab_ci::{PinOptions, client_from_env, exit_code, gitlab_from_env, pin_files};
 
 /// Pin container image references in GitLab CI files to immutable digests.
 #[derive(Parser)]

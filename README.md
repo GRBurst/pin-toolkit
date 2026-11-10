@@ -282,9 +282,9 @@ Nothing secret is written to files or logs.
 
 ## Tests
 
-- `cargo test` — unit, mock-registry, and end-to-end tests. Always runs
+- `cargo test --workspace --all-features` — unit, mock-registry, and end-to-end tests. Always runs
   without network, registry credentials, or external tools.
-- `PIN_CI_LIVE=1 cargo test --test live` — opt-in live tests against real
+- `PIN_CI_LIVE=1 cargo test -p pin-gitlab-ci --test live` — opt-in live tests against real
   registries: Docker Hub digest resolution for `alpine:3.20` /
   `ubuntu:24.04` plus a full `--update --update-major` run whose tag
   choice is checked against an independent `list_tags` +
@@ -299,7 +299,9 @@ Nothing secret is written to files or logs.
   is missing); and a GHCR public-package resolution gated on
   `GITHUB_TOKEN` (skips with a hint otherwise), likewise cross-checked
   against `crane digest`.
-- `PIN_CI_ORACLE=1 cargo test --test oracle` — opt-in differential tests
+- `PIN_CI_LIVE=1 cargo test -p pin-core --all-features --test live_gitlab` — opt-in
+  live GitLab ref resolution against gitlab.com (cross-checked with `git ls-remote`).
+- `PIN_CI_ORACLE=1 cargo test -p pin-gitlab-ci --test oracle` — opt-in differential tests
   against the old pipeline, which runs `pin-ci-images.sh` as-is on a temp
   checkout:
   - M1 (pin-only): the new tool must pin exactly the same
