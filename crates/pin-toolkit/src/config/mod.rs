@@ -7,6 +7,7 @@ use std::fmt;
 
 use pin_core::run::{AgePolicy, UpdatePolicy};
 
+pub mod env;
 pub mod repo;
 
 /// The default `--concurrency`.

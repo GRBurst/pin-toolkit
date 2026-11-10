@@ -15,6 +15,7 @@ use pin_core::plugin::KindSet;
 use pin_core::run::ResolverEnv;
 
 use crate::cli::Mode;
+use crate::config::env;
 use crate::known::{KNOWN, compiled_plugin};
 
 /// What one invocation sees of the process: read once, at the edge.
@@ -61,13 +62,17 @@ pub async fn execute(p: Process, tune: impl FnOnce(&mut ResolverEnv)) -> Output 
             };
         }
     };
-    match mode {
-        Mode::Plugins => Output {
-            stdout: plugins_listing(),
-            ..Output::default()
-        },
-        Mode::All | Mode::Plugin(_) => Output::default(),
+    let mut out = Output::default();
+    for var in env::unknown_vars(&p.env) {
+        out.stderr.push_str(&format!(
+            "pin-toolkit: ignoring unknown environment variable {var}\n"
+        ));
     }
+    match mode {
+        Mode::Plugins => out.stdout = plugins_listing(),
+        Mode::All | Mode::Plugin(_) => {}
+    }
+    out
 }
 
 /// `pin-toolkit plugins` (T-D27): per known plugin `{id}: {state}`, then
