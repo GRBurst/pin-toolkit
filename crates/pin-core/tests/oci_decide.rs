@@ -165,10 +165,14 @@ async fn inline_construction_error_is_unresolved() {
 }
 
 /// ghcr.io `org/img` (tags v1, v2: v1 → D1, v2 → D2), the update policy
-/// `enabled, allow_major` (v1 → v2 is a major bump), `min_age_days = 7`,
-/// `unknown_age`, and a Hub API fake that must
-/// never be asked (`.expect(0)`: tag times come only from the Hub API).
-async fn ghcr_update(unknown_age: AgePolicy) -> (Result<ImageDecision, String>, MockServer) {
+/// `enabled`, `allow_major` (v1 → v2 is a major bump: without it there is
+/// no candidate), `min_age_days = 7`, `unknown_age`, and a Hub API fake
+/// that must never be asked (`.expect(0)`: tag times come only from the
+/// Hub API).
+async fn ghcr_update(
+    unknown_age: AgePolicy,
+    allow_major: bool,
+) -> (Result<ImageDecision, String>, MockServer) {
     let s = MockServer::start().await;
     head("org/img:v1", 200, Some(D1)).mount(&s).await;
     head("org/img:v2", 200, Some(D2)).mount(&s).await;
@@ -186,7 +190,7 @@ async fn ghcr_update(unknown_age: AgePolicy) -> (Result<ImageDecision, String>, 
     .with_hub_base(&hub.uri());
     let update = UpdatePolicy {
         enabled: true,
-        allow_major: true,
+        allow_major,
         min_age_days: 7,
         unknown_age,
     };
@@ -200,7 +204,7 @@ async fn ghcr_update(unknown_age: AgePolicy) -> (Result<ImageDecision, String>, 
 /// tag-time request is made.
 #[tokio::test]
 async fn unknown_age_block_skips_non_hub_updates() {
-    let (d, hub) = ghcr_update(AgePolicy::Block).await;
+    let (d, hub) = ghcr_update(AgePolicy::Block, true).await;
     assert_eq!(
         d,
         Ok(ImageDecision::Skip(
@@ -213,12 +217,27 @@ async fn unknown_age_block_skips_non_hub_updates() {
 /// `allow` (the default) keeps today's no-op guard for non-docker.io hosts.
 #[tokio::test]
 async fn unknown_age_allow_keeps_todays_update() {
-    let (d, hub) = ghcr_update(AgePolicy::Allow).await;
+    let (d, hub) = ghcr_update(AgePolicy::Allow, true).await;
     assert_eq!(
         d,
         Ok(ImageDecision::Update {
             tag: "v2".to_string(),
             digest: D2.to_string()
+        })
+    );
+    hub.verify().await;
+}
+
+/// Implementer deviation (6), M5d review-1 L3: `block` gates updates only;
+/// without an update candidate the ref is pinned (the M2 no-update path)
+/// and no Hub or tag-time request is made.
+#[tokio::test]
+async fn unknown_age_block_without_candidate_pins() {
+    let (d, hub) = ghcr_update(AgePolicy::Block, false).await;
+    assert_eq!(
+        d,
+        Ok(ImageDecision::Pin {
+            digest: D1.to_string()
         })
     );
     hub.verify().await;

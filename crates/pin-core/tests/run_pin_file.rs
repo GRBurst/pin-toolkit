@@ -378,14 +378,15 @@ async fn independent_finding_written_next_to_overlap() {
 }
 
 /// Review L2: only edits of `pinned`/`updated` findings are written; a
-/// stray edit on a skipped finding is dropped (and cannot mark a real pin
-/// as overlapping).
+/// stray edit on a skipped finding is dropped and cannot mark a real pin
+/// as overlapping (the stray edit `8..10` lies inside the pin `7..15`,
+/// M5d review-1 L1).
 #[tokio::test]
 async fn non_pinned_edits_are_not_written() {
     let p = scratch("non-pinned", TEXT);
     let pin = vec![Splice::replace(7, 15, "pinned")];
     let fake = Fake::new(vec![
-        finding(0, Status::Skipped, vec![Splice::replace(0, 1, "Z")]),
+        finding(0, Status::Skipped, vec![Splice::replace(8, 10, "Z")]),
         finding(1, Status::Pinned, pin.clone()),
     ]);
     let rows = pin_file(&fake, &ctx(), &p, &on(), &opts(4)).await.unwrap();

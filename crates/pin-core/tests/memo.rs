@@ -139,3 +139,30 @@ async fn same_repo_on_two_hosts_is_two_lookups() {
     a.verify().await;
     b.verify().await;
 }
+
+/// Implementer deviation (3), M5d review-1 L2: `None` means the primary
+/// host, so `None` and the primary's name share one lookup.
+#[tokio::test]
+async fn primary_host_none_and_name_share_one_lookup() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/projects/g%2Fp/repository/tags/v1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"commit": {"id": SHA}}))
+                .set_delay(DELAY),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = GitLabClient::new(server.uri(), None, false);
+    let ctx = Ctx::new(Default::default(), 0, ResolverEnv::default())
+        .with_gitlab("gitlab.com", Ok(client));
+    let (a, b) = tokio::join!(
+        ctx.gitlab_resolve(None, "g/p", "v1"),
+        ctx.gitlab_resolve(Some("gitlab.com"), "g/p", "v1")
+    );
+    assert_eq!(a, Ok(SHA.to_string()));
+    assert_eq!(b, Ok(SHA.to_string()));
+    server.verify().await;
+}
