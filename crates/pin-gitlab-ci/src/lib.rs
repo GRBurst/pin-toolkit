@@ -16,20 +16,27 @@ use pin_core::oci::pin_inline_image;
 use pin_core::plugin::{Finding, KindSet, KindSpec, Plugin, PluginMeta, ScanError, Source};
 use pin_core::run::Ctx;
 
+/// Kind id of `image:` and `services:` references (review L10).
+pub const IMAGE: &str = "image";
+/// Kind id of top-level `component:` references.
+pub const COMPONENT: &str = "component";
+/// Kind id of classic `include:` project/ref mappings.
+pub const INCLUDE: &str = "include";
+
 /// The reference kinds this plugin finds (all on by default).
 pub const KINDS: [KindSpec; 3] = [
     KindSpec {
-        id: "image",
+        id: IMAGE,
         default_on: true,
         help: "image: and services: references (C1, C2)",
     },
     KindSpec {
-        id: "component",
+        id: COMPONENT,
         default_on: true,
         help: "top-level component: references (C3)",
     },
     KindSpec {
-        id: "include",
+        id: INCLUDE,
         default_on: true,
         help: "include: project/ref mappings (C4)",
     },
@@ -91,12 +98,16 @@ impl Plugin for GitlabCi {
                 start,
                 end,
                 value,
-            } => pin_inline_image(ctx, src.text, *line, *start, *end, value, "image").await,
-            PinTarget::Component { .. } => {
-                policy::resolve_component(&self.gitlab_hosts, ctx, src, t).await
+            } => pin_inline_image(ctx, src.text, *line, *start, *end, value, IMAGE).await,
+            PinTarget::Component { parts, .. } => {
+                policy::resolve_component(&self.gitlab_hosts, ctx, src, t, parts.as_ref()).await
             }
-            PinTarget::IncludeRef { .. } => policy::resolve_include(ctx, src, t).await,
-            PinTarget::Unsupported { .. } => policy::unsupported(src, t),
+            PinTarget::IncludeRef { project, .. } => {
+                policy::resolve_include(ctx, src, t, project).await
+            }
+            PinTarget::Unsupported { kind, reason, .. } => {
+                policy::unsupported(src, t, kind, reason)
+            }
         }
     }
 }
@@ -104,9 +115,9 @@ impl Plugin for GitlabCi {
 /// The kind id of a discovered target.
 fn target_kind(t: &PinTarget) -> &'static str {
     match t {
-        PinTarget::Image { .. } => "image",
-        PinTarget::Component { .. } => "component",
-        PinTarget::IncludeRef { .. } => "include",
+        PinTarget::Image { .. } => IMAGE,
+        PinTarget::Component { .. } => COMPONENT,
+        PinTarget::IncludeRef { .. } => INCLUDE,
         PinTarget::Unsupported { kind, .. } => kind,
     }
 }

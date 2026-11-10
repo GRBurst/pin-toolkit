@@ -8,7 +8,8 @@ use pin_core::plugin::{Finding, Source};
 use pin_core::report::Status;
 use pin_core::run::Ctx;
 
-use crate::discover::PinTarget;
+use crate::discover::{ComponentParts, PinTarget};
+use crate::{COMPONENT, INCLUDE};
 
 /// A component version GitLab resolves via the CI/CD Catalog at pipeline
 /// time (M3 constraint 8): starts with `~`, contains an `.x` wildcard, or
@@ -69,26 +70,28 @@ fn pinned(mut f: Finding, src: &Source<'_>, t: &PinTarget, new_value: &str, orig
 }
 
 /// A target that cannot be spliced (block or multi-line scalar): reported
-/// `skipped (<reason>)`, no edit and no resolver.
-pub(crate) fn unsupported(src: &Source<'_>, t: &PinTarget) -> Finding {
-    let PinTarget::Unsupported { kind, reason, .. } = t else {
-        unreachable!("unsupported receives Unsupported targets")
-    };
-    with(base(src, t, kind), Status::Skipped, Some((*reason).into()))
+/// `skipped (<reason>)`, no edit and no resolver. `kind`/`reason` are the
+/// fields of the `Unsupported` target `t` (review N5).
+pub(crate) fn unsupported(
+    src: &Source<'_>,
+    t: &PinTarget,
+    kind: &'static str,
+    reason: &'static str,
+) -> Finding {
+    with(base(src, t, kind), Status::Skipped, Some(reason.into()))
 }
 
 /// A component target → `@<sha>` (M3 Task 4 rules): unparseable, host not
 /// in `gitlab_hosts`, already a SHA, or catalog-managed → no resolve.
+/// `parts` is the field of the `Component` target `t` (review N5).
 pub(crate) async fn resolve_component(
     gitlab_hosts: &[String],
     ctx: &Ctx,
     src: &Source<'_>,
     t: &PinTarget,
+    parts: Option<&ComponentParts>,
 ) -> Finding {
-    let PinTarget::Component { parts, .. } = t else {
-        unreachable!("resolve_component receives Component targets")
-    };
-    let f = base(src, t, "component");
+    let f = base(src, t, COMPONENT);
     let Some(parts) = parts else {
         return with(f, Status::Skipped, Some("unparseable reference".into()));
     };
@@ -115,12 +118,16 @@ pub(crate) async fn resolve_component(
 }
 
 /// A classic-include `ref:` target → commit SHA on the primary GitLab host
-/// (M3 Task 4 rules): already a SHA or templated → no resolve.
-pub(crate) async fn resolve_include(ctx: &Ctx, src: &Source<'_>, t: &PinTarget) -> Finding {
-    let PinTarget::IncludeRef { value, project, .. } = t else {
-        unreachable!("resolve_include receives IncludeRef targets")
-    };
-    let f = base(src, t, "include");
+/// (M3 Task 4 rules): already a SHA or templated → no resolve. `project` is
+/// the field of the `IncludeRef` target `t` (review N5).
+pub(crate) async fn resolve_include(
+    ctx: &Ctx,
+    src: &Source<'_>,
+    t: &PinTarget,
+    project: &str,
+) -> Finding {
+    let value = t.value();
+    let f = base(src, t, INCLUDE);
     if is_commit_sha(value) {
         return with(f, Status::Ok, None);
     }

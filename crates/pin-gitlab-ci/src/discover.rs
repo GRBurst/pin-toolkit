@@ -25,6 +25,8 @@ use pin_core::plugin::ScanError;
 use pin_core::text::LineIndex;
 use pin_core::yaml::{self, Node, PathSeg, ScalarRef, ScanOpts, Style};
 
+use crate::{COMPONENT, IMAGE, INCLUDE};
+
 /// One discovered reference location in a CI file (M3: image, component or
 /// classic include).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,9 +210,9 @@ pub fn discover(text: &str) -> Result<Vec<PinTarget>, ScanError> {
             continue;
         }
         if is_image_path(&s.path) {
-            out.push(yaml_target(text, s, "image", true));
+            out.push(yaml_target(text, s, IMAGE, true));
         } else if is_component_path(&s.path) {
-            out.push(yaml_target(text, s, "component", comment_ok(s.line)));
+            out.push(yaml_target(text, s, COMPONENT, comment_ok(s.line)));
         } else if let [m @ .., PathSeg::Key(k)] = &s.path[..]
             && is_include_mapping(m)
         {
@@ -227,7 +229,7 @@ pub fn discover(text: &str) -> Result<Vec<PinTarget>, ScanError> {
             continue;
         };
         out.push(
-            unsupported(text, git_ref, "include").unwrap_or_else(|| PinTarget::IncludeRef {
+            unsupported(text, git_ref, INCLUDE).unwrap_or_else(|| PinTarget::IncludeRef {
                 line: git_ref.line,
                 start: git_ref.span.start,
                 end: git_ref.span.end,
@@ -269,7 +271,7 @@ fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str, comment_ok: bool) 
         return u;
     }
     let (line, start, end, value) = (s.line, s.span.start, s.span.end, s.value.clone());
-    if kind == "component" {
+    if kind == COMPONENT {
         PinTarget::Component {
             line,
             start,
