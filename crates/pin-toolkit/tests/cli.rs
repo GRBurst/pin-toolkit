@@ -30,3 +30,24 @@ async fn plugins_without_gitlab_ci() {
         Some("gitlab-ci: not in this build")
     );
 }
+
+#[tokio::test]
+async fn usage_error_exits_2() {
+    let root = repo("cli-usage");
+    let out = run_in(&root, &["pin-toolkit", "--bogus"], &[]).await;
+    assert_eq!(out.code, 2);
+    assert!(out.stderr.starts_with("error:"), "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, "");
+
+    let out = run_in(&root, &["pin-toolkit", "--help"], &[]).await;
+    assert_eq!(out.code, 0);
+    assert!(
+        out.stdout.contains("Usage: pin-toolkit"),
+        "stdout: {}",
+        out.stdout
+    );
+    assert_eq!(out.stderr, "");
+
+    let out = run_in(&root, &["pin-toolkit", "--version"], &[]).await;
+    assert_eq!((out.code, out.stdout.as_str()), (0, "pin-toolkit 0.1.0\n"));
+}

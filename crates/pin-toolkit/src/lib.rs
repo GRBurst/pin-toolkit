@@ -52,15 +52,10 @@ pub struct Output {
 /// point resolvers at fakes).
 pub async fn execute(p: Process, tune: impl FnOnce(&mut ResolverEnv)) -> Output {
     let _ = tune; // wired into the run in T21
-    let (_cli, mode) = match cli::parse(&p.args) {
+    let args = cli::dispatch_argv0(p.args.clone());
+    let (_cli, mode) = match cli::parse(&args) {
         Ok(parsed) => parsed,
-        Err(e) => {
-            return Output {
-                stderr: e.render().to_string(),
-                code: 2,
-                ..Output::default()
-            };
-        }
+        Err(e) => return usage(&e),
     };
     let mut out = Output::default();
     for var in env::unknown_vars(&p.env) {
@@ -73,6 +68,23 @@ pub async fn execute(p: Process, tune: impl FnOnce(&mut ResolverEnv)) -> Output 
         Mode::All | Mode::Plugin(_) => {}
     }
     out
+}
+
+/// A clap outcome that is not a parsed command line: help and version on
+/// stdout (0), usage errors on stderr (2).
+fn usage(e: &clap::Error) -> Output {
+    let text = e.render().to_string();
+    match e.kind() {
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => Output {
+            stdout: text,
+            ..Output::default()
+        },
+        _ => Output {
+            stderr: text,
+            code: 2,
+            ..Output::default()
+        },
+    }
 }
 
 /// `pin-toolkit plugins` (T-D27): per known plugin `{id}: {state}`, then
