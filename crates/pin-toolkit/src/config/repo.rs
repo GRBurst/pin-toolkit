@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 
 use super::{Fatal, Layer, PluginLayer, valid_gitlab_host};
+use crate::enable::file_glob;
 use crate::known::{KNOWN, known};
 
 /// Keys only the global config may set (§7.2): exit 2 in a repo file.
@@ -225,6 +226,9 @@ pub fn parse(path: &Path, text: &str) -> Result<Layer, Fatal> {
         {
             return Err(fatal(unknown_kind(id, kind)));
         }
+        for g in pl.files.iter().flatten() {
+            file_glob(id, g).map_err(fatal)?;
+        }
     }
     Ok(layer)
 }
@@ -405,6 +409,19 @@ aliases = { stable = "https://charts.helm.sh/stable" }"#,
             (
                 "version = 1\n[plugins.helm]\naliases = { s = 1 }\n",
                 Contains("invalid type"),
+            ),
+            // Review-2 L2: globs of every plugin table, enabled or not.
+            (
+                "version = 1\n[plugins.gitlab-ci]\nrun = false\nfiles = [\"[\"]\n",
+                Contains("invalid glob `[` in plugins.gitlab-ci.files: "),
+            ),
+            (
+                "version = 1\n[plugins.helm]\nfiles = [\"*.yaml\", \"[\"]\n",
+                Contains("invalid glob `[` in plugins.helm.files: "),
+            ),
+            (
+                "version = 1\n[plugins.github-actions]\nfiles = [\"a{b\"]\n",
+                Contains("invalid glob `a{b` in plugins.github-actions.files: "),
             ),
         ];
         for (text, want) in rows {

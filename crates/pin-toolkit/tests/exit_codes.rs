@@ -245,8 +245,9 @@ async fn exit_code_table() {
     let (_, out) = row(&f, "15", &glob, &[], &[]).await;
     code("15", &out, 2);
     assert!(
-        out.stderr
-            .starts_with("pin-toolkit: invalid glob `[` in plugins.gitlab-ci.files: "),
+        out.stderr.starts_with(
+            "pin-toolkit: .pin-toolkit.toml: invalid glob `[` in plugins.gitlab-ci.files: "
+        ),
         "row 15: {}",
         out.stderr
     );

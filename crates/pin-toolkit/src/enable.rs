@@ -1,7 +1,7 @@
 //! Which plugins run, with which kinds, ignore patterns and file globs
 //! (spec §6.5, §6.6, §8.2/O1; T-D11, T-D28).
 
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 use pin_core::plugin::{DynPlugin, KindSet, RefPatterns, Selection};
 
 use crate::cli::Mode;
@@ -97,6 +97,16 @@ pub fn selection(eff: &Effective, p: &dyn DynPlugin) -> Selection {
     }
 }
 
+/// One `plugins.<id>.files` glob (`*` does not cross `/`), or the message
+/// `invalid glob `{g}` in plugins.{id}.files: {why}`. The repo parser
+/// validates every plugin table with it (review-2 L2).
+pub fn file_glob(id: &str, g: &str) -> Result<Glob, String> {
+    GlobBuilder::new(g)
+        .literal_separator(true)
+        .build()
+        .map_err(|e| format!("invalid glob `{g}` in plugins.{id}.files: {}", e.kind()))
+}
+
 /// `plugins.<id>.files`, else `p`'s default globs, matched against the
 /// path relative to the git root (`*` does not cross `/`).
 fn globs(eff: &Effective, p: &dyn DynPlugin) -> Result<GlobSet, Fatal> {
@@ -105,17 +115,7 @@ fn globs(eff: &Effective, p: &dyn DynPlugin) -> Result<GlobSet, Fatal> {
         configured.unwrap_or_else(|| p.default_files().iter().map(|g| g.to_string()).collect());
     let mut set = GlobSetBuilder::new();
     for g in &files {
-        let glob = GlobBuilder::new(g)
-            .literal_separator(true)
-            .build()
-            .map_err(|e| {
-                Fatal(format!(
-                    "invalid glob `{g}` in plugins.{}.files: {}",
-                    p.id(),
-                    e.kind()
-                ))
-            })?;
-        set.add(glob);
+        set.add(file_glob(p.id(), g).map_err(Fatal)?);
     }
     set.build()
         .map_err(|e| Fatal(format!("plugins.{}.files: {}", p.id(), e.kind())))

@@ -214,7 +214,17 @@ async fn run_false_disables_but_subcommand_runs() {
         ".pin-toolkit.toml",
         "version = 1\n[plugins.gitlab-ci]\nfiles = [\"[\"]\n",
     );
-    let eff = load_in(&root, &root, &["pin-toolkit"], &[]).unwrap();
+    // Review-2 L2: the repo parser rejects the glob (with the path) ...
+    let err = load_in(&root, &root, &["pin-toolkit"], &[]).expect_err("invalid glob is fatal");
+    assert!(
+        err.0
+            .starts_with(".pin-toolkit.toml: invalid glob `[` in plugins.gitlab-ci.files: "),
+        "{}",
+        err.0
+    );
+    // ... and enable still builds every glob it uses.
+    let mut eff = Effective::fold(&[]);
+    eff.plugins.entry("gitlab-ci".into()).or_default().files = Some(vec!["[".into()]);
     let err = enable(&eff, &Mode::All)
         .err()
         .expect("invalid glob is fatal");
