@@ -7,7 +7,7 @@
 //!
 //! M3 Task 1: top-level (indent 0) `component:` values become
 //! `PinTarget::Component` targets; `parts` is `None` when the value fails
-//! [`parse_component_ref`].
+//! `parse_component_ref`.
 //!
 //! M3 Task 2: top-level (indent 0) `include:` values that are
 //! `project`/`ref` mappings become `PinTarget::IncludeRef` targets: flow
@@ -140,9 +140,9 @@ impl PinTarget {
 /// and no `$`, and the version is non-empty.
 ///
 /// Discovery is purely syntactic — it does NOT filter via
-/// [`ImageRef::parse`](crate::image_ref::ImageRef::parse). Values that fail to parse (e.g. shell/YAML
+/// [`ImageRef::parse`](pin_core::oci::ImageRef::parse). Values that fail to parse (e.g. shell/YAML
 /// interpolation like `${IMAGE}:${TAG}`) or fail
-/// [`parse_component_ref`] stay targets and are reported as
+/// `parse_component_ref` stay targets and are reported as
 /// `skipped (unparseable reference)` at resolve time, so the report stays
 /// complete and the exit code stays 0.
 ///
@@ -431,7 +431,7 @@ fn push_target(
 /// `bracket` in `line`. M1: the inside must not contain `{`, `}`, or a
 /// nested `[` (otherwise the whole line yields no targets); items are the
 /// comma-split pieces — trimmed, one layer of quotes stripped — and each
-/// must parse as an [`ImageRef`](crate::image_ref::ImageRef). Spans point at the item within the line
+/// must parse as an [`ImageRef`](pin_core::oci::ImageRef). Spans point at the item within the line
 /// (quotes included in the span when quoted).
 fn push_flow_targets(
     targets: &mut Vec<PinTarget>,
