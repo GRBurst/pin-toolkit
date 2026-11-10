@@ -9,7 +9,7 @@
 //! `Authorization: Bearer`. The digest comes from the
 //! `Docker-Content-Digest` header, falling back to `GET` + sha256 of the body.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::Path;
 use std::time::Duration;
@@ -209,6 +209,9 @@ pub struct RegistryClient {
     http: reqwest::Client,
     creds: Creds,
     base_urls: HashMap<String, String>,
+    /// Test hook: override the Docker Hub API base (M4b-1);
+    /// `None` → `https://hub.docker.com/v2`.
+    hub_base: Option<String>,
     /// Bearer tokens keyed by the `WWW-Authenticate` scope.
     tokens: Mutex<HashMap<String, String>>,
     /// Fetched tag lists keyed by `api_repo()`; avoids re-fetching for
@@ -228,9 +231,17 @@ impl RegistryClient {
             http,
             creds,
             base_urls,
+            hub_base: None,
             tokens: Mutex::new(HashMap::new()),
             tag_lists: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Test hook: point the Docker Hub API (M4b-1 `tag_timestamps`) at a
+    /// mock server.
+    pub fn with_hub_base(mut self, url: &str) -> Self {
+        self.hub_base = Some(url.to_string());
+        self
     }
 
     /// Registry base URL for `r`'s host: the `base_urls` override, then the
@@ -454,6 +465,75 @@ impl RegistryClient {
             .map_err(|e| RegError::Network(e.to_string()))
     }
 
+    /// Push timestamps (unix seconds) for every tag of a Docker Hub ref,
+    /// from the Docker Hub API (M4b-1 release-age guard). Non-Hub refs
+    /// short-circuit to `Ok(empty)` without any HTTP. Pages with
+    /// `?page_size=100` and follows absolute `next` URLs until exhausted.
+    /// Per tag, `tag_last_pushed` is preferred over `last_updated`; a tag
+    /// with neither gets no entry. A 404 (unknown repo) yields `Ok(empty)`;
+    /// any other failure (network, 429, malformed page) is a `RegError`
+    /// with the `hub api:` prefix. No retry on 429 (M4a precedent).
+    pub async fn tag_timestamps(&self, r: &ImageRef) -> Result<BTreeMap<String, i64>, RegError> {
+        if !r.is_docker_hub() {
+            return Ok(BTreeMap::new());
+        }
+        let base = self
+            .hub_base
+            .clone()
+            .unwrap_or_else(|| "https://hub.docker.com/v2".to_string());
+        let mut url = format!("{base}/v2/repositories/{}/tags?page_size=100", r.api_repo());
+        let mut out: BTreeMap<String, i64> = BTreeMap::new();
+        loop {
+            let resp = self
+                .http
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| RegError::Network(e.to_string()))?;
+            let status = resp.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Ok(BTreeMap::new());
+            }
+            if !status.is_success() {
+                return Err(RegError::Unresolved(format!("hub api: {status} at {url}")));
+            }
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| RegError::Network(e.to_string()))?;
+            let page: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|_| RegError::Unresolved(format!("hub api: malformed page at {url}")))?;
+            let results = page
+                .get("results")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| RegError::Unresolved(format!("hub api: malformed page at {url}")))?;
+            for t in results {
+                let Some(name) = t.get("name").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                let ts = t
+                    .get("tag_last_pushed")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| t.get("last_updated").and_then(serde_json::Value::as_str))
+                    .and_then(parse_rfc3339_unix);
+                if let Some(ts) = ts {
+                    out.insert(name.to_string(), ts);
+                }
+            }
+            let Some(next) = page.get("next").and_then(serde_json::Value::as_str) else {
+                break;
+            };
+            if next.is_empty() {
+                break;
+            }
+            url = next.to_string();
+        }
+        Ok(out)
+    }
+
     /// All tags of the repo, following `Link: <url>; rel="next"` until
     /// exhausted. First request carries `?n=1000`. Anonymous probe first;
     /// 401 → WWW-Authenticate → bearer token (scope `repository:{repo}:pull`)
@@ -663,6 +743,106 @@ fn parse_link_next(header: Option<&reqwest::header::HeaderValue>) -> Option<Stri
         }
     }
     None
+}
+
+/// Days in month `m` (1-12) for year `y` (leap-year aware); 0 if invalid.
+fn days_in_month(y: i64, m: u32) -> u32 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Days from 1970-01-01 to the civil date (y, m, d) — Hinnant's
+/// `civil_days_since_epoch`. Valid inputs only (callers pre-validate).
+fn civil_to_days(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = if m > 2 { m - 3 } else { m + 9 }; // March-based [0, 11]
+    let doy = (153 * mp as i64 + 2) / 5 + d as i64 - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
+/// Parse an RFC 3339 timestamp (`YYYY-MM-DDTHH:MM:SS[.frac][Z|±HH:MM]`)
+/// to unix seconds. Fractional seconds are dropped; `None` when the
+/// string is not a valid, in-range timestamp.
+fn parse_rfc3339_unix(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    let digit = |r: std::ops::Range<usize>| -> Option<i64> {
+        std::str::from_utf8(b.get(r)?).ok()?.parse().ok()
+    };
+    if b.len() < 20 {
+        return None;
+    }
+    let y = digit(0..4)?;
+    if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' {
+        return None;
+    }
+    let m = digit(5..7)?;
+    let d = digit(8..10)?;
+    if !(1..=12).contains(&m) || !(1..=days_in_month(y, m as u32) as i64).contains(&d) {
+        return None;
+    }
+    if b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let hh = digit(11..13)?;
+    let mm = digit(14..16)?;
+    let ss = digit(17..19)?;
+    if !(0..=23).contains(&hh) || !(0..=59).contains(&mm) || !(0..=60).contains(&ss) {
+        return None;
+    }
+    let mut i = 19usize;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == start {
+            return None; // "…T12:00:00." with no fraction digits
+        }
+    }
+    let offset_secs: i64 = if b.get(i) == Some(&b'Z') {
+        if i + 1 != b.len() {
+            return None;
+        }
+        0
+    } else {
+        let sign = match b.get(i) {
+            Some(b'+') => 1,
+            Some(b'-') => -1,
+            _ => return None,
+        };
+        if i + 6 > b.len() || b[i + 3] != b':' {
+            return None;
+        }
+        let oh = digit(i + 1..i + 3)?;
+        let om = digit(i + 4..i + 6)?;
+        if !(0..=23).contains(&oh) || !(0..=59).contains(&om) || i + 6 != b.len() {
+            return None;
+        }
+        sign * (oh * 3600 + om * 60)
+    };
+    Some(civil_to_days(y, m as u32, d as u32) * 86_400 + hh * 3600 + mm * 60 + ss - offset_secs)
+}
+
+/// True when `ts_unix` is at least `min_days` days before `now_unix`
+/// (boundary-inclusive: age exactly N days is old enough).
+/// Consumed by the M4b-1 T2 update path; allowed while only unit-tested.
+#[allow(dead_code)]
+fn is_old_enough(ts_unix: i64, now_unix: i64, min_days: u64) -> bool {
+    ts_unix <= now_unix - min_days as i64 * 86_400
 }
 
 #[cfg(test)]
@@ -942,5 +1122,51 @@ mod tests {
         );
         let junk = HeaderValue::from_str("not <quoted>; rel=next").unwrap();
         assert_eq!(parse_link_next(Some(&junk)), None);
+    }
+
+    #[test]
+    fn rfc3339_parse_table() {
+        // Vectors verified with `date -ud` 2026-11-09 (controller).
+        assert_eq!(parse_rfc3339_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(
+            parse_rfc3339_unix("2026-11-08T14:24:40.263592Z"),
+            Some(1794147880)
+        );
+        assert_eq!(
+            parse_rfc3339_unix("2024-02-29T23:59:59+02:00"),
+            Some(1709243999)
+        );
+        assert_eq!(
+            parse_rfc3339_unix("2999-01-01T00:00:00Z"),
+            Some(32472144000)
+        );
+        assert_eq!(
+            parse_rfc3339_unix("2020-01-01T00:00:00+00:00"),
+            parse_rfc3339_unix("2020-01-01T00:00:00Z")
+        );
+        assert_eq!(parse_rfc3339_unix("2020-01-01T00:00:00Z"), Some(1577836800));
+        // Invalid.
+        assert_eq!(parse_rfc3339_unix("2026-13-01T00:00:00Z"), None);
+        assert_eq!(parse_rfc3339_unix("2026-02-30T00:00:00Z"), None);
+        assert_eq!(parse_rfc3339_unix("not-a-date"), None);
+        assert_eq!(parse_rfc3339_unix("2026-11-08 14:24:40Z"), None);
+        assert_eq!(parse_rfc3339_unix("2026-11-08T14:24:40"), None);
+        assert_eq!(parse_rfc3339_unix(""), None);
+    }
+
+    #[test]
+    fn is_old_enough_table() {
+        let now = 1_700_000_000i64;
+        let day = 86_400i64;
+        // Boundary: ts == now - N*86400 → old enough (age >= N days).
+        assert!(is_old_enough(now - 14 * day, now, 14));
+        // 1s newer than the cutoff → not old enough.
+        assert!(!is_old_enough(now - 14 * day + 1, now, 14));
+        // N = 0 → any ts <= now is old enough.
+        assert!(is_old_enough(now, now, 0));
+        assert!(is_old_enough(now - 1, now, 0));
+        assert!(!is_old_enough(now + 1, now, 0));
+        // Far older.
+        assert!(is_old_enough(0, now, 14));
     }
 }
