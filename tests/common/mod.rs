@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use pin_ci::discover::{PinTarget, discover};
 use pin_ci::gitlab::GitLabClient;
-use pin_ci::report::Report;
+use pin_ci::report::{RefResult, Report};
 use pin_ci::{ImageRef, PinOptions, RegistryClient, pin_files};
 use wiremock::matchers::path_regex;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -272,4 +272,105 @@ pub fn visible(text: &str) -> String {
         out.push_str("\n[no newline at end of file]");
     }
     out
+}
+
+/// Insertion found on one line: byte position in the O line and the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Insertion {
+    pub at: usize,
+    pub text: String,
+}
+
+/// Compare one edited line against its original modulo the rows on it:
+/// revert every row (`new` → `old`, once, in report order), then the rest
+/// must equal the original or the original plus ONE inserted trailing
+/// comment (`"  # …"`, no newline) — which needs a row on the line.
+/// `Err` describes the mismatch.
+pub fn line_diff(
+    o_line: &str,
+    e_line: &str,
+    rows: &[&RefResult],
+) -> Result<Option<Insertion>, String> {
+    let mut l = e_line.to_string();
+    for r in rows {
+        let new = r.new.as_deref().ok_or("row without `new`")?;
+        if !l.contains(new) {
+            return Err(format!("row `new` {new:?} not in edited line {e_line:?}"));
+        }
+        l = l.replacen(new, &r.old, 1);
+    }
+    if l == o_line {
+        return Ok(None);
+    }
+    let mut p = l
+        .bytes()
+        .zip(o_line.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !(l.is_char_boundary(p) && o_line.is_char_boundary(p)) {
+        p -= 1;
+    }
+    let describe = || format!("original {o_line:?}, edited {e_line:?}, reverted {l:?}");
+    let k = l.len().checked_sub(o_line.len()).ok_or_else(describe)?;
+    let s = &l[p..p + k];
+    if !rows.is_empty() && s.starts_with("  # ") && !s.contains('\n') && l[p + k..] == o_line[p..] {
+        Ok(Some(Insertion {
+            at: p,
+            text: s.to_string(),
+        }))
+    } else {
+        Err(describe())
+    }
+}
+
+/// Edits touch only reference bytes: same line count, and every line passes
+/// [`line_diff`] against the rows (pinned/updated) reported for it. Returns
+/// the insertion found on each line.
+pub fn check_byte_exact(
+    o: &str,
+    e: &str,
+    report: &Report,
+) -> Result<Vec<Option<Insertion>>, String> {
+    let ol: Vec<&str> = o.split_inclusive('\n').collect();
+    let el: Vec<&str> = e.split_inclusive('\n').collect();
+    if ol.len() != el.len() {
+        return Err(format!("line count {} -> {}", ol.len(), el.len()));
+    }
+    let mut out = Vec::with_capacity(ol.len());
+    for (i, (o_line, e_line)) in ol.iter().zip(&el).enumerate() {
+        let rows: Vec<&RefResult> = report
+            .results
+            .iter()
+            .filter(|r| r.line == i + 1 && (r.status == "pinned" || r.status == "updated"))
+            .collect();
+        out.push(line_diff(o_line, e_line, &rows).map_err(|m| format!("line {}: {m}", i + 1))?);
+    }
+    Ok(out)
+}
+
+/// A second run edits nothing: file unchanged, no row pinned/updated, and
+/// every previously pinned/updated/ok reference is now `ok`.
+pub fn check_idempotent(r1: &Report, e1: &str, r2: &Report, e2: &str) -> Result<(), String> {
+    if e1 != e2 {
+        return Err("second run changed the file".to_string());
+    }
+    if let Some(r) = r2
+        .results
+        .iter()
+        .find(|r| r.status == "pinned" || r.status == "updated")
+    {
+        return Err(format!(
+            "second run {} line {} {:?}",
+            r.status, r.line, r.old
+        ));
+    }
+    let settled = |r: &RefResult| matches!(r.status.as_str(), "pinned" | "updated" | "ok");
+    let before = r1.results.iter().filter(|r| settled(r)).count();
+    let after = r2.results.iter().filter(|r| r.status == "ok").count();
+    if before != after {
+        return Err(format!(
+            "ok rows: {before} after run 1, {after} after run 2"
+        ));
+    }
+    Ok(())
 }
