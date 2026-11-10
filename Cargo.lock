@@ -846,10 +846,7 @@ dependencies = [
  "clap",
  "insta",
  "pin-core",
- "reqwest",
- "serde",
  "serde_json",
- "sha2",
  "tokio",
  "wiremock",
 ]

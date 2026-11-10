@@ -4,8 +4,9 @@
 //! temp CI file in the repo's gitignored `.tmp/` scratch.
 use std::path::{Path, PathBuf};
 
-use pin_gitlab_ci::gitlab::GitLabClient;
-use pin_gitlab_ci::{PinOptions, RegistryClient, exit_code, pin_files};
+use pin_core::gitlab::GitLabClient;
+use pin_core::oci::RegistryClient;
+use pin_gitlab_ci::{PinOptions, exit_code, pin_files};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

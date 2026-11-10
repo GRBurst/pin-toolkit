@@ -6,7 +6,7 @@
 mod common;
 
 use common::*;
-use pin_gitlab_ci::report::{Report, Row, Status};
+use pin_core::report::{Report, Row, Status};
 
 /// A pinned row on `line` (1-based) turning `old` into `new`.
 fn row(line: usize, old: &str, new: &str) -> Row {

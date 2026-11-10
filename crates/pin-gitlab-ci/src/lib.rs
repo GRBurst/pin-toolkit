@@ -2,9 +2,6 @@ pub mod discover;
 #[doc(hidden)]
 pub mod driver;
 mod policy;
-pub use pin_core::oci::{image_ref, registry};
-pub use pin_core::ver::docker as versioning;
-pub use pin_core::{gitlab, report};
 
 #[doc(hidden)]
 pub use driver::{PinOptions, client_from_env, exit_code, gitlab_from_env, pin_files};
@@ -15,8 +12,6 @@ use crate::discover::{PinTarget, discover};
 use pin_core::oci::pin_inline_image;
 use pin_core::plugin::{Finding, KindSet, KindSpec, Plugin, PluginMeta, ScanError};
 use pin_core::run::Ctx;
-
-pub use pin_core::oci::{ImageRef, RegistryClient};
 
 /// The reference kinds this plugin finds (all on by default).
 pub const KINDS: [KindSpec; 3] = [

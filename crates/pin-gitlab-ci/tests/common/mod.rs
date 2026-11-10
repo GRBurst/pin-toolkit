@@ -5,10 +5,11 @@
 
 use std::path::{Path, PathBuf};
 
+use pin_core::gitlab::GitLabClient;
+use pin_core::oci::{ImageRef, RegistryClient};
+use pin_core::report::{Report, Row};
 use pin_gitlab_ci::discover::{PinTarget, discover};
-use pin_gitlab_ci::gitlab::GitLabClient;
-use pin_gitlab_ci::report::{Report, Row};
-use pin_gitlab_ci::{ImageRef, PinOptions, RegistryClient, pin_files};
+use pin_gitlab_ci::{PinOptions, pin_files};
 use wiremock::matchers::path_regex;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 

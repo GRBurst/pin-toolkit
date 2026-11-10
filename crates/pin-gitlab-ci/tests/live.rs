@@ -3,14 +3,14 @@
 use std::path::Path;
 use std::process::Command;
 
-fn client_from_env() -> pin_gitlab_ci::RegistryClient {
+fn client_from_env() -> pin_core::oci::RegistryClient {
     pin_gitlab_ci::client_from_env()
 }
 
 /// GitLab client for the M3 signature: the live fixtures contain no
 /// component/include targets, so it is never contacted (dead local base).
-fn gitlab_dummy() -> pin_gitlab_ci::gitlab::GitLabClient {
-    pin_gitlab_ci::gitlab::GitLabClient::new("http://127.0.0.1:9".into(), None, false)
+fn gitlab_dummy() -> pin_core::gitlab::GitLabClient {
+    pin_core::gitlab::GitLabClient::new("http://127.0.0.1:9".into(), None, false)
 }
 
 /// `crane digest <ref>` — same unreadable-`~/.docker/config.json`
@@ -44,7 +44,7 @@ async fn live_docker_hub_alpine() {
         eprintln!("SKIP live (set PIN_CI_LIVE=1)");
         return;
     }
-    use pin_gitlab_ci::image_ref::ImageRef;
+    use pin_core::oci::ImageRef;
     let c = client_from_env();
     let d1 = c
         .digest(&ImageRef::parse("alpine:3.20").unwrap())
@@ -64,7 +64,7 @@ async fn live_docker_hub_ubuntu() {
         eprintln!("SKIP live (set PIN_CI_LIVE=1)");
         return;
     }
-    use pin_gitlab_ci::image_ref::ImageRef;
+    use pin_core::oci::ImageRef;
     let d = client_from_env()
         .digest(&ImageRef::parse("ubuntu:24.04").unwrap())
         .await
@@ -92,7 +92,9 @@ async fn live_update_docker_hub() {
         eprintln!("SKIP live (set PIN_CI_LIVE=1)");
         return;
     }
-    use pin_gitlab_ci::{ImageRef, PinOptions, pin_files, versioning};
+    use pin_core::oci::ImageRef;
+    use pin_core::ver::docker as versioning;
+    use pin_gitlab_ci::{PinOptions, pin_files};
 
     // Scratch dir: std::env::temp_dir() when readable+writable; sandboxes
     // where /tmp is write-only get the repo's gitignored .tmp/ instead.
@@ -235,7 +237,9 @@ async fn live_guarded_update() {
         );
         return;
     }
-    use pin_gitlab_ci::{ImageRef, PinOptions, pin_files, versioning};
+    use pin_core::oci::ImageRef;
+    use pin_core::ver::docker as versioning;
+    use pin_gitlab_ci::{PinOptions, pin_files};
 
     // Scratch dir: std::env::temp_dir() when readable+writable; sandboxes
     // where /tmp is write-only get the repo's gitignored .tmp/ instead.
@@ -350,7 +354,7 @@ async fn live_ecr_public_anonymous() {
         eprintln!("SKIP live (set PIN_CI_LIVE=1)");
         return;
     }
-    use pin_gitlab_ci::image_ref::ImageRef;
+    use pin_core::oci::ImageRef;
     const REF: &str = "public.ecr.aws/nginx/nginx:latest";
     let want = match crane_digest(REF) {
         Ok(d) => d,
@@ -403,7 +407,7 @@ async fn live_ghcr() {
         eprintln!("SKIP live ghcr (set GITHUB_TOKEN to a PAT with read:packages)");
         return;
     }
-    use pin_gitlab_ci::image_ref::ImageRef;
+    use pin_core::oci::ImageRef;
     const REF: &str = "ghcr.io/actions/actions-runner:latest";
     let want = match crane_digest(REF) {
         Ok(d) => d,

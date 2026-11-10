@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use pin_gitlab_ci::{ImageRef, PinOptions, client_from_env, pin_files, versioning};
+use pin_core::oci::ImageRef;
+use pin_core::ver::docker as versioning;
+use pin_gitlab_ci::{PinOptions, client_from_env, pin_files};
 
 /// Repo root at compile time (two levels above the crate); the old pipeline
 /// runs as-is from here.
@@ -31,8 +33,8 @@ build:
 
 /// GitLab client for the M3 signature: the oracle fixtures contain no
 /// component/include targets, so it is never contacted (dead local base).
-fn gitlab_dummy() -> pin_gitlab_ci::gitlab::GitLabClient {
-    pin_gitlab_ci::gitlab::GitLabClient::new("http://127.0.0.1:9".into(), None, false)
+fn gitlab_dummy() -> pin_core::gitlab::GitLabClient {
+    pin_core::gitlab::GitLabClient::new("http://127.0.0.1:9".into(), None, false)
 }
 
 /// True when `name` is on PATH (checked `which`-style via `command -v`).

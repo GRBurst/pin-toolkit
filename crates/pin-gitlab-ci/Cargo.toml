@@ -10,12 +10,9 @@ path = "src/main.rs"
 [dependencies]
 pin-core = { workspace = true, features = ["oci", "gitlab"] }
 clap = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-reqwest = { workspace = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 wiremock = { workspace = true }
 insta = { workspace = true }
