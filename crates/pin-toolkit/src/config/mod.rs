@@ -7,8 +7,17 @@ use std::fmt;
 
 use pin_core::run::{AgePolicy, UpdatePolicy};
 
+pub mod repo;
+
 /// The default `--concurrency`.
 pub const DEFAULT_CONCURRENCY: usize = 8;
+
+/// A GitLab host name as configured (`gitlab-hosts` entries and the
+/// primary host): non-empty, no `/` (so no `://`), no whitespace. The API
+/// base is `https://{host}/api/v4`.
+pub fn valid_gitlab_host(h: &str) -> bool {
+    !h.is_empty() && !h.contains('/') && !h.chars().any(char::is_whitespace)
+}
 
 /// One configuration source. `None` (or an empty list/map) = not set here.
 #[derive(Debug, Clone, Default, PartialEq)]
