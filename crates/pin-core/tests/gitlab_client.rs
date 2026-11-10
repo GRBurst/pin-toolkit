@@ -4,7 +4,7 @@
 //! (wiremock 0.6.5: `.and(path(...))`, `query_param`, `header`, `expect(n)`
 //! on `Mock` after `respond_with`; expectations verified on server drop).
 
-use pin_ci::gitlab::{GitLabClient, GitLabError};
+use pin_core::gitlab::{GitLabClient, GitLabError};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

@@ -1,10 +1,8 @@
 pub mod discover;
 pub mod edit;
-pub mod gitlab;
-pub mod image_ref;
-pub mod registry;
-pub mod report;
-pub mod versioning;
+pub use pin_core::oci::{image_ref, registry};
+pub use pin_core::ver::docker as versioning;
+pub use pin_core::{gitlab, report};
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;

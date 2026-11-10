@@ -1,7 +1,7 @@
 //! M4b-1 Task 1 — Docker Hub tag push-timestamps client against wiremock.
 
-use pin_ci::image_ref::ImageRef;
-use pin_ci::registry::RegistryClient;
+use pin_core::oci::image_ref::ImageRef;
+use pin_core::oci::registry::RegistryClient;
 use std::collections::HashMap;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -12,7 +12,7 @@ const TS_2021: i64 = 1623758400; // 2021-06-15T12:00:00Z
 const TS_2019: i64 = 1558341000; // 2019-05-20T08:30:00Z
 
 fn hub_client(server: &MockServer) -> RegistryClient {
-    RegistryClient::new(pin_ci::registry::Creds::none(), HashMap::new())
+    RegistryClient::new(pin_core::oci::registry::Creds::none(), HashMap::new())
         .with_hub_base(&server.uri())
 }
 

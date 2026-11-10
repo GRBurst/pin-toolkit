@@ -1,5 +1,5 @@
-use pin_ci::image_ref::ImageRef;
-use pin_ci::registry::{Creds, HostCreds, RegError, RegistryClient};
+use pin_core::oci::image_ref::ImageRef;
+use pin_core::oci::registry::{Creds, HostCreds, RegError, RegistryClient};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 

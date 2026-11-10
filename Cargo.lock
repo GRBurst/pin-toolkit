@@ -833,6 +833,19 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "insta",
+ "pin-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "wiremock",
+]
+
+[[package]]
+name = "pin-core"
+version = "0.1.0"
+dependencies = [
  "reqwest",
  "serde",
  "serde_json",

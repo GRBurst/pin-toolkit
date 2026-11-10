@@ -3,8 +3,8 @@
 //! challenge, no-credentials fail-loud paths, and the unchanged
 //! no-challenge 401 error.
 
-use pin_ci::image_ref::ImageRef;
-use pin_ci::registry::{Creds, HostCreds, RegistryClient};
+use pin_core::oci::image_ref::ImageRef;
+use pin_core::oci::registry::{Creds, HostCreds, RegistryClient};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
