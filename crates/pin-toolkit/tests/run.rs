@@ -60,6 +60,26 @@ async fn explicit_dir_outside_the_git_root() {
             out.stdout
         );
     }
+    // M5d final L1: the file there, alone or with its directory in either
+    // order, is claimed by the same rule (exit 0 with --dry-run, one row).
+    let file = format!("{dir}/.gitlab-ci.yml");
+    for argv in [
+        vec!["pin-toolkit", "--dry-run", &file],
+        vec!["pin-toolkit", "--dry-run", &dir, &file],
+        vec!["pin-toolkit", "--dry-run", &file, &dir],
+    ] {
+        let out = run_tuned(&root, &argv, &[], tune(&f)).await;
+        assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
+        assert!(
+            out.stdout.starts_with(&format!("{file}:1  "))
+                && out.stdout.contains("  pinned  ")
+                && out
+                    .stdout
+                    .ends_with("pinned: 1, ok: 0, updated: 0, skipped: 0, unresolved: 0\n"),
+            "{argv:?}: {}",
+            out.stdout
+        );
+    }
     assert_eq!(
         std::fs::read_to_string(other.join(".gitlab-ci.yml")).unwrap(),
         "image: alpine:3.20\n"

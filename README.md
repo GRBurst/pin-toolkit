@@ -107,17 +107,22 @@ and it accepts any explicit file. Usage and help texts always say
   `.gitlab-ci.yml`, `**/*.gitlab-ci.yml`, `.gitlab/ci/**/*.yml`; `*` does
   not cross `/`, and `**/*.gitlab-ci.yml` also matches
   `ci/.gitlab-ci.yml`. A directory outside the git root is matched
-  relative to its own git root, or to itself when it is in no repository.
+  relative to its own git root, or to itself when it is in no repository;
+  an explicit file outside the git root likewise, relative to its
+  directory's git root, or to its directory.
 - **Walked files** nobody claims are ignored. A walked file claimed by two
   plugins is a per-file error (exit `2`; the other files still run):
   ``x.yml is claimed by p1 and p2 (narrow their `files` globs, or choose one: pin-toolkit <plugin> x.yml)``.
 - **Explicit files.** With a plugin subcommand or alias a file is claimed
   regardless of the globs. Otherwise it must match exactly one enabled
-  plugin's globs, else exit `2` before the run:
+  plugin's globs (relative as above), else exit `2` before the run:
   `no plugin claims docs/readme.yml (choose one: pin-toolkit <plugin> docs/readme.yml)`.
 - A file passed twice (`a.yml`, `./a.yml`, `ci/../a.yml`, or a file and its
-  directory) runs once, shown as first spelled. Files run in path order,
-  one after the other.
+  directory) runs once, in any argument order with the same claim. It is
+  shown as its first occurrence: an explicit file as spelled, a walked
+  file relative to the cwd (`./ci/` shows `ci/x.yml`). Outside a
+  repository a file named with its directory is matched relative to the
+  directory. Files run in path order, one after the other.
 - **Walk errors** (e.g. an unreadable directory) are per-file errors:
   `pin-toolkit: secret: Permission denied (os error 13)`, exit `2`. A bad
   line in an ignore file only warns, exit unaffected:

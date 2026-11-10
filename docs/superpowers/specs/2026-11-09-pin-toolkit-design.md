@@ -327,9 +327,11 @@ filtered; ignore files at the crate defaults (`.ignore`; inside a git repository
 symlinks are not followed in a walk, an explicit symlink is used as given. Globs (globset,
 `literal_separator(true)`) match the path relative to the git root; for an explicit directory outside
 the git root, relative to that directory's own git root, else to the directory itself (review-2 M1,
-main). Paths are normalised lexically (`.`/`..`, no file-system access) and deduplicated by the
-normalised absolute path: the first spelling is shown, and the input stays explicit if any spelling
-was (review-2 M2). Display: relative to the cwd for walked files (`../.gitlab-ci.yml`), as passed for
+main); for an explicit file outside the git root, the same rule applied to its parent directory (M5d
+final L1, main). Paths are normalised lexically (`.`/`..`, no file-system access) and deduplicated by the
+normalised absolute path: the first spelling is shown, the input stays explicit if any spelling
+was (review-2 M2), and the relative path from the outermost base wins (bases are ancestors of the file),
+so the claim does not depend on argument order (M5d final L1). Display: relative to the cwd for walked files (`../.gitlab-ci.yml`), as passed for
 explicit ones; routes are sorted by display. A walk error (e.g. an unreadable directory) is a per-file
 `ErrorEntry` under the first enabled plugin (exit 2); a bad line in an ignore file is a stderr warning
 `pin-toolkit: warning: {file}:{line}: {message}`, exit unaffected (review-2 L3, main). Files run
