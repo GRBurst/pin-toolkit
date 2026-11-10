@@ -6,6 +6,7 @@
 pub mod cli;
 pub mod config;
 pub mod known;
+pub mod walk;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -14,8 +15,8 @@ use std::path::PathBuf;
 use pin_core::plugin::KindSet;
 use pin_core::run::ResolverEnv;
 
-use crate::cli::Mode;
-use crate::config::env;
+use crate::cli::{Cli, Mode};
+use crate::config::{Fatal, env};
 use crate::known::{KNOWN, compiled_plugin};
 
 /// What one invocation sees of the process: read once, at the edge.
@@ -53,7 +54,7 @@ pub struct Output {
 pub async fn execute(p: Process, tune: impl FnOnce(&mut ResolverEnv)) -> Output {
     let _ = tune; // wired into the run in T21
     let args = cli::dispatch_argv0(p.args.clone());
-    let (_cli, mode) = match cli::parse(&args) {
+    let (cli, mode) = match cli::parse(&args) {
         Ok(parsed) => parsed,
         Err(e) => return usage(&e),
     };
@@ -63,11 +64,23 @@ pub async fn execute(p: Process, tune: impl FnOnce(&mut ResolverEnv)) -> Output 
             "pin-toolkit: ignoring unknown environment variable {var}\n"
         ));
     }
+    if let Err(fatal) = run_mode(&p, &cli, mode, &mut out) {
+        out.stdout.clear();
+        out.stderr.push_str(&format!("{fatal}\n"));
+        out.code = 2;
+    }
+    out
+}
+
+/// Everything after parsing; a `Fatal` leaves stdout empty (T-D22).
+fn run_mode(p: &Process, cli: &Cli, mode: Mode, out: &mut Output) -> Result<(), Fatal> {
+    let root = walk::git_root(&p.cwd).unwrap_or_else(|| p.cwd.clone());
+    let _eff = config::load(p, &root, cli)?;
     match mode {
         Mode::Plugins => out.stdout = plugins_listing(),
         Mode::All | Mode::Plugin(_) => {}
     }
-    out
+    Ok(())
 }
 
 /// A clap outcome that is not a parsed command line: help and version on

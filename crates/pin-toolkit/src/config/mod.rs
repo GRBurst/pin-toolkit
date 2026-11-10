@@ -4,8 +4,12 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 
 use pin_core::run::{AgePolicy, UpdatePolicy};
+
+use crate::Process;
+use crate::cli::{self, Cli};
 
 pub mod env;
 pub mod repo;
@@ -140,6 +144,52 @@ impl PluginLayer {
         over(&mut self.gitlab_hosts, &h.gitlab_hosts);
         over(&mut self.options, &h.options);
     }
+}
+
+/// The repo config file name at the git root.
+pub const REPO_FILE: &str = ".pin-toolkit.toml";
+
+/// The effective configuration of one run: defaults < repo file < env <
+/// CLI. Repo file = `--no-config` ? none : `--config` (must exist) :
+/// `PIN_TOOLKIT_CONFIG` (must exist) : `<root>/.pin-toolkit.toml` if it
+/// exists. Relative paths are relative to the cwd.
+pub fn load(p: &Process, root: &Path, cli: &Cli) -> Result<Effective, Fatal> {
+    let mut layers = Vec::with_capacity(3);
+    if let Some(repo) = repo_layer(p, root, cli)? {
+        layers.push(repo);
+    }
+    layers.push(env::layer(&p.env)?);
+    layers.push(cli::layer(cli)?);
+    Ok(Effective::fold(&layers))
+}
+
+/// The repo layer, if a repo file applies.
+fn repo_layer(p: &Process, root: &Path, cli: &Cli) -> Result<Option<Layer>, Fatal> {
+    if cli.opts.no_config {
+        return Ok(None);
+    }
+    let explicit = cli.opts.config.clone().or_else(|| env::config_path(&p.env));
+    let (path, display) = match explicit {
+        Some(given) => (p.cwd.join(&given), given),
+        None => {
+            let path = root.join(REPO_FILE);
+            if !path.exists() {
+                return Ok(None);
+            }
+            let display = path
+                .strip_prefix(&p.cwd)
+                .map_or_else(|_| path.clone(), Path::to_path_buf);
+            (path, display)
+        }
+    };
+    let text = std::fs::read_to_string(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Fatal(format!("config file not found: {}", display.display()))
+        } else {
+            Fatal(format!("{}: {e}", display.display()))
+        }
+    })?;
+    repo::parse(&display, &text).map(Some)
 }
 
 /// A fatal error (exit 2 before the run, T-D22).
