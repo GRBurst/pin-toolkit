@@ -72,6 +72,15 @@ async fn live_docker_hub_ubuntu() {
     assert!(d.starts_with("sha256:") && d.len() == 71, "{d}");
 }
 
+/// True when `name` is on PATH (checked `which`-style via `command -v`).
+fn bin_present(name: &str) -> bool {
+    Command::new("sh")
+        .args(["-c", &format!("command -v {name}")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Live `--update --update-major` against real Docker Hub. The tool's
 /// choice per reference must equal an independent recomputation (a FRESH
 /// client: `list_tags` + `versioning::pick_latest_stable`), and each
@@ -203,6 +212,123 @@ async fn live_update_docker_hub() {
         written,
         "second run must not change the file"
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Live M4b-1 guard: `alpine:3.19` (known multi-year-old) with
+/// `--update --min-age-days 14` (same major, no `--update-major`) must
+/// UPDATE to the current latest 3.x stable tag that is at least 14 days
+/// old, pin its digest, and exit 0. The tag is NOT frozen: it is learned
+/// from the live registry, and the relative properties are asserted —
+/// != 3.19, parse-stable, starts with `3.`, and old enough per the REAL
+/// Hub push timestamps (the same source the guard uses).
+#[tokio::test]
+async fn live_guarded_update() {
+    if std::env::var("PIN_CI_LIVE").is_err() {
+        eprintln!("SKIP live (set PIN_CI_LIVE=1)");
+        return;
+    }
+    if !bin_present("crane") {
+        eprintln!(
+            "SKIP live guarded update (crane not on PATH; hint: put `crane` on PATH, e.g. via the repo devenv)"
+        );
+        return;
+    }
+    use pin_ci::{ImageRef, PinOptions, pin_files, versioning};
+
+    // Scratch dir: std::env::temp_dir() when readable+writable; sandboxes
+    // where /tmp is write-only get the repo's gitignored .tmp/ instead.
+    let tmp = std::env::temp_dir();
+    let probe = tmp.join(format!("pin-ci-live-probe-{}", std::process::id()));
+    let tmp_ok = std::fs::write(&probe, "x").is_ok() && std::fs::read_to_string(&probe).is_ok();
+    let _ = std::fs::remove_file(&probe);
+    let dir = if tmp_ok {
+        tmp.join(format!("pin-ci-live-guarded-{}", std::process::id()))
+    } else {
+        let alt = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!(".tmp/pin-ci-live-guarded-{}", std::process::id()));
+        if std::fs::create_dir_all(&alt).is_err() {
+            eprintln!(
+                "SKIP live guarded update (no readable scratch dir; set TMPDIR to a writable, readable dir)"
+            );
+            return;
+        }
+        alt
+    };
+    let yml = dir.join("ci/.gitlab-ci.yml");
+    std::fs::create_dir_all(dir.join("ci")).unwrap();
+    std::fs::write(&yml, "build:\n  image: alpine:3.19\n").unwrap();
+
+    let client = client_from_env();
+    let opts = PinOptions {
+        dry_run: false,
+        json: false,
+        concurrency: 4,
+        update: true,
+        update_major: false,
+        min_age_days: 14,
+        ..Default::default()
+    };
+    let report = pin_files(std::slice::from_ref(&yml), &opts, &client, &gitlab_dummy())
+        .await
+        .expect("live guarded update run");
+
+    // Exit-0 precondition: nothing unresolved.
+    assert_eq!(
+        report.summary.unresolved,
+        0,
+        "exit-0 precondition violated:\n{}",
+        report.render_human()
+    );
+    assert_eq!(report.results.len(), 1, "{}", report.render_human());
+    let r = &report.results[0];
+    assert_eq!(r.status, "updated", "{}", report.render_human());
+    let new = r.new.clone().expect("updated result carries the new token");
+
+    // new = "alpine:<tag>@sha256:<64hex>" — relative properties only
+    // (the tag is learned live, never frozen).
+    let (tag_part, digest) = new
+        .rsplit_once('@')
+        .unwrap_or_else(|| panic!("no digest in {new}"));
+    let (repo, tag) = tag_part
+        .rsplit_once(':')
+        .unwrap_or_else(|| panic!("no tag in {tag_part}"));
+    assert_eq!(repo, "alpine", "{new}");
+    assert_ne!(tag, "3.19", "{new}");
+    assert!(tag.starts_with("3."), "{new}");
+    let v = versioning::parse(tag).unwrap_or_else(|| panic!("{tag} not semver-parseable"));
+    assert!(v.is_stable(), "{tag} not stable");
+    assert!(
+        digest.starts_with("sha256:") && digest.len() == 7 + 64,
+        "{digest}"
+    );
+
+    // Old enough per the REAL Hub push timestamps (the same source the
+    // guard uses): ts <= now - 14d.
+    let checker = client_from_env();
+    let stamps = checker
+        .tag_timestamps(&ImageRef::parse("alpine:3.19").unwrap())
+        .await
+        .expect("Hub timestamps for alpine");
+    let ts = stamps
+        .get(tag)
+        .copied()
+        .unwrap_or_else(|| panic!("{tag}: no Hub timestamp — the guard would have excluded it"));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let age = now - ts;
+    assert!(age >= 14 * 86_400, "{tag} is {age}s old (< 14 days)");
+
+    // The digest is pinned: the written file holds the token and `crane`
+    // agrees with it.
+    let written = std::fs::read_to_string(&yml).unwrap();
+    assert!(written.contains(&new), "file missing {new}:\n{written}");
+    let cd = crane_digest(&format!("alpine:{tag}"))
+        .unwrap_or_else(|e| panic!("crane digest alpine:{tag}: {e}"));
+    assert_eq!(cd, digest, "pinned digest != crane digest for alpine:{tag}");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

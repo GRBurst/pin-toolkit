@@ -30,6 +30,9 @@ pin-ci [OPTIONS] [FILES]...
 - `--update` — bump each reference's tag to the latest eligible stable tag
   before pinning it (same major as the current tag by default)
 - `--update-major` — with `--update`, also allow major version bumps
+- `--min-age-days` — with `--update`, skip bump candidates younger than N
+  days by Docker Hub push timestamp (Docker Hub refs only; other hosts are
+  a no-op; default `0` = off; recommended `14`)
 - `--gitlab-host` — GitLab instance host for component/include resolution
   (default: `gitlab.com`)
 
@@ -70,10 +73,40 @@ Two deliberate divergences from `pin-ci-images.sh` (renovate + crane):
 
 - **Same major by default.** Renovate bumps to the newest tag of any major;
   pin-ci keeps the current major unless `--update-major` is given.
-- **No release-age guard.** Renovate's config sets `minimumReleaseAge: 14d`;
-  pin-ci has no such guard and will pick a just-published stable tag. The
-  M2 oracle treats a strictly-newer stable tag as a documented divergence
-  in exactly this case.
+- **Release-age guard is opt-in.** Renovate's config sets
+  `minimumReleaseAge: 14d`; by default pin-ci has no such guard and will
+  pick a just-published stable tag — `--min-age-days 14` restores parity
+  (see [Release age guard (M4b-1)](#release-age-guard-m4b1)). With the
+  guard off, the M2 oracle accepts a strictly-newer stable tag only as the
+  age-explained divergence proven by real Hub push timestamps (old pick
+  ≥ 14 days old, new pick younger).
+
+## Release age guard (M4b-1)
+
+`--min-age-days <N>` (default `0` = off) makes `--update` wait for newly
+published tags: a bump candidate must have been pushed at least N days
+before the run, per its Docker Hub push timestamp (`tag_last_pushed`,
+fallback `last_updated`).
+
+- **Default off.** Without the flag, pin/update behavior is exactly M2 —
+  the newest stable tag is picked even if it was pushed minutes ago.
+- **Docker Hub refs only.** The guard is active only for `docker.io`
+  references (including the no-slash default). References on any other
+  host are a documented no-op: M2 update behavior, unchanged.
+- **Recommended: `14`.** The old pipeline (`pin-ci-images.sh`, renovate)
+  sets `minimumReleaseAge: 14d`; `--min-age-days 14` restores parity, and
+  the M2 oracle accepts a tag divergence from the old pipeline only when
+  the real Hub timestamps prove the 14-day boundary (old pick ≥ 14d old,
+  new pick younger).
+- **No timestamp = excluded.** A tag missing from the Hub timestamp map
+  (neither `tag_last_pushed` nor `last_updated`) is treated as NOT old
+  enough (conservative; parity with renovate's `timestamp-required`).
+- **No eligible candidate → skip.** When bump candidates exist but none is
+  old enough, the reference is left byte-identical and reported as
+  `skipped (release age: no candidate ≥ N d)`, exit `0`.
+- **Hub API failures are loud.** A 404 repo yields an empty timestamp map
+  (→ the skip above); other Hub errors (network, 429, malformed page) make
+  the reference `unresolved (hub api: …)`, exit `1`.
 
 ## Components & includes (M3)
 
@@ -256,7 +289,11 @@ Nothing secret is written to files or logs.
   `ubuntu:24.04` plus a full `--update --update-major` run whose tag
   choice is checked against an independent `list_tags` +
   `pick_latest_stable` recomputation and whose digests are checked
-  against `crane digest` (a second run must change nothing); ECR public
+  against `crane digest` (a second run must change nothing); a guarded
+  `--update --min-age-days 14` run on `alpine:3.19` that must update to a
+  ≥ 14-days-old 3.x stable tag (learned live, not frozen) and pin its
+  digest, cross-checked against the real Hub push timestamps and `crane
+  digest` (skips with a hint when `crane` is missing); ECR public
   anonymous resolution of `public.ecr.aws/nginx/nginx:latest`,
   cross-checked against `crane digest` (skips with a hint when `crane`
   is missing); and a GHCR public-package resolution gated on
@@ -270,9 +307,12 @@ Nothing secret is written to files or logs.
   - M2 (`--update --update-major` vs. the old pipeline, which bumps tags by
     default): per original reference position (line + repo), equal tags
     need byte-identical digests; a differing tag passes only as the
-    documented divergence — both tags parse-stable-compatible and the new
-    tool's strictly greater (renovate's 14-day release-age guard) — with
-    both digests sanity-checked via `crane digest`. Anything else fails.
+    age-explained divergence — both tags parse-stable-compatible and the
+    new tool's strictly greater, AND the real Hub push timestamps show the
+    old pick ≥ 14 days old while the new pick is younger (renovate's
+    `minimumReleaseAge: 14d`) — with both digests sanity-checked via
+    `crane digest`. A missing Hub timestamp fails loudly (a data bug,
+    never a silent pass); anything else fails.
 
   Both require `renovate`, `crane`, `python3` and `git` on `PATH` (and
   outbound network); without the env flag or the tools they print a SKIP
