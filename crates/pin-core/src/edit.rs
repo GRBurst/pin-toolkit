@@ -92,12 +92,19 @@ pub fn requote(old_token: &str, new_value: &str) -> String {
 }
 
 /// The trailing-comment insertion (`"  # {orig}"`) for `line` (0-based) after
-/// the token ending at `token_end`: placed at the line end per [`LineIndex`]
-/// (before `\n` or `\r\n` — R2, fixed in C12; `text.len()` for a final line
-/// without a newline). `None` when a `#` occurs after the token on the same
-/// line — a comment is already there — or the line does not exist.
-pub fn trailing_comment(text: &str, line: usize, token_end: usize, orig: &str) -> Option<Splice> {
-    let line_end = LineIndex::new(text).line_end(line)?;
+/// the token ending at `token_end`: placed at the line end per `lines`, the
+/// [`LineIndex`] of `text` built once per file (review L3; before `\n` or
+/// `\r\n` — R2, fixed in C12; `text.len()` for a final line without a
+/// newline). `None` when a `#` occurs after the token on the same line — a
+/// comment is already there — or the line does not exist.
+pub fn trailing_comment(
+    text: &str,
+    lines: &LineIndex,
+    line: usize,
+    token_end: usize,
+    orig: &str,
+) -> Option<Splice> {
+    let line_end = lines.line_end(line)?;
     if token_end > line_end || text[token_end..line_end].contains('#') {
         return None;
     }
@@ -193,10 +200,24 @@ mod tests {
     }
 
     #[test]
+    fn trailing_comment_uses_the_given_index() {
+        let t = "a: x\r\nb: y\n";
+        let li = LineIndex::new(t);
+        assert_eq!(
+            trailing_comment(t, &li, 0, 4, "o"),
+            Some(Splice::insert(4, "  # o"))
+        );
+        assert_eq!(
+            trailing_comment(t, &li, 1, 10, "o"),
+            Some(Splice::insert(t.len() - 1, "  # o"))
+        );
+    }
+
+    #[test]
     fn trailing_comment_bare_line() {
         let text = "  ref: main\n";
         assert_eq!(
-            trailing_comment(text, 0, 11, "main"),
+            trailing_comment(text, &LineIndex::new(text), 0, 11, "main"),
             Some(Splice::insert(11, "  # main"))
         );
     }
@@ -204,18 +225,21 @@ mod tests {
     #[test]
     fn trailing_comment_existing_comment() {
         let text = "  ref: main  # keep\n";
-        assert_eq!(trailing_comment(text, 0, 11, "main"), None);
+        assert_eq!(
+            trailing_comment(text, &LineIndex::new(text), 0, 11, "main"),
+            None
+        );
     }
 
     #[test]
     fn trailing_comment_before_crlf() {
         let text = "x: a\r\ny: b\r\n";
         assert_eq!(
-            trailing_comment(text, 1, 10, "b"),
+            trailing_comment(text, &LineIndex::new(text), 1, 10, "b"),
             Some(Splice::insert(10, "  # b"))
         );
         assert_eq!(
-            trailing_comment(text, 0, 4, "a"),
+            trailing_comment(text, &LineIndex::new(text), 0, 4, "a"),
             Some(Splice::insert(4, "  # a"))
         );
     }
@@ -224,7 +248,7 @@ mod tests {
     fn trailing_comment_flow_line() {
         let text = "include: { project: g/p, ref: main }\n";
         assert_eq!(
-            trailing_comment(text, 0, 34, "main"),
+            trailing_comment(text, &LineIndex::new(text), 0, 34, "main"),
             Some(Splice::insert(36, "  # main"))
         );
     }

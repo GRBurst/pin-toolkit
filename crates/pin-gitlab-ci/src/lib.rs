@@ -13,7 +13,7 @@ use std::path::Path;
 
 use crate::discover::{PinTarget, discover};
 use pin_core::oci::pin_inline_image;
-use pin_core::plugin::{Finding, KindSet, KindSpec, Plugin, PluginMeta, ScanError};
+use pin_core::plugin::{Finding, KindSet, KindSpec, Plugin, PluginMeta, ScanError, Source};
 use pin_core::run::Ctx;
 
 /// The reference kinds this plugin finds (all on by default).
@@ -84,19 +84,19 @@ impl Plugin for GitlabCi {
             .collect())
     }
 
-    async fn resolve(&self, ctx: &Ctx, text: &str, t: &PinTarget) -> Finding {
+    async fn resolve(&self, ctx: &Ctx, src: &Source<'_>, t: &PinTarget) -> Finding {
         match t {
             PinTarget::Image {
                 line,
                 start,
                 end,
                 value,
-            } => pin_inline_image(ctx, text, *line, *start, *end, value, "image").await,
+            } => pin_inline_image(ctx, src.text, *line, *start, *end, value, "image").await,
             PinTarget::Component { .. } => {
-                policy::resolve_component(&self.gitlab_hosts, ctx, text, t).await
+                policy::resolve_component(&self.gitlab_hosts, ctx, src, t).await
             }
-            PinTarget::IncludeRef { .. } => policy::resolve_include(ctx, text, t).await,
-            PinTarget::Unsupported { .. } => policy::unsupported(text, t),
+            PinTarget::IncludeRef { .. } => policy::resolve_include(ctx, src, t).await,
+            PinTarget::Unsupported { .. } => policy::unsupported(src, t),
         }
     }
 }

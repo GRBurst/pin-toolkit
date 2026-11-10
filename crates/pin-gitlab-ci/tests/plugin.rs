@@ -7,7 +7,7 @@ use std::path::Path;
 
 use common::*;
 use pin_core::edit::Splice;
-use pin_core::plugin::{DynPlugin, KindSet, Plugin, PluginMeta, ScanError};
+use pin_core::plugin::{DynPlugin, KindSet, Plugin, PluginMeta, ScanError, Source};
 use pin_core::report::Status;
 use pin_core::run::{Ctx, FileError, ResolverEnv, RunOptions, pin_file};
 use pin_gitlab_ci::discover::PinTarget;
@@ -76,7 +76,9 @@ async fn component_other_host_builds_no_client() {
         .scan(Path::new("x.yml"), text, &KindSet::defaults(&KINDS))
         .unwrap();
     assert_eq!(targets.len(), 1);
-    let f = p.resolve(&ctx, text, &targets[0]).await;
+    let f = p
+        .resolve(&ctx, &Source::new(Path::new("x.yml"), text), &targets[0])
+        .await;
     assert_eq!(f.status, Status::Skipped);
     assert_eq!(f.reason.as_deref(), Some("host not enabled: example.org"));
     assert_eq!(f.kind, "component");
@@ -95,7 +97,9 @@ async fn include_pin_has_replacement_and_comment() {
         .scan(Path::new("x.yml"), text, &KindSet::defaults(&KINDS))
         .unwrap();
     assert_eq!(targets.len(), 1);
-    let f = p.resolve(&ctx, text, &targets[0]).await;
+    let f = p
+        .resolve(&ctx, &Source::new(Path::new("x.yml"), text), &targets[0])
+        .await;
     let sha = fake_hex("g%2Fp@main", 40);
     let start = text.find("main").unwrap();
     let line_end = text.len() - 1;
@@ -124,7 +128,9 @@ async fn include_pin_with_tab_separators() {
         .scan(Path::new("x.yml"), text, &KindSet::defaults(&KINDS))
         .unwrap();
     assert_eq!(targets.len(), 1);
-    let f = p.resolve(&ctx, text, &targets[0]).await;
+    let f = p
+        .resolve(&ctx, &Source::new(Path::new("x.yml"), text), &targets[0])
+        .await;
     let sha = fake_hex("g%2Fp@main", 40);
     let start = text.find("main").unwrap();
     assert_eq!(f.status, Status::Pinned, "{:?}", f.reason);
@@ -218,7 +224,9 @@ async fn unsupported_target_is_skipped_without_client() {
         value: "alpine:3.20".into(),
         reason: "block scalar",
     };
-    let f = p.resolve(&ctx, text, &t).await;
+    let f = p
+        .resolve(&ctx, &Source::new(Path::new("x.yml"), text), &t)
+        .await;
     assert_eq!(f.status, Status::Skipped);
     assert_eq!(f.reason.as_deref(), Some("block scalar"));
     assert_eq!(f.kind, "image");

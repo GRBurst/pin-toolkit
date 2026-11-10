@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pin_core::edit::{Splice, apply};
-use pin_core::plugin::{Finding, KindSet, KindSpec, Plugin, PluginMeta, ScanError};
+use pin_core::plugin::{Finding, KindSet, KindSpec, Plugin, PluginMeta, ScanError, Source};
 use pin_core::report::Status;
 use pin_core::run::{Ctx, FileError, ResolverEnv, RunOptions, pin_file};
 
@@ -58,7 +58,7 @@ impl Plugin for Fake {
             .collect())
     }
 
-    async fn resolve(&self, _ctx: &Ctx, _text: &str, t: &usize) -> Finding {
+    async fn resolve(&self, _ctx: &Ctx, _src: &Source<'_>, t: &usize) -> Finding {
         self.in_flight.set(self.in_flight.get() + 1);
         self.max_in_flight
             .set(self.max_in_flight.get().max(self.in_flight.get()));

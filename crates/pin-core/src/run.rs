@@ -365,7 +365,7 @@ mod resolver_tests {
     use crate::gitlab::GitLabClient;
     use crate::oci::ImageRef;
     use crate::oci::registry::RegError;
-    use crate::plugin::{KindSpec, Plugin, PluginMeta, ScanError};
+    use crate::plugin::{KindSpec, Plugin, PluginMeta, ScanError, Source};
 
     static KINDS: [KindSpec; 1] = [KindSpec {
         id: "x",
@@ -399,7 +399,7 @@ mod resolver_tests {
             Ok(vec![()])
         }
 
-        async fn resolve(&self, ctx: &Ctx, _: &str, _: &()) -> Finding {
+        async fn resolve(&self, ctx: &Ctx, _: &Source<'_>, _: &()) -> Finding {
             if self.touch_oci {
                 let _ = ctx.oci();
             }

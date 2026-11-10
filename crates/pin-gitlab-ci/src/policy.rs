@@ -4,7 +4,7 @@
 
 use pin_core::edit::{Splice, requote, trailing_comment};
 use pin_core::git::is_commit_sha;
-use pin_core::plugin::Finding;
+use pin_core::plugin::{Finding, Source};
 use pin_core::report::Status;
 use pin_core::run::Ctx;
 
@@ -29,12 +29,12 @@ fn is_catalog_managed(version: &str) -> bool {
 
 /// The finding skeleton for `t`: `reference` is the discovered value, `old`
 /// the token as written.
-fn base(text: &str, t: &PinTarget, kind: &'static str) -> Finding {
+fn base(src: &Source<'_>, t: &PinTarget, kind: &'static str) -> Finding {
     Finding {
         line: t.line(),
         kind,
         reference: t.value().to_string(),
-        old: text[t.start()..t.end()].to_string(),
+        old: src.text[t.start()..t.end()].to_string(),
         new: None,
         // Placeholder: every policy path sets the real status.
         status: Status::Unresolved,
@@ -54,12 +54,12 @@ fn with(mut f: Finding, status: Status, reason: Option<String>) -> Finding {
 /// `  # {orig}` comment when the line has room for one (M3 constraint 4).
 /// A comment that has no safe place (the line break is inside another
 /// scalar, review M2) makes the finding `skipped`: nothing is written.
-fn pinned(mut f: Finding, text: &str, t: &PinTarget, new_value: &str, orig: &str) -> Finding {
-    let comment = trailing_comment(text, t.line(), t.end(), orig);
+fn pinned(mut f: Finding, src: &Source<'_>, t: &PinTarget, new_value: &str, orig: &str) -> Finding {
+    let comment = trailing_comment(src.text, &src.lines, t.line(), t.end(), orig);
     if comment.is_some() && !t.comment_ok() {
         return with(f, Status::Skipped, Some("no safe place for comment".into()));
     }
-    let new_token = requote(&text[t.start()..t.end()], new_value);
+    let new_token = requote(&src.text[t.start()..t.end()], new_value);
     f.status = Status::Pinned;
     f.edits = std::iter::once(Splice::replace(t.start(), t.end(), new_token.clone()))
         .chain(comment)
@@ -70,11 +70,11 @@ fn pinned(mut f: Finding, text: &str, t: &PinTarget, new_value: &str, orig: &str
 
 /// A target that cannot be spliced (block or multi-line scalar): reported
 /// `skipped (<reason>)`, no edit and no resolver.
-pub(crate) fn unsupported(text: &str, t: &PinTarget) -> Finding {
+pub(crate) fn unsupported(src: &Source<'_>, t: &PinTarget) -> Finding {
     let PinTarget::Unsupported { kind, reason, .. } = t else {
         unreachable!("unsupported receives Unsupported targets")
     };
-    with(base(text, t, kind), Status::Skipped, Some((*reason).into()))
+    with(base(src, t, kind), Status::Skipped, Some((*reason).into()))
 }
 
 /// A component target → `@<sha>` (M3 Task 4 rules): unparseable, host not
@@ -82,13 +82,13 @@ pub(crate) fn unsupported(text: &str, t: &PinTarget) -> Finding {
 pub(crate) async fn resolve_component(
     gitlab_hosts: &[String],
     ctx: &Ctx,
-    text: &str,
+    src: &Source<'_>,
     t: &PinTarget,
 ) -> Finding {
     let PinTarget::Component { parts, .. } = t else {
         unreachable!("resolve_component receives Component targets")
     };
-    let f = base(text, t, "component");
+    let f = base(src, t, "component");
     let Some(parts) = parts else {
         return with(f, Status::Skipped, Some("unparseable reference".into()));
     };
@@ -109,18 +109,18 @@ pub(crate) async fn resolve_component(
         Err(e) => with(f, Status::Unresolved, Some(e)),
         Ok(sha) => {
             let new_value = format!("{}/{}/{}@{}", parts.host, parts.project, parts.name, sha);
-            pinned(f, text, t, &new_value, &parts.version)
+            pinned(f, src, t, &new_value, &parts.version)
         }
     }
 }
 
 /// A classic-include `ref:` target → commit SHA on the primary GitLab host
 /// (M3 Task 4 rules): already a SHA or templated → no resolve.
-pub(crate) async fn resolve_include(ctx: &Ctx, text: &str, t: &PinTarget) -> Finding {
+pub(crate) async fn resolve_include(ctx: &Ctx, src: &Source<'_>, t: &PinTarget) -> Finding {
     let PinTarget::IncludeRef { value, project, .. } = t else {
         unreachable!("resolve_include receives IncludeRef targets")
     };
-    let f = base(text, t, "include");
+    let f = base(src, t, "include");
     if is_commit_sha(value) {
         return with(f, Status::Ok, None);
     }
@@ -129,7 +129,7 @@ pub(crate) async fn resolve_include(ctx: &Ctx, text: &str, t: &PinTarget) -> Fin
     }
     match ctx.gitlab_resolve(None, project, value).await {
         Err(e) => with(f, Status::Unresolved, Some(e)),
-        Ok(sha) => pinned(f, text, t, &sha, value),
+        Ok(sha) => pinned(f, src, t, &sha, value),
     }
 }
 

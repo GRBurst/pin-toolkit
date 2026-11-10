@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 use crate::edit::Splice;
 use crate::report::Status;
 use crate::run::Ctx;
+use crate::text::LineIndex;
 
 /// A boxed future that need not be `Send` (futures are joined, never spawned).
 pub type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
@@ -80,6 +81,25 @@ pub struct ScanError {
     pub msg: String,
 }
 
+/// One file as `resolve` sees it (review L3): path, text and its
+/// [`LineIndex`], built once per file by [`DynPlugin::plan`].
+#[derive(Debug, Clone)]
+pub struct Source<'a> {
+    pub path: &'a Path,
+    pub text: &'a str,
+    pub lines: LineIndex,
+}
+
+impl<'a> Source<'a> {
+    pub fn new(path: &'a Path, text: &'a str) -> Self {
+        Self {
+            path,
+            text,
+            lines: LineIndex::new(text),
+        }
+    }
+}
+
 /// Identity shared by [`Plugin`] and [`DynPlugin`]: one method set, so both
 /// traits can be in scope without ambiguity.
 pub trait PluginMeta {
@@ -96,7 +116,8 @@ pub trait Plugin: PluginMeta {
     type Target;
     /// Pure; targets sorted by (line, start); `Err` = the file does not parse.
     fn scan(&self, path: &Path, text: &str, on: &KindSet) -> Result<Vec<Self::Target>, ScanError>;
-    async fn resolve(&self, ctx: &Ctx, text: &str, t: &Self::Target) -> Finding;
+    /// `src` is the scanned file (one [`LineIndex`] per file).
+    async fn resolve(&self, ctx: &Ctx, src: &Source<'_>, t: &Self::Target) -> Finding;
 }
 
 /// Object-safe face of [`Plugin`]: scan, then resolve every target with at
@@ -123,13 +144,15 @@ impl<P: Plugin> DynPlugin for P {
     ) -> LocalBoxFuture<'a, Result<Vec<Finding>, ScanError>> {
         Box::pin(async move {
             let targets = self.scan(path, text, on)?;
+            let src = Source::new(path, text);
+            let src = &src;
             let sem = Semaphore::new(concurrency.max(1));
             let sem = &sem;
             let futures: Vec<_> = targets
                 .iter()
                 .map(|t| async move {
                     let _permit = sem.acquire().await.expect("semaphore is never closed");
-                    self.resolve(ctx, text, t).await
+                    self.resolve(ctx, src, t).await
                 })
                 .collect();
             Ok(join_all(futures).await)
