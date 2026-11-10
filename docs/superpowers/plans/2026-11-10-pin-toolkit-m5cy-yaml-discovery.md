@@ -30,7 +30,7 @@ identical bytes once four fix-ups are applied. A file that does not parse become
 | Y2 | tests only (review L7): span-based edit check over all fixtures |
 | Y3 | pin-core `run::pin_file` splice order (review L1) + 4 regression tests (review L7) |
 | Y4–Y6 | new `crates/pin-core/src/yaml.rs` [feature `yaml`], `LineIndex::line_of`, 2 new crates in `Cargo.lock` |
-| Y7 | `PinTarget::Unsupported` → `skipped (block scalar)` |
+| Y7 | `PinTarget::Unsupported` → `skipped (<reason>)` (reasons: block scalar, multi-line scalar) |
 | Y8–Y9 | `discover_yaml` beside the old `discover` (old still wired): parity + token properties |
 | Y10 | switch: rename (`discover` = yaml, `legacy_discover` = old), `scan` returns parse errors; 12 snapshot diffs (R7/R8/R9); README |
 | Y11 | delete `legacy_discover` and every hand-rolled primitive (refactor, ≈ −850 lines) |
@@ -38,12 +38,12 @@ identical bytes once four fix-ups are applied. A file that does not parse become
 ## Global constraints
 
 1. **No behaviour change except Y10.** Proof per task: `INSTA_UPDATE=no` gate green and `git status` shows no `*.snap` change. Y10 changes exactly the 12 snapshot files it names.
-2. **Existing tests are preserved.** Allowed edits, each stated in its task: Y7 one match arm in `combined_targets_sorted_by_line_then_start` (new enum variant); Y10 `discover(x)` → `discover(x).unwrap()` in the 20 `discover.rs` unit tests (return type becomes `Result`), `.expect(..)` in `tests/common/mod.rs`, `discover` → `legacy_discover` in the generator test, `discover_yaml` → `discover` in the parity tests; Y3 adds a field to the test-local resolver `Fake` in `run.rs`; Y11 deletes the legacy generator test (its subject is deleted).
+2. **Existing tests are preserved.** Allowed edits, each stated in its task: Y7 one match arm in `combined_targets_sorted_by_line_then_start` (new enum variant); Y10 `discover(x)` → `discover(x).unwrap()` in the 19 `discover.rs` unit tests that call it (return type becomes `Result`; `parse_component_ref_table` does not call `discover`), `.expect(..)` in `tests/common/mod.rs`, `discover` → `legacy_discover` in the generator test, `discover_yaml` → `discover` in the parity tests; Y3 adds a field to the test-local resolver `Fake` in `run.rs`; Y11 deletes the legacy generator test (its subject is deleted).
 3. **Features (D36):** pin-core `yaml = ["dep:saphyr-parser"]`; `saphyr-parser` is optional; `pub mod yaml` behind `#[cfg(feature = "yaml")]`. pin-gitlab-ci enables `["oci", "gitlab", "yaml"]`. Net new crates: exactly `saphyr-parser`, `arraydeque` (`thiserror` 2.0.21 is already locked).
-4. **No panics on any input** in `core::yaml`: marker lookups use `.get()`, the quoted re-scan is bounded by the parser span; an impossible span is `ScanError { msg: "internal: bad span at byte {n}" }`.
-5. **Texts users read (pinned literally):** parse error `msg = "invalid YAML: {saphyr info}"`, `line = Some(marker.line())` (1-based) → `FileError::Parse` Display `"{path}:{line}: invalid YAML: …"`; skip reason `block scalar`. All M5a–c texts unchanged.
+4. **No panics on any input** in `core::yaml`: marker lookups use `.get()`, the quoted re-scan, the property skip and the block-header skip are all bounded by the parser span end `e` (an empty value with properties, `a: &x`, has span = `&x` exactly); an impossible span is `ScanError { msg: "internal: bad span at byte {n}" }`.
+5. **Texts users read (pinned literally):** parse error `msg = "invalid YAML: {saphyr info}"`, `line = Some(marker.line())` (1-based) → `FileError::Parse` Display `"{path}:{line}: invalid YAML: …"`; skip reasons `block scalar` and `multi-line scalar`. All M5a–c texts unchanged.
 6. **Comment detection stays hand-rolled** (`edit::trailing_comment`, `requote`, image splices): the parser never writes.
-7. Env/commits: `export CARGO_HOME="$PWD/.cargo-home" PATH="/nix/store/3f0kf75lwkxwi4ikm8fn95aqjmjb91vg-rust-1.95.0/bin:$PATH"`; unsigned commits `git -c commit.gpgsign=false -c core.excludesFile=/dev/null commit`; every `git add`/`status` with `-c core.excludesFile=/dev/null`; scratch only under `.tmp/`. saphyr-parser 0.3.3 and arraydeque 0.5.1 are already in `.cargo-home/registry` (spike).
+7. Env/commits: `export CARGO_HOME="$PWD/.cargo-home" PATH="/nix/store/3f0kf75lwkxwi4ikm8fn95aqjmjb91vg-rust-1.95.0/bin:$PATH"`; unsigned commits `git -c commit.gpgsign=false -c core.excludesFile=/dev/null commit`; every `git add`/`status` with `-c core.excludesFile=/dev/null`; scratch only under `.tmp/`. saphyr-parser 0.3.3 and arraydeque 0.5.1 are already in `.cargo-home/registry` (spike). Adding them to the manifests needs index resolution: without network run cargo with `--offline` (resolves from that registry cache; verified in the plan review) until `Cargo.lock` has them (Y4).
 
 ### Check (run after every task; "the gate")
 
@@ -58,7 +58,7 @@ git -c core.excludesFile=/dev/null status --porcelain     # only this task's fil
 ```
 
 Baseline: M5a–c result, **passed 192 failed 0** (code review run). Expected passed after each task:
-Y1 193 · Y2 195 · Y3 199 · Y4 206 · Y5 212 · Y6 215 · Y7 216 · Y8 222 · Y9 223 · Y10 225 · Y11 224.
+Y1 193 · Y2 195 · Y3 199 · Y4 207 · Y5 213 · Y6 216 · Y7 217 · Y8 224 · Y9 225 · Y10 227 · Y11 226.
 A lower number is a failure (silently skipped tests) unless the task explains it (Y11: −1).
 
 ## Decisions
@@ -67,35 +67,37 @@ A lower number is a failure (silently skipped tests) unless the task explains it
 |---|---|---|---|
 | Y-D1 | `yaml::scan` returns `pin_core::plugin::ScanError` | identical fields (`line`, `msg`); `GitlabCi::scan` forwards with `?` | a separate `YamlError` + `From` (spec §6.9 name; no behaviour) — Open for main 3 |
 | Y-D2 | char→byte = one `Vec<usize>` per file (`char_indices` + `len`); lines via new `LineIndex::line_of`; `Marker::col()` never used | spike §1: `index()` counts chars, BOM is char 0, `col` skips the BOM on line 1 | `Marker::index()` as byte (wrong after any non-ASCII char) |
-| Y-D3 | `ScalarRef` adds `line`, `parent`, `in_flow` to the spec shape | `parent` (collection id) groups mapping siblings although `ci-include.yml` repeats `include:` 3×, M8a needs it for `image:{repository,tag}`; `in_flow` keeps `IncludeRef.flow`; `line` saves every consumer a `LineIndex` | grouping by path (merges duplicate keys; planted in Y9) |
-| Y-D4 | A node with a non-core tag (`!reference`, `!x`) is one `Node::Tagged`; its subtree emits nothing. Core tags (`!!str`, `!!seq`) are transparent | `!reference [.base, image]` items must not become image targets; spec: `!reference` is not a target | emitting children (two bogus `skipped` rows per `!reference`) |
+| Y-D3 | `ScalarRef` adds `line`, `parent`, `in_flow` to the spec shape; `Alias` and `Tagged` also carry `parent` (review L7) | `parent` (collection id) groups mapping siblings although `ci-include.yml` repeats `include:` 3×, M8a needs it for `image:{repository,tag}`, M8 H3 ties `tag: *t` to its `image:` map through it; `in_flow` keeps `IncludeRef.flow`; `line` saves every consumer a `LineIndex` | grouping by path (merges duplicate keys; planted in Y9) |
+| Y-D4 | A node with a non-core tag (`!reference`, `!x`) is one `Node::Tagged`; its subtree emits nothing. Core tags (`!!str`, `!!seq`) are transparent; "core" = `Tag::is_yaml_core_schema()` (saphyr expands `!!` to the handle `tag:yaml.org,2002:`; comparing the handle with `"!!"` would make `!!str` opaque — review L1) | `!reference [.base, image]` items must not become image targets; spec: `!reference` is not a target | emitting children (two bogus `skipped` rows per `!reference`) |
 | Y-D5 | Keys are not nodes; a non-scalar or alias key is `PathSeg::Complex` and its subtree is skipped | consumers match value paths only | — |
-| Y-D6 | Property skip (`&a `, `!t `) only when the event carries an anchor or tag, never for block scalars; it also skips line breaks and `#` comments between property and token | block content may start with `!`/`&`; `key: &a\n  v` is valid YAML | spike's unconditional `&`/`!` skip |
+| Y-D6 | Property skip (`&a `, `!t `) only when the event carries an anchor or tag; it also skips line breaks and `#` comments between property and token. A block scalar without properties is never skipped; with properties it additionally skips the header line (indicator, chomping, comment, break) and leading blank lines, so its span starts at the content. Block spans end trimmed (review M2) | block content may start with `!`/`&`; `key: &a\n  v` is valid YAML; saphyr's block span runs from the properties to after the trailing break *and the next line's indentation* — untrimmed, an `Unsupported` row (`old` = `text[start..end]`) would span lines | spike's unconditional `&`/`!` skip; untrimmed block spans |
 | Y-D7 | Template mask: every `{{…}}` (non-greedy, may span lines; unclosed `{{` not masked) → spaces, **`\n`/`\r` kept**; `templated` ⇔ non-empty span ∩ mask ≠ ∅ | byte offsets and line numbers (error lines!) stay exact | spaces for newlines too (merges lines); flagging empty spans (position before/after the mask is parser-defined) — M8a handoff |
 | Y-D8 | gitlab-ci calls `scan(text, ScanOpts { mask_templates: false })` | GitLab CI is not Go-templated | — |
-| Y-D9 | gitlab-ci matcher (below): uniform `image`/`services` rule, root `component`, root `include` mappings grouped by `parent`; empty span = no value; block scalar → `PinTarget::Unsupported` (`skipped (block scalar)`) | a superset of today's shapes, GitLab semantics; spec §6.9 block-scalar rule; never splice a block scalar (span = content incl. newline) | an exact copy of the line scanner's accidents |
+| Y-D9 | gitlab-ci matcher (below): uniform `image`/`services` rule, root `component`, root `include` mappings grouped by `parent`; empty span = no value (Y-D16); block scalar → `PinTarget::Unsupported` (`skipped (block scalar)`), multi-line scalar → `Unsupported` (`skipped (multi-line scalar)`, Y-D17) | a superset of today's shapes, GitLab semantics; spec §6.9 block-scalar rule; never splice a block scalar (span = content, end trimmed) | an exact copy of the line scanner's accidents |
 | Y-D10 | Parity against a **frozen** record file written by the old code (Y1) + an exact exception table in the test | the old code is deleted (spec §9), so its output must exist as data; exact lists catch stale exceptions | insta snapshot of legacy output (re-accepted, record lost); keeping the old discoverer |
-| Y-D11 | Switch (Y10, behaviour) and deletion (Y11, refactor) are separate commits; Y10 renames so the 20 old unit tests run against the new code | strongest evidence lands in the behaviour commit; the large deletion reviews as pure removal | one commit |
+| Y-D11 | Switch (Y10, behaviour) and deletion (Y11, refactor) are separate commits; Y10 renames so the 19 old unit tests run against the new code | strongest evidence lands in the behaviour commit; the large deletion reviews as pure removal | one commit |
 | Y-D12 | Review L1: `pin_file` collects splices in `(line, min edit start)` order (stable); rows keep finding order | combined comment in byte order whatever the scan order; no row reorder → no snapshot churn | sorting rows too (mixed-status lines reorder) |
 | Y-D13 | Review L7: span-based check ties every replacement to exactly one discovered span (injective) and the comment to byte order; + 3 pin-core regression tests + gitlab-only lazy test | `line_diff` reverts the first occurrence only; one `#` ≠ every original present | — |
 | Y-D14 | Review L3 deferred to M5d | one index per file needs a per-file context in `Plugin::resolve` or in the target; M5d reshapes `run` | `&LineIndex` param rebuilt per call (API churn, no gain) |
 | Y-D15 | `saphyr-parser = "0.3.3"` in `[workspace.dependencies]` | spike version; `Cargo.lock` pins it; the re-scan stays correct after an upstream fix | git dependency |
+| Y-D16 | Review H1: a `Plain` scalar with an empty value is an implicit null and gets an **empty span** `s..s` (`s` = start of the parser span), never the parser span itself. Position (pinned in a Y4 test, M8a reads it): block → at the key's `:` (key line); flow → start of the next token (`}` / `,`); with properties → start of the properties | a plain token is never empty, so the parser's span for it is the *next* token: `include: {project: p, ref}` gave `IncludeRef { value: "", span: "}" }` and the pin would replace `}` by a SHA (invalid YAML, an edit outside any reference). The rule also makes Y-D9 "empty span = no value" and M8's `digest:` position true | a matcher-only guard (core keeps handing out foreign spans); optional extra check `text[span] == value` for `Plain` (not needed) |
+| Y-D17 | Review M3: a non-block scalar at a target path whose span contains `\n` (multi-line quoted or plain) → `Unsupported { reason: "multi-line scalar" }`, never a target. Every `Unsupported` range (block and multi-line) is cut at the first `\r`/`\n` of the span, so `old` and the human row stay one line | splicing it would drop a line break and, for an include `ref`, lose the `# ref` comment (`trailing_comment` returns `None`); same mechanism as block scalars, one more README reason; P-token's `t.end ≤ line_end(t.line)` assumed it and nothing enforced it | splicing anyway (a line vanishes); `Unsupported` over the whole span (the report row breaks) |
 
-### gitlab-ci matcher (Y8/Y9), over `Node::Scalar` with non-empty span, paths relative to each document root
+### gitlab-ci matcher (Y8/Y9), over `Node::Scalar` with non-empty span (an implicit null has an empty span, Y-D16, so it never matches), paths relative to each document root
 
 - `image` kind ⇔ ∃ q ∈ {p} ∪ {p[1..] | p[0] is `Key`}: q[0] ∈ {`Key("image")`, `Key("services")`} ∧ q[1..] ∈ {[], [`Key("name")`], [`Index`], [`Index`, `Key("name")`]}.
 - `component` kind ⇔ p = [`Key("component")`]; `parts = parse_component_ref(value)` (kept verbatim).
 - `include` kind: for each mapping with path m ∈ {[`Key("include")`], [`Key("include")`, `Index`]}, keyed by `parent`: the first scalar child `project` and the first scalar child `ref` (any order). Target iff both exist: `IncludeRef { line, start, end, value } = ref`, `project = project.value`, `flow = ref.in_flow`.
-- Any match whose scalar has `style == Block` → `PinTarget::Unsupported { kind, …, reason: "block scalar" }` instead.
+- Any match whose scalar has `style == Block` → `PinTarget::Unsupported { kind, …, reason: "block scalar" }` instead; any other match whose `text[span]` contains `\n` → `Unsupported { …, reason: "multi-line scalar" }` (Y-D17). For both, `line`/`start` are the span's and `end` is cut at the first `\r` or `\n` of the span (one-line `old`). For an include the scalar tested is `ref`.
 - Output sorted by `(line, start)`.
 
-Known supersets vs the old scanner (no fixture contains them; unit-tested in Y8/Y9): flow job mappings `job: {image: x}`, quoted or non-ASCII job keys, `image: [a]`, `services: {name: x}`, flow include items with nested `inputs: {…}`.
+Known supersets vs the old scanner (no fixture contains them; unit-tested in Y8/Y9): flow job mappings `job: {image: x}`, quoted or non-ASCII job keys, `image: [a]`, `services: {name: x}`, flow include items with nested `inputs: {…}`. Also unit-test-only: block and multi-line scalars at target paths (Y8/Y9). The only fixture lines with a value-less flow key are lines 8–9 of `ci-quoted-comment.yml` (Y1): no target in either discoverer (Y-D16).
 
 ## Gate (spec §11; no principles document in the repo)
 
 | Property | Status | Where |
 |---|---|---|
-| Byte-exact | PASS | P-bytes (M5a) + P-span Y2 `edits_touch_only_reference_spans_over_all_fixtures`, now over 17 fixtures |
+| Byte-exact | PASS | P-bytes (M5a) + P-span Y2 `edits_touch_only_reference_spans_over_all_fixtures`, now over 17 fixtures; value-less flow keys (review H1): Y4 unit + `ci-quoted-comment` lines 8–9 under parity/P-token; multi-line scalars never spliced (Y-D17, Y8) |
 | Idempotent | PASS | `idempotent_over_all_fixtures` (unchanged; covers R7 definitions vs aliases after Y10) |
 | Snapshot review | PASS | Y1 baseline (18 new); Y10 the only diffs (12 named files) |
 | Discovery parity | PASS | Y8/Y9 `yaml_discovery_matches_legacy_except_documented` + `spans_are_tokens_over_all_fixtures` |
@@ -126,7 +128,7 @@ Gate clippy (`-D warnings`, workspace, all features) + the pin-core matrix incl.
 | Layer | Covers | Needs |
 |---|---|---|
 | Unit (`yaml.rs`, `text.rs`) | walker paths, char→byte, CRLF/BOM/multi-doc, fix-ups, aliases/tags, block, masking, parse errors, no-panic prefixes | inline texts only |
-| Unit (`discover.rs`) | gitlab-ci matcher rules incl. supersets; 20 legacy tests re-pointed in Y10 | inline texts, fixtures via `include_str!` |
+| Unit (`discover.rs`) | gitlab-ci matcher rules incl. supersets; 19 legacy tests re-pointed in Y10 | inline texts, fixtures via `include_str!` |
 | Core integration (`run_pin_file.rs`) | L1 order, overlap regressions (L7) | fake plugin, `.tmp/` files |
 | Plugin integration (`plugin.rs`) | `Unsupported` → skipped; parse error → `ScanError` / `FileError::Parse`, nothing written | `.tmp/` files, no network |
 | Parity (`discovery_parity.rs`) | frozen legacy record vs `yaml` discovery, exceptions; token property | fixtures + record file |
@@ -138,8 +140,8 @@ Gate clippy (`-D warnings`, workspace, all features) + the pin-core matrix incl.
 
 𝔽 = `tests/fixtures/*.yml` (17 after Y1); 𝔽ᵣ = fixtures named in the legacy record; disc = the discoverer under test.
 - **P-parity (Y8, Y9):** ∀ f ∈ 𝔽ᵣ: hash(f) = recorded hash ∧ legacy(f) ∖ R(f) = render(disc(f)) ∖ A(f) as ordered lists ∧ every e ∈ R(f) matches exactly one legacy line ∧ every e ∈ A(f) exactly one new line (R/A = exception table, matched on `(line, kind, token)`).
-- **P-token (Y8):** ∀ f ∈ 𝔽, ∀ t ∈ disc(f), t not `Unsupported`: tok = f[t.start..t.end] ∈ {v, `'`v`'`, `"`v`"`} with v = t.value(), and `line_of(t.start) = t.line`, `t.end ≤ line_end(t.line)`.
-- **P-span (Y2):** ∀ f, mode, F = findings of `plan`: each edited finding has exactly one replacement r, [r.start, r.end) = the span of a discovered target on line `f.line`, `O[r] = f.old`, the map finding ↦ target is injective; each insertion sits at `line_end(f.line)` and reads `"  # " ⧺ orig`, no `\n`; `apply(O, coalesce_comments(edits ordered by (line, replacement start))) = E₁`.
+- **P-token (Y8):** ∀ f ∈ 𝔽, ∀ t ∈ disc(f), t not `Unsupported`: tok = f[t.start..t.end] ∈ {v, `'`v`'`, `"`v`"`} with v = t.value(), and `line_of(t.start) = t.line`, `t.end ≤ line_end(t.line)` (no target spans a line break: Y-D17).
+- **P-span (Y2):** ∀ f, mode, F = findings of `plan`: each edited finding has exactly one replacement r, [r.start, r.end) = the span of a discovered target on line `f.line`, `O[r] = f.old`, the map finding ↦ target is injective; each insertion sits at `line_end(f.line)`, starts with `"  # "` and has no `\n`; all of these checks run **before** `edit::apply` (its `debug_assert` panics on overlapping replacements, so an overlap must be an `Err` from the checker, not a panic); then `apply(O, coalesce_comments(edits ordered by (line, replacement start))) = E₁`.
 - **P-nopanic (Y5):** ∀ sample s, ∀ char-boundary prefix p of s, ∀ mask ∈ {off, on}: `scan(p)` returns; `Ok` ⇒ every span has `start ≤ end ≤ |p|` on char boundaries of p.
 - **P-mask (Y6):** |mask(t)| = |t|; ∀ i: t[i] ∈ {`\n`, `\r`} ⇒ mask[i] = t[i]; ∀ i ∉ ⋃M: mask[i] = t[i]; ∀ i ∈ ⋃M ∖ breaks: mask[i] = `' '`.
 - Literals pinned only where they are the criterion: `invalid YAML: mapping values are not allowed in this context`, `block scalar`, the exception table.
@@ -154,7 +156,8 @@ Gate clippy (`-D warnings`, workspace, all features) + the pin-core matrix incl.
 | §6.9 aliases, `<<:`, `!reference` not targets | Y5 `aliases_are_alias_nodes`, `local_tags_are_opaque_core_tags_transparent`; Y8 `yaml_aliases_and_references_are_not_targets`; parity |
 | §6.9 sticky `ScanError` → per-file error, no partial targets, no fallback (D32) | Y4 `scan_error_has_line_and_msg`; Y10 `scan_invalid_yaml_is_scan_error`, `invalid_yaml_file_is_parse_error_and_untouched` |
 | §6.9 `{{…}}` masking, `templated` | Y6 (3 tests) |
-| §6.9 block scalars never spliced → `skipped (block scalar)` | Y5 `block_scalars_keep_style_and_content_span`; Y7; Y8 `yaml_block_scalar_is_unsupported` |
+| §6.9 block scalars never spliced → `skipped (block scalar)`; multi-line scalars likewise (review M3) | Y5 `block_scalars_keep_style_and_content_span` (trimmed, with properties); Y7; Y8 `yaml_block_scalar_is_unsupported`, `yaml_multiline_scalar_is_unsupported`; Y9 `yaml_include_forms` |
+| Review H1: a value-less flow key is no reference and no edit lands outside a reference | Y4 `empty_plain_value_has_empty_span`; Y9 `yaml_include_forms`; `ci-quoted-comment` lines 8–9 under parity + P-token (Y9 planted b) |
 | §6.9 CRLF, multi-document spans | Y4 `scan_crlf_spans_exclude_cr`, `scan_documents_reset_paths`; fixtures `ci-r2-crlf`, `ci-multidoc` |
 | §9 gitlab-ci discovery = path matching over nodes | Y8, Y9 unit tests + parity |
 | §9 delete the `discover.rs` YAML primitives | Y11 |
@@ -168,7 +171,7 @@ Gate clippy (`-D warnings`, workspace, all features) + the pin-core matrix incl.
 1. Live and oracle suites (network, renovate/crane): at close-out `PIN_CI_LIVE=1 cargo test -p pin-gitlab-ci --test live`, and in devenv `PIN_CI_ORACLE=1 cargo test -p pin-gitlab-ci --test oracle`.
 2. The `pin-ci` binary on an invalid file: `printf 'job:\n\timage: alpine\n' > .tmp/bad.yml; cargo run -p pin-gitlab-ci --bin pin-ci -- --dry-run .tmp/bad.yml; echo $?` → message `….tmp/bad.yml:2: invalid YAML: …`, exit **1** (driver maps every `FileError` to exit 1; exit 2 and continuing with other files arrive in M5d).
 3. Template masking has no consumer until M8a; an unquoted `key: {{ x }}` yields an empty, non-templated scalar (Y6 characterises it) — M8a must report it.
-4. Multi-line flow scalars at target paths (escaped line continuation): no test; `trailing_comment` already returns `None` when the token ends past its line.
+4. Multi-line scalars at target paths (escaped line continuation, folded plain): reported `skipped (multi-line scalar)` and never rewritten (Y-D17); Y8/Y9 unit tests only, no fixture and no snapshot.
 5. Large files: no performance test (char table O(n), one pass); spot-check by hand on a 10k-line generated file if desired.
 
 ## Review Focus
@@ -177,7 +180,8 @@ Gate clippy (`-D warnings`, workspace, all features) + the pin-core matrix incl.
 2. **Anchored job templates and aliases** (`.base: &base`, `<<: *base`, `image: *img`): the definition is pinned once, aliases are untouched and have no row, a second run is all `ok` — `ci-anchors` snapshots (Y10) + `idempotent_over_all_fixtures`.
 3. **Quoted values followed by comments or flow padding** (`"x" # c`, `[ "a" , 'b' ]`): the splice ends at the closing quote — Y5 unit, `ci-quoted-comment` parity and P-span.
 4. **Non-ASCII text or a BOM before a target**: offsets are bytes, not chars — Y4 unit, `ci-unicode`/`ci-bom` parity, P-span; Y8 planted (a).
-5. **Unusual value shapes at target paths** (`image: >-`, `!reference [...]`, `!!str x`, flow job mapping): block → `skipped (block scalar)`, local tag → no target, core tag → pinned, flow job → target — Y8 unit tests.
+5. **Unusual value shapes at target paths** (`image: >-`, a quoted value continued on the next line, `!reference [...]`, `!!str x`, flow job mapping): block → `skipped (block scalar)`, multi-line → `skipped (multi-line scalar)`, local tag → no target, core tag → pinned, flow job → target — Y8 unit tests.
+6. **Value-less flow keys** (`include: {project: p, ref}`, `{ref, project: p}`): no target and no edit outside a reference (an implicit null has an empty span, Y-D16) — Y4 `empty_plain_value_has_empty_span`, Y9 `yaml_include_forms`, `ci-quoted-comment` lines 8–9 under parity and P-token.
 
 ---
 
@@ -204,7 +208,10 @@ pub struct ScalarRef {
     pub path: Vec<PathSeg>,     // value path from the document root; keys are not nodes
     pub doc: usize,             // 0-based document index
     pub line: usize,            // 0-based, LineIndex::line_of(span.start)
-    pub span: Range<usize>,     // BYTE range of the token incl. quotes; properties excluded; block: content only
+    /// BYTE range of the token incl. quotes; properties excluded; block: content only, end trimmed (M2).
+    /// Implicit null (`key:` or flow `{k}` without a value) = empty `Plain` scalar, `value == ""`, EMPTY span `s..s` (H1):
+    /// block → at the key's `:` (key line); flow → start of the next token (`}`/`,`); with properties → start of the properties.
+    pub span: Range<usize>,
     pub style: Style,
     pub value: String,          // decoded (from the masked text when masking)
     pub anchor: Option<usize>,  // anchor id when this scalar defines one
@@ -215,8 +222,8 @@ pub struct ScalarRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Node {
     Scalar(ScalarRef),
-    Alias { path: Vec<PathSeg>, id: usize, span: Range<usize> },   // `*name`; never a target
-    Tagged { path: Vec<PathSeg>, tag: String },                    // non-core tag (`tag.to_string()`, e.g. "!reference"); subtree not emitted
+    Alias { path: Vec<PathSeg>, id: usize, span: Range<usize>, parent: usize },   // `*name`; never a target
+    Tagged { path: Vec<PathSeg>, tag: String, parent: usize },     // non-core tag (`tag.to_string()`, e.g. "!reference"); subtree not emitted
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)] pub struct ScanOpts { pub mask_templates: bool }
 /// Every value node in event order. Err on the first parser error (sticky upstream): no partial result.
@@ -225,7 +232,7 @@ pub fn scan(text: &str, opts: ScanOpts) -> Result<Vec<Node>, ScanError>;
 
 Walker (Y4; tag/skip parts Y5). `src` = masked text or `text`; `c2b` = char table of `src`; `lines = LineIndex::new(text)`.
 Frames: `Map { id, flow, key: Option<PathSeg>, want_key }`, `Seq { id, flow, idx }`. `advance()`: top `Map` → `want_key = true`; `Seq` → `idx += 1`.
-`path()` = per frame: `Map` → its `key` (always `Some` at value position), `Seq` → `Index(idx)`. State `skip: Option<(depth, was_key)>`.
+`path()` = per frame: `Map` → its `key` (always `Some` at value position), `Seq` → `Index(idx)`. `parent` of every pushed node = `id` of the top frame (0 when the stack is empty). State `skip: Option<(depth, was_key)>`.
 
 | Event | Action |
 |---|---|
@@ -233,7 +240,7 @@ Frames: `Map { id, flow, key: Option<PathSeg>, want_key }`, `Seq { id, flow, idx
 | any, while `skip = Some((d, k))` | `*Start` → d+1; `*End` → d−1, at 0: `skip = None`, then `advance()` unless k; others ignored |
 | `DocumentStart(_)` | `doc = documents seen − 1`; `stack.clear()` |
 | `Scalar(v, style, anchor, tag)` at key position | top `Map.key = Some(Key(v))`, `want_key = false` |
-| `Scalar` at value position | non-core tag → push `Tagged`; else span = `token_span(..)` (Y5; Y4: raw span) → push `Scalar(ScalarRef{..})`; then `advance()` |
+| `Scalar` at value position | non-core tag (`!tag.is_yaml_core_schema()`, Y-D4) → push `Tagged`; else span = `s..s` when `Plain` ∧ `v.is_empty()` (H1, Y-D16), otherwise `token_span(..)` (Y5; Y4: raw span) → push `Scalar(ScalarRef{..})`; then `advance()` |
 | `Alias(id)` | key position → `key = Some(Complex)`, `want_key = false`; else push `Alias { path, id, span }`, `advance()` |
 | `MappingStart`/`SequenceStart(anchor, tag)` | key position → `key = Some(Complex)`, `want_key = false`, `skip = Some((1, true))`; non-core tag → push `Tagged`, `skip = Some((1, false))`; else push frame `{ id: next_id++, flow: parent.flow ∨ (after property skip, s' < e ∧ src[s'] ∈ {'{','['}) }` |
 | `MappingEnd`/`SequenceEnd` | pop; `advance()` |
@@ -242,9 +249,10 @@ Frames: `Map { id, flow, key: Option<PathSeg>, want_key }`, `Seq { id, flow, idx
 Byte span of an event: `(c2b.get(span.start.index()), c2b.get(span.end.index()))`, both `Some` and `text.is_char_boundary` at both ends, else internal `ScanError`.
 
 `token_span(src: &[u8], s, e, style, has_props) -> Option<Range<usize>>` (Y5):
-1. `has_props` (anchor id > 0 or tag present) and style ≠ Block: repeat while `s < e` and `src[s] ∈ {b'&', b'!'}`: skip non-whitespace bytes; then skip spaces, tabs, `\r`, `\n`, and from a `#` to the next `\n`.
-2. `Single`: from `s+1` find the first `'` not followed by `'` (skip `''` pairs), index < e → `s..i+1`; `Double`: from `s+1`, `\\` skips 2 bytes, first `"` < e → `s..i+1`; not found → `None`.
-3. otherwise `s..e`.
+1. `has_props` (anchor id > 0 or tag present): repeat while `s < e` and `src[s] ∈ {b'&', b'!'}`: skip non-whitespace bytes; then skip spaces, tabs, `\r`, `\n`, and from a `#` to the next `\n`. **Every skip stops at `e`** (review L2).
+2. `Block` (review M2): with properties, after step 1 also skip the header line (to just after the next `\n`, at most `e`) and the spaces, tabs, `\r`, `\n` that follow, so `s` is the first content byte (without properties the parser span already starts there; never skip then — content may start with `!`/`&`). The end is trimmed: `e'` = 1 + index of the last byte of `src[s..e]` that is not space, tab, `\r`, `\n` (`e' = s` when none) → `s..e'`. Content lines after the first stay inside the span.
+3. `Single`: from `s+1` find the first `'` not followed by `'` (skip `''` pairs), index < e → `s..i+1`; `Double`: from `s+1`, `\\` skips 2 bytes, first `"` < e → `s..i+1`; not found → `None`.
+4. otherwise `s..e`. (An empty `Plain` value never reaches `token_span`: Y-D16.)
 
 `mask_templates(text) -> (String, Vec<Range<usize>>)` (Y6, private): scan for `{{`; find the next `}}`; none → stop; mask = `open..close+2`; every byte in it except `\n`/`\r` becomes `b' '` (a whole UTF-8 sequence lies inside, so the result stays UTF-8); continue after the mask.
 
@@ -253,7 +261,8 @@ Byte span of an event: `(c2b.get(span.start.index()), c2b.get(span.end.index()))
 ```rust
 // discover.rs (final, after Y11): PinTarget, ComponentParts, impl PinTarget, parse_component_ref (verbatim), discover, matcher helpers
 pub enum PinTarget { Image{..}, Component{..}, IncludeRef{..},                       // unchanged
-    /// A reference at a target path that cannot be spliced (block scalar): reported `skipped (<reason>)`.
+    /// A reference at a target path that cannot be spliced (block or multi-line scalar): reported `skipped (<reason>)`;
+    /// `reason` ∈ {`block scalar`, `multi-line scalar`}; `start..end` is one line (Y-D17).
     Unsupported { kind: &'static str, line: usize, start: usize, end: usize, value: String, reason: &'static str } }   // Y7
 pub fn discover(text: &str) -> Result<Vec<PinTarget>, ScanError>;   // Y8 as `discover_yaml`, renamed Y10; sorted (line, start)
 fn is_image_path(p: &[PathSeg]) -> bool; fn is_component_path(p: &[PathSeg]) -> bool; fn is_include_mapping(p: &[PathSeg]) -> bool;
@@ -323,24 +332,62 @@ const ADDED: &[Exc] = &[
 **Files:** Create `crates/pin-gitlab-ci/tests/fixtures/ci-{unicode,quoted-comment,tags,bom,multidoc,pipeline}.yml`, 18 `tests/snapshots/fixture_snapshots__ci-*__pin__*.snap`, `tests/parity/legacy-discover.txt`, `tests/discovery_parity.rs`.
 **Produces:** fixtures (𝔽 = 17), `render`, the record file (frozen from here on).
 
-Exact fixture bytes (LF, final newline). `ci-pipeline.yml` = `cp ci/.gitlab-ci.yml` (realistic file, the spike's 37/37 input). `ci-bom.yml` via
-`printf '\xef\xbb\xbfdefault:\n  image: alpine:3.20\njob:\n  image: "node:20"  # \xc3\xbc\n'`.
+Exact fixture bytes (LF, final newline; plan review L8 — create them with these heredocs, do not re-type). `ci-pipeline.yml` = `cp ci/.gitlab-ci.yml` (realistic file, the spike's 37/37 input). `ci-bom.yml` via
+`printf '\xef\xbb\xbfdefault:\n  image: alpine:3.20\njob:\n  image: "node:20"  # \xc3\xbc\n'`. The last two lines of `ci-quoted-comment.yml` (value-less flow `ref`, review H1) are no target for the old scanner and none for the new one; they exist so that parity and P-token fail if the empty-span rule (Y-D16) is lost.
 
-```text
-ci-unicode.yml:          # Grüße 🚀 — pipeline / variables: / "  NOTE: \"naïve café ☕\"" / image: alpine:3.20  # ✓ / job: /
-                         "  image: 'node:20'  # ö" / "  services: [\"ü-sidecar\", docker:24]" / include: { project: g/ü, ref: main }
-ci-quoted-comment.yml:   image: "alpine:3.20" # double-quoted, comment / job: / "  image: 'node:20'   # single-quoted, comment" /
-                         "  services: [ \"docker:24\" , 'redis:7' ]  # flow: space before , and ]" / twice: /
-                         "  services: [docker:24, docker:24]" / include: { project: 'g/p', ref: "main" }  # flow include, quoted
-ci-tags.yml:             .base: / "  image: alpine:3.20" / "  services: [docker:24]" / job: / "  image: !reference [.base, image]" /
-                         "  services: !reference [.base, services]" / tagged: / "  image: !!str node:20"
-ci-multidoc.yml:         spec: / "  inputs:" / "    tag:" / "      default: \"3.20\"" / --- / image: $[[ inputs.tag ]] / job: /
-                         "  image: alpine:3.20" / ... (document-end marker, 3 dots) / --- / other: / "  services:" / "    - redis:7"
+```bash
+cd crates/pin-gitlab-ci/tests/fixtures
+cat > ci-unicode.yml <<'EOF'
+# Grüße 🚀 — pipeline
+variables:
+  NOTE: "naïve café ☕"
+image: alpine:3.20  # ✓
+job:
+  image: 'node:20'  # ö
+  services: ["ü-sidecar", docker:24]
+include: { project: g/ü, ref: main }
+EOF
+cat > ci-quoted-comment.yml <<'EOF'
+image: "alpine:3.20" # double-quoted, comment
+job:
+  image: 'node:20'   # single-quoted, comment
+  services: [ "docker:24" , 'redis:7' ]  # flow: space before , and ]
+twice:
+  services: [docker:24, docker:24]
+include: { project: 'g/p', ref: "main" }  # flow include, quoted
+include: { project: g/q, ref }
+include: { ref, project: g/q }
+EOF
+cat > ci-tags.yml <<'EOF'
+.base:
+  image: alpine:3.20
+  services: [docker:24]
+job:
+  image: !reference [.base, image]
+  services: !reference [.base, services]
+tagged:
+  image: !!str node:20
+EOF
+cat > ci-multidoc.yml <<'EOF'
+spec:
+  inputs:
+    tag:
+      default: "3.20"
+---
+image: $[[ inputs.tag ]]
+job:
+  image: alpine:3.20
+...
+---
+other:
+  services:
+    - redis:7
+EOF
 ```
 
 - [ ] RED: add the fixtures; write `discovery_parity.rs` with `render` and `legacy_record_matches_discover` (`#[test]`): build the expected record text from `discover()` over `fixtures()` (format above); `PIN_PARITY_RECORD=1` → write `RECORD` and pass; otherwise `assert_eq!(read_to_string(RECORD), expected)`. Run gate → FAIL: 18 new snapshots and the missing record file.
 - [ ] GREEN: `INSTA_UPDATE=always cargo test -p pin-gitlab-ci --test fixture_snapshots`; delete `*.snap.new`; `PIN_PARITY_RECORD=1 cargo test -p pin-gitlab-ci --test discovery_parity`.
-- [ ] Review the recorded output (old behaviour, partly wrong on purpose): record lines per new fixture — unicode 5, quoted-comment 7, tags 5, bom 1, multidoc 3, pipeline 10. Snapshots: `ci-unicode` `ü-sidecar` `skipped (unparseable reference)`, the rest pinned, include gets `  # main`; `ci-quoted-comment` all pinned, quotes kept, include without comment (line has `#`), both `docker:24` on line 6 pinned; `ci-tags` lines 5, 6, 8 `skipped (unparseable reference)` (R7); `ci-bom` only line 4 (R9: line 2 missing), BOM bytes kept; `ci-multidoc` line 6 skipped, 8 and 13 pinned; `ci-pipeline` `${APP_IMAGE}…` skipped, 9 pinned. All existing properties green on the new fixtures.
+- [ ] Review the recorded output (old behaviour, partly wrong on purpose): record lines per new fixture — unicode 5, quoted-comment 7 (the two value-less-`ref` includes record nothing), tags 5, bom 1, multidoc 3, pipeline 10. Snapshots: `ci-unicode` `ü-sidecar` `skipped (unparseable reference)`, the rest pinned, include gets `  # main`; `ci-quoted-comment` all pinned, quotes kept, include without comment (line has `#`), both `docker:24` on line 6 pinned, lines 8–9 untouched; `ci-tags` lines 5, 6, 8 `skipped (unparseable reference)` (R7); `ci-bom` only line 4 (R9: line 2 missing), BOM bytes kept; `ci-multidoc` line 6 skipped, 8 and 13 pinned; `ci-pipeline` `${APP_IMAGE}…` skipped, 9 pinned. All existing properties green on the new fixtures.
 - [ ] Planted: edit one character of a recorded token in `legacy-discover.txt` → `legacy_record_matches_discover` FAILS ☐; `git checkout` the file.
 - [ ] Gate → 193. Commit: `test: M5c-y fixtures (unicode, BOM, quoted+comment, tags, multi-doc, pipeline) + frozen legacy discover() record`.
 
@@ -349,8 +396,8 @@ ci-multidoc.yml:         spec: / "  inputs:" / "    tag:" / "      default: \"3.
 **Files:** `crates/pin-gitlab-ci/tests/common/mod.rs` (`plan_once`, `check_spans`), `tests/fixture_properties.rs`.
 **Consumes:** Y1 fixtures; `GitlabCi`, `DynPlugin::plan`, `Ctx` presets, `edit::{apply, coalesce_comments}`, `text::LineIndex`.
 
-- [ ] RED: `edits_touch_only_reference_spans_over_all_fixtures` (`#[tokio::test]`; ∀ fx, m: `e1` from `pin_once` on a scratch copy, `check_spans(&fx.text, &e1, &plan_once(..).await)`; collect `"{name}/{mode}: {msg}"`, assert empty) and `span_checker_rejects_wrong_occurrence` (no I/O; local `fn finding(line, old, edits) -> Finding`, status `Pinned`): `o = "services: [a:1, a:1]\n"` (targets 11..14, 16..19); finding `old "a:1"`, `[replace(16, 19, "a:1@x")]` with `e1 = "services: [a:1, a:1@x]\n"` → `Ok`; same finding with `e1 = "services: [a:1@x, a:1]\n"` → `Err`; replacement `12..15` → `Err` (not a target span); two findings both at `11..14` → `Err` (not injective); an extra `insert(5, "  # a:1")` → `Err` (not at line end). Run → FAIL (helpers missing).
-- [ ] GREEN: implement per P-span; messages name the fixture line and the rule.
+- [ ] RED: `edits_touch_only_reference_spans_over_all_fixtures` (`#[tokio::test]`; ∀ fx, m: `e1` from `pin_once` on a scratch copy, `check_spans(&fx.text, &e1, &plan_once(..).await)`; collect `"{name}/{mode}: {msg}"`, assert empty) and `span_checker_rejects_wrong_occurrence` (no I/O; local `fn finding(line, old, edits) -> Finding`, status `Pinned`): `o = "services: [a:1, a:1]\n"` (targets 11..14, 16..19); finding `old "a:1"`, `[replace(16, 19, "a:1@x")]` with `e1 = "services: [a:1, a:1@x]\n"` → `Ok`; same finding with `e1 = "services: [a:1@x, a:1]\n"` → `Err`; replacement `12..15` → `Err` (not a target span); two findings both at `11..14` → `Err` (not injective; an `Err` from the checker, not an `apply` panic); an extra `insert(5, "  # a:1")` → `Err` (not at line end). Run → FAIL (helpers missing).
+- [ ] GREEN: implement per P-span: target-span, `O[r] = f.old`, injectivity and insertion-position checks first, `edit::apply` last (review L4); messages name the fixture line and the rule.
 - [ ] Run → PASS on all 17 fixtures × modes.
 - [ ] Planted: (a) in `run::pin_file` collect splices with `.rev()` → `edits_touch_only…` FAILS on `ci-r1-flow-include` ☐ (note: P-bytes and P-one-comment stay green — the gap L7 names); (b) in `policy::pinned` insert the comment at `t.end()` instead of `trailing_comment(..)` → FAILS ☐. Revert each.
 - [ ] Gate → 195. Commit: `test: span-based edit check over all fixtures (review L7)`.
@@ -359,10 +406,10 @@ ci-multidoc.yml:         spec: / "  inputs:" / "    tag:" / "      default: \"3.
 
 **Files:** `crates/pin-core/src/run.rs` (`pin_file` splice collection; `resolver_tests::Fake` gains `touch_gitlab: bool`), `crates/pin-core/tests/run_pin_file.rs`.
 
-- [ ] RED (`run_pin_file.rs`, existing fake): `combined_comment_in_byte_order`: text `"k: [p, q]\n"`, findings in this order `[line 0: replace(7, 8, "Q") + insert(9, "  # q"), line 0: replace(4, 5, "P") + insert(9, "  # p")]` → file `"k: [P, Q]  # p, q\n"`, rows keep finding order (`q` row first) → FAILS (today `"  # q, p"`).
+- [ ] RED (`run_pin_file.rs`, existing fake): `combined_comment_in_byte_order`: text `"k: [p, q]\n"`, findings in this order `[line 0: replace(7, 8, "Q") + insert(9, "  # q"), line 0: replace(4, 5, "P") + insert(9, "  # p")]` → file `"k: [P, Q]  # p, q\n"`, rows keep finding order (`q` row first) — observable because the two findings get distinct `reference`/`old` (the helper `finding()` gives every finding `ref{line}`/`old`; override them with `"q"` and `"p"`, review L3) and the test asserts `rows[0].reference == "q"`, `rows[1].reference == "p"` → FAILS (today `"  # q, p"`).
 - [ ] GREEN (Y-D12): in `pin_file`, after `mark_overlaps`, splices = `coalesce_comments` over findings stably ordered by `(f.line, f.edits.iter().map(|s| s.start).min().unwrap_or(usize::MAX))`; `findings`/rows untouched.
 - [ ] Regression tests (green on arrival; the branch they guard is planted): `insertion_inside_other_replacement_marks_both_unresolved` (text `"abcdefghij\n"`, `replace(2, 6, "X")` vs `insert(4, "  # y")` → both `unresolved`, reason `internal: overlapping edits`, file unchanged) · `independent_finding_written_next_to_overlap` (`replace(0, 3, "A")`, `replace(2, 5, "B")`, `replace(7, 9, "C")` → first two `unresolved`, third pinned, file = text with `[7, 9)` → `"C"`) · `run.rs` `gitlab_target_builds_only_gitlab` (fake calls `ctx.gitlab()` once → `resolvers_built() == ["gitlab"]`).
-- [ ] Planted: (a) drop the insertion-inside branch of `overlaps` → `insertion_inside…` FAILS ☐; (b) build the gitlab cell in `Ctx::new` → `gitlab_target_builds_only_gitlab` FAILS ☐. Revert each.
+- [ ] Planted: (a) drop the insertion-inside branch of `overlaps` → `insertion_inside…` FAILS ☐; (b) build the **oci** cell in `Ctx::new` → `resolvers_built() == ["oci", "gitlab"]`, `gitlab_target_builds_only_gitlab` FAILS ☐ (building the gitlab cell would not fail it: the fake touches it anyway — review M1). Revert each.
 - [ ] Gate → 199; snapshots unchanged (GitlabCi scan order = byte order). Commit: `fix: combined trailing comment in byte order, not scan order (review L1) + overlap/laziness regression tests (L7)`.
 
 ## Task Y4 — `core::yaml` scan: dependency, walker, byte spans, parse errors
@@ -372,38 +419,38 @@ ci-multidoc.yml:         spec: / "  inputs:" / "    tag:" / "      default: \"3.
 
 Tests use a local `fn scalars(t: &str) -> Vec<(String /*path "job.services[1].name"*/, String /*value*/, String /*text[span]*/, usize /*line*/)>`.
 
-- [ ] RED: `line_of_maps_bytes_to_lines` (`text.rs`): `"a\r\nbb\nc"` → `line_of` 0→0, 2→0, 3→1, 6→2, 7→2; `LineIndex::new("").line_of(0) == 0` · `scan_paths_values_and_plain_spans`: `"image: alpine:3.20  # c\njob:\n  services:\n    - redis:7\n    - name: node:20\n"` → exactly `[("image", "alpine:3.20", "alpine:3.20", 0), ("job.services[0]", "redis:7", "redis:7", 3), ("job.services[1].name", "node:20", "node:20", 4)]` · `scan_documents_reset_paths`: `"a: 1\n---\nb: 2\n...\n---\n- c\n"` → `(doc, path, value)` = `(0, a, 1)`, `(1, b, 2)`, `(2, [0], c)`; `scan("")` and `scan("# only\n")` → `Ok(vec![])` · `scan_char_to_byte_non_ascii_and_bom`: `"\u{FEFF}k: x\nä: [y, 🚀z]\nimg: alpine:3.20\n"` → tokens `x`, `y`, `🚀z`, `alpine:3.20`; `alpine` span = `text.find("alpine:3.20")` .. +11; path `ä[1]` · `scan_crlf_spans_exclude_cr`: `"a: x\r\nb:\r\n  - y\r\n"` → `("a","x","x",0)`, `("b[0]","y","y",2)` · `scan_parent_ids_and_flow_flag`: `"include: {project: a, ref: b}\ninclude:\n  - project: c\n    ref: d\n"` → `parent(a) == parent(b) != parent(c) == parent(d)`, `in_flow` true for a, b, false for c, d · `scan_error_has_line_and_msg`: `"a: 1\nb: c: d\n"` → `Err(ScanError { line: Some(2), msg: "invalid YAML: mapping values are not allowed in this context".into() })`. Run → FAIL (module missing).
-- [ ] GREEN: manifests (snippet), `line_of`, walker per the table **without** the tag/skip rows and with raw spans (Y5 adds them); `Style` from `ScalarStyle` (`Literal | Folded` → `Block`).
-- [ ] Deps evidence: `git diff Cargo.lock` adds exactly the packages `saphyr-parser 0.3.3` and `arraydeque 0.5.1` (+ dependency lines); `cargo tree -p pin-core --no-default-features -e normal | grep -c saphyr` → 0.
-- [ ] Planted: build the table from `bytes()` instead of `char_indices()` (i.e. treat `index()` as byte) → `scan_char_to_byte…` FAILS ☐; revert.
-- [ ] Gate + matrix (now with `--features yaml`) → 206. Commit: `feat: M5c-y core::yaml scan (saphyr-parser behind feature yaml): paths, byte spans, parse errors`.
+- [ ] RED: `line_of_maps_bytes_to_lines` (`text.rs`): `"a\r\nbb\nc"` → `line_of` 0→0, 2→0, 3→1, 6→2, 7→2; `LineIndex::new("").line_of(0) == 0` · `scan_paths_values_and_plain_spans`: `"image: alpine:3.20  # c\njob:\n  services:\n    - redis:7\n    - name: node:20\n"` → exactly `[("image", "alpine:3.20", "alpine:3.20", 0), ("job.services[0]", "redis:7", "redis:7", 3), ("job.services[1].name", "node:20", "node:20", 4)]` · `scan_documents_reset_paths`: `"a: 1\n---\nb: 2\n...\n---\n- c\n"` → `(doc, path, value)` = `(0, a, 1)`, `(1, b, 2)`, `(2, [0], c)`; `scan("")` and `scan("# only\n")` → `Ok(vec![])` · `scan_char_to_byte_non_ascii_and_bom`: `"\u{FEFF}k: x\nä: [y, 🚀z]\nimg: alpine:3.20\n"` → tokens `x`, `y`, `🚀z`, `alpine:3.20`; `alpine` span = `text.find("alpine:3.20")` .. +11; path `ä[1]` · `scan_crlf_spans_exclude_cr`: `"a: x\r\nb:\r\n  - y\r\n"` → `("a","x","x",0)`, `("b[0]","y","y",2)` · `scan_parent_ids_and_flow_flag`: `"include: {project: a, ref: b}\ninclude:\n  - project: c\n    ref: d\n"` → `parent(a) == parent(b) != parent(c) == parent(d)`, `in_flow` true for a, b, false for c, d · `scan_error_has_line_and_msg`: `"a: 1\nb: c: d\n"` → `Err(ScanError { line: Some(2), msg: "invalid YAML: mapping values are not allowed in this context".into() })`. · `empty_plain_value_has_empty_span` (review H1; asserts the `span` range, because `text[span]` is `""` wherever it sits): `"image:\n  digest:\n"` → one scalar `image.digest`, value `""`, `Style::Plain`, span `15..15` (the key's `:`), line 1 · `"include: {project: p, ref}\n"` → `include.project` `p` span `19..20`, `include.ref` value `""` span `25..25` (the parser's span is the `}`) · `"include: {ref, project: p}\n"` → `include.ref` span `13..13` (the parser's span is `, `), `include.project` span `24..25` · `"a: &x\n"` → `a` value `""`, `anchor` `Some(_)`, span `3..3` (start of the properties). Run → FAIL (module missing).
+- [ ] GREEN: manifests (snippet), `line_of`, walker per the table **without** the tag/skip rows and with raw spans (Y5 adds them) but already with the H1 rule (`Plain` ∧ empty value → `s..s`); `Style` from `ScalarStyle` (`Literal | Folded` → `Block`).
+- [ ] Deps evidence (resolve with `cargo … --offline`, constraint 7): `git diff Cargo.lock` adds exactly the packages `saphyr-parser 0.3.3` and `arraydeque 0.5.1` (+ dependency lines); `cargo tree -p pin-core --no-default-features -e normal | grep -c saphyr` → 0.
+- [ ] Planted: (a) build the table from `bytes()` instead of `char_indices()` (i.e. treat `index()` as byte) → `scan_char_to_byte…` FAILS ☐; (b) use the parser span unchanged for an empty plain value (drop the H1 rule) → `empty_plain_value_has_empty_span` FAILS ☐. Revert each.
+- [ ] Gate + matrix (now with `--features yaml`) → 207. Commit: `feat: M5c-y core::yaml scan (saphyr-parser behind feature yaml): paths, byte spans, parse errors`.
 
 ## Task Y5 — `core::yaml` fix-ups: quoted re-scan, properties, aliases, tags, block scalars
 
 **Files:** `crates/pin-core/src/yaml.rs`.
 
-- [ ] RED: `quoted_spans_end_at_closing_quote`: `"a: \"x:1\" # c\nb: 'it''s:1'   # c\nc: [\"d:1\" , 'e:1' ]\nd: \"q\\\"q\"  \n"` → tokens `"x:1"`, `'it''s:1'`, `"d:1"`, `'e:1'`, `"q\"q"`; values `x:1`, `it's:1`, `d:1`, `e:1`, `q"q` · `properties_are_skipped`: `"a: &x v1\nb: !!str v2\nc: &y !!str \"v3\"\nd: !!str\n  v4\n"` → tokens `v1`, `v2`, `"v3"`, `v4`; `anchor` `Some(_)` for a, c, `None` for b, d (if saphyr rejects line `d`, drop it and say so in the commit body) · `aliases_are_alias_nodes`: `"a: &x v\nb: *x\nc:\n  <<: *x\n"` → `[Scalar a, Alias{path [b], span "*x"}, Alias{path [c, <<], span "*x"}]` · `local_tags_are_opaque_core_tags_transparent`: `"a: !reference [.b, c]\nd: !!seq [e]\nf: !custom g\n"` → `[Tagged{[a], "!reference"}, Scalar d[0] "e", Tagged{[f], "!custom"}]` and no node under `a` · `block_scalars_keep_style_and_content_span`: `"a: |\n  x\nb: >-\n  y\nc: |\n  !x\n"` → all `Style::Block`, values `"x\n"`, `"y"`, `"!x\n"`, `text[span]` starts with `x` / `y` / `!x`, lines 1, 3, 5 · `scan_never_panics_on_prefixes` (P-nopanic over the texts of every `yaml.rs` test, both mask settings). Run → FAIL.
-- [ ] GREEN: `token_span`, the tag and skip rows of the walker, flow detection after property skip.
-- [ ] Planted: (a) remove step 2 of `token_span` → `quoted_spans…` FAILS ☐; (b) apply the property skip unconditionally (spike behaviour) → `block_scalars…` FAILS on `c` ☐. Revert each.
-- [ ] Gate + matrix → 212. Commit: `feat: M5c-y core::yaml span fix-ups (quoted end, properties), aliases, opaque local tags, block scalars`.
+- [ ] RED: `quoted_spans_end_at_closing_quote`: `"a: \"x:1\" # c\nb: 'it''s:1'   # c\nc: [\"d:1\" , 'e:1' ]\nd: \"q\\\"q\"  \n"` → tokens `"x:1"`, `'it''s:1'`, `"d:1"`, `'e:1'`, `"q\"q"`; values `x:1`, `it's:1`, `d:1`, `e:1`, `q"q` · `properties_are_skipped`: `"a: &x v1\nb: !!str v2\nc: &y !!str \"v3\"\nd: !!str\n  v4\n"` → tokens `v1`, `v2`, `"v3"`, `v4`; `anchor` `Some(_)` for a, c, `None` for b, d (`d: !!str\n  v4` parses: value `v4`, line 4) · `aliases_are_alias_nodes`: `"a: &x v\nb: *x\nc:\n  <<: *x\n"` → `[Scalar a, Alias{path [b], span "*x"}, Alias{path [c, <<], span "*x"}]` with `parent` 1, 1, 2 (review L7: `Alias` carries `parent`; ids start at 1 in event order) · `local_tags_are_opaque_core_tags_transparent`: `"a: !reference [.b, c]\nd: !!seq [e]\nf: !custom g\n"` → `[Tagged{[a], "!reference"}, Scalar d[0] "e", Tagged{[f], "!custom"}]` and no node under `a`; `parent` of both `Tagged` is 1, of `d[0]` is 2 · `block_scalars_keep_style_and_content_span` (review M2): `"a: |\n  x\nb: >-\n  y\nc: |\n  !x\nd: &k >-\n  z\ne: !!str |\n  w\n  w2\n"` → all `Style::Block`, values `"x\n"`, `"y"`, `"!x\n"`, `"z"`, `"w\nw2\n"`, `text[span]` **exactly** `x`, `y`, `!x`, `z`, `"w\n  w2"` (end trimmed; with properties the span starts at the content, not at `&k`/`!!str`), lines 1, 3, 5, 7, 9, `d.anchor` `Some(_)` · `scan_never_panics_on_prefixes` (P-nopanic over the texts of every `yaml.rs` test, both mask settings). Run → FAIL.
+- [ ] GREEN: `token_span` (steps 1–4, every skip bounded by `e`), the tag rows (`Tag::is_yaml_core_schema()`, review L1) and skip rows of the walker, `parent` on `Alias`/`Tagged`, flow detection after property skip.
+- [ ] Planted: (a) remove the quoted branch (step 3) of `token_span` → `quoted_spans…` FAILS ☐; (b) apply the property skip unconditionally (spike behaviour) → `block_scalars…` FAILS on `c` ☐; (c) return the raw parser span for `Block` (no header skip, no trim) → `block_scalars…` FAILS on `a` and `d` ☐. Revert each.
+- [ ] Gate + matrix → 213. Commit: `feat: M5c-y core::yaml span fix-ups (quoted end, properties), aliases, opaque local tags, block scalars`.
 
 ## Task Y6 — `core::yaml` template masking
 
 **Files:** `crates/pin-core/src/yaml.rs`.
 
-- [ ] RED: `mask_keeps_offsets_and_line_breaks` (unit on `mask_templates`): `"a: {{ .x }}\n{{- if y\n }}\nb: \"r:{{ ü }}\"\nc: {{ open\n"` → P-mask holds, ranges = the three closed `{{…}}`, the unclosed one untouched · `masked_scalars_are_templated`: mask on, `"img: \"r:{{ .t }}\"\nplain: r:1\n{{- if .x }}\nother: v\n{{- end }}\n"` → `Ok`; `img` `templated`, `text[span] == "\"r:{{ .t }}\""` (original text), `plain`/`other` not templated · `unmasked_template_is_not_an_error` (characterisation, doc: "M8a decides"): `"image: {{ .x }}\n"` mask off → `Ok`, no scalar at `[image]` with a non-empty value; mask on → scalar at `[image]` with value `""` and `templated == false`. Run → FAIL.
+- [ ] RED: `mask_keeps_offsets_and_line_breaks` (unit on `mask_templates`): `"a: {{ .x }}\n{{- if y\n }}\nb: \"r:{{ ü }}\"\nc: {{ open\n"` → P-mask holds, ranges = the three closed `{{…}}`, the unclosed one untouched · `masked_scalars_are_templated`: mask on, `"img: \"r:{{ .t }}\"\nplain: r:1\n{{- if .x }}\nother: v\n{{- end }}\n"` → `Ok`; `img` `templated`, `text[span] == "\"r:{{ .t }}\""` (original text), `plain`/`other` not templated · `unmasked_template_is_not_an_error` (characterisation, doc: "M8a decides"): `"image: {{ .x }}\n"` mask off → `Ok`, no scalar at `[image]` with a non-empty value; mask on → scalar at `[image]` with value `""`, an empty span (H1) and `templated == false`. Run → FAIL.
 - [ ] GREEN: `mask_templates`; `scan` parses `src` = masked text when `opts.mask_templates`; `templated` per Y-D7.
 - [ ] Planted: mask newlines too → `mask_keeps…` FAILS ☐; revert.
-- [ ] Gate + matrix → 215. Commit: `feat: M5c-y core::yaml {{ }} masking with templated flag (offsets and lines kept)`.
+- [ ] Gate + matrix → 216. Commit: `feat: M5c-y core::yaml {{ }} masking with templated flag (offsets and lines kept)`.
 
 ## Task Y7 — `PinTarget::Unsupported` → `skipped (<reason>)`
 
 **Files:** `crates/pin-gitlab-ci/src/{discover.rs (variant + accessors + one test arm), lib.rs, policy.rs}`, `tests/plugin.rs`.
 
-- [ ] RED: `unsupported_target_is_skipped_without_client`: text `"image: >-\n  alpine:3.20\n"`, `t = PinTarget::Unsupported { kind: "image", line: 1, start: 12, end: 24, value: "alpine:3.20".into(), reason: "block scalar" }` → `resolve` gives `Skipped`, reason `block scalar`, `kind "image"`, `old == text[12..24]`, no edits, `resolvers_built()` empty. Fails to compile.
+- [ ] RED: `unsupported_target_is_skipped_without_client`: text `"image: >-\n  alpine:3.20\n"`, `t = PinTarget::Unsupported { kind: "image", line: 1, start: 12, end: 23, value: "alpine:3.20".into(), reason: "block scalar" }` → `resolve` gives `Skipped`, reason `block scalar`, `kind "image"`, `old == text[12..23]` (`"alpine:3.20"`: one line, review M2), no edits, `resolvers_built()` empty. Fails to compile.
 - [ ] GREEN: variant, the four accessors, `target_kind`, `resolve` arm, `policy::unsupported`. Existing test `combined_targets_sorted_by_line_then_start` gets `PinTarget::Unsupported { .. } => unreachable!("not produced")` (reason: exhaustive match over a grown enum).
 - [ ] Planted: map `Unsupported` to `Status::Ok` → test FAILS ☐; revert.
-- [ ] Gate → 216; snapshots unchanged. Commit: `feat: M5c-y PinTarget::Unsupported reported as skipped`.
+- [ ] Gate → 217; snapshots unchanged. Commit: `feat: M5c-y PinTarget::Unsupported reported as skipped`.
 
 ## Task Y8 — `discover_yaml`: images and components; parity (image, component)
 
@@ -412,32 +459,32 @@ Tests use a local `fn scalars(t: &str) -> Vec<(String /*path "job.services[1].na
 
 - [ ] RED (unit, `discover.rs`): `yaml_image_paths`: text below → values in order `a:1, b:1, c:1, d:1, e:1, f:1, j:1, k:1, l:1`, all `Image` (not `h:1`, `i:1`, `g`, `""`):
   `image: a:1 / services: [b:1, {name: c:1}] / default: / "  image: {name: d:1, entrypoint: [\"\"]}" / job: / "  services:" / "    - e:1" / "    - name: f:1" / "      alias: g" / "  script: [h:1]" / "  deep:" / "    image: i:1" / bäckend: / "  image: j:1" / "\"quoted\":" / "  image: k:1" / "flowjob: {image: l:1}"`
-  · `yaml_component_root_only`: `"component: gitlab.com/g/p/n@1.0.0\njob:\n  component: gitlab.com/g/p/n@2.0.0\n"` → one `Component`, parts `(gitlab.com, g/p, n, 1.0.0)` · `yaml_block_scalar_is_unsupported`: `"image: >-\n  alpine:3.20\ncomponent: |\n  gitlab.com/g/p/n@1.0.0\n"` → `[Unsupported{kind "image", line 1}, Unsupported{kind "component", line 3}]`, reason `block scalar` · `yaml_aliases_and_references_are_not_targets`: `".x: &x alpine:3.20\na:\n  image: *x\nb:\n  image: !reference [.base, image]\n  services: !reference [.base, services]\n"` → `Ok(vec![])`.
+  · `yaml_component_root_only`: `"component: gitlab.com/g/p/n@1.0.0\njob:\n  component: gitlab.com/g/p/n@2.0.0\n"` → one `Component`, parts `(gitlab.com, g/p, n, 1.0.0)` · `yaml_block_scalar_is_unsupported`: `"image: >-\n  alpine:3.20\ncomponent: |\n  gitlab.com/g/p/n@1.0.0\n"` → `[Unsupported{kind "image", line 1}, Unsupported{kind "component", line 3}]`, reason `block scalar`; plus `"image: |\n  a:1\n  b:1\nnext: x\n"` → one `Unsupported` with `text[start..end] == "a:1"` (the range is one line, review M2/Y-D17) · `yaml_aliases_and_references_are_not_targets`: `".x: &x alpine:3.20\na:\n  image: *x\nb:\n  image: !reference [.base, image]\n  services: !reference [.base, services]\n"` → `Ok(vec![])` · `yaml_multiline_scalar_is_unsupported` (review M3): each text → exactly one `Unsupported`, reason `multi-line scalar`, range cut at the first line break: `"image: \"alpine:\\\n  3.20\"\nnext: x\n"` (kind `image`, value `alpine:3.20`, `text[start..end] == "\"alpine:\\"`) · `"image: alpine\n  :3.20\nnext: x\n"` (plain; `text[start..end] == "alpine"`) · `"image: \"alpine:\\\r\n  3.20\"\r\nnext: x\r\n"` (CRLF; start 7, end 16, cut before the `\r`) · `"component: \"gitlab.com/g/p/n\\\n  @1.0\"\n"` (kind `component`).
 - [ ] RED (`discovery_parity.rs`): `yaml_discovery_matches_legacy_except_documented` (P-parity with `const PARITY_KINDS: &[&str] = &["image", "component"]` applied to legacy lines, new lines and both exception lists; header hash mismatch → failure "fixture {name} changed after the legacy record") · `spans_are_tokens_over_all_fixtures` (P-token). Run → FAIL (`discover_yaml` missing).
-- [ ] GREEN: `discover_yaml` per the matcher (image + component only; include in Y9).
+- [ ] GREEN: `discover_yaml` per the matcher (image + component only; include in Y9), incl. both `Unsupported` rules and the first-line cut of their range.
 - [ ] Run → PASS. The exception table matches exactly (Y8 sees the image entries only).
-- [ ] Planted (spec §11): (a) in `yaml.rs` use `m.index()` as the byte offset → `scan_char_to_byte…` and parity on `ci-unicode`/`ci-bom` FAIL ☐; (b) drop the quoted re-scan → parity on `ci-quoted-comment` + `quoted_spans…` FAIL ☐; (c) delete the `ci-anchors` line-6 entry from `REMOVED` → parity FAILS "unmatched legacy line" ☐. Revert each.
-- [ ] Gate + matrix → 222; snapshots unchanged (old `discover` still wired). Commit: `feat: M5c-y gitlab-ci image/component discovery over core::yaml (parity vs legacy record)`.
+- [ ] Planted (spec §11): (a) in `yaml.rs` use `m.index()` as the byte offset → `scan_char_to_byte…` and parity on `ci-unicode`/`ci-bom` FAIL ☐; (b) drop the quoted re-scan → parity on `ci-quoted-comment` + `quoted_spans…` FAIL ☐; (c) delete the `ci-anchors` line-6 entry from `REMOVED` → parity FAILS "unmatched legacy line" ☐; (d) drop the multi-line rule of the matcher → `yaml_multiline_scalar_is_unsupported` FAILS ☐. Revert each.
+- [ ] Gate + matrix → 224; snapshots unchanged (old `discover` still wired). Commit: `feat: M5c-y gitlab-ci image/component discovery over core::yaml (parity vs legacy record)`.
 
 ## Task Y9 — `discover_yaml`: includes; parity complete
 
 **Files:** `crates/pin-gitlab-ci/src/discover.rs` (`is_include_mapping`, grouping by `parent`, unit test), `tests/discovery_parity.rs` (`PARITY_KINDS` + `"include"`).
 
-- [ ] RED: widen `PARITY_KINDS` → parity FAILS on every include line ☐ (expected red) · unit `yaml_include_forms` (each case → expected `(line, value, project, flow)` or no target): flow single `include: { project: g/p, ref: main }` → `(0, main, g/p, true)`; flow seq `[ {project: g/p, ref: main}, "x.yml", {project: g/q} ]` → one; block seq item with `file:` and nested `inputs:\n      a: 1` → one, flow false; block single, `ref` before `project` → one; two root `include:` keys in one document → one target each; `ref:` empty → none; `project: "g/p"` + `ref: 'main'` → span `'main'`; `job:\n  include: {project: g/p, ref: main}` → none; `include:\n  - component: gitlab.com/g/p/c@1.0` → none (G1); `include: [{project: g/p, ref: main, inputs: {a: 1}}]` → one (superset); `include:\n  project: g/p\n  ref: >-\n    main\n` → `Unsupported{kind "include"}`.
+- [ ] RED: widen `PARITY_KINDS` → parity FAILS on every include line ☐ (expected red) · unit `yaml_include_forms` (each case → expected `(line, value, project, flow)` or no target): flow single `include: { project: g/p, ref: main }` → `(0, main, g/p, true)`; flow seq `[ {project: g/p, ref: main}, "x.yml", {project: g/q} ]` → one; block seq item with `file:` and nested `inputs:\n      a: 1` → one, flow false; block single, `ref` before `project` → one; two root `include:` keys in one document → one target each; `ref:` empty → none; `include: {project: p, ref}` and `include: {ref, project: p}` (value-less flow `ref`, review H1) → none; `"include: { project: g/p, ref: \"ma\\\n  in\" }\n"` (multi-line quoted `ref`) → `Unsupported{kind "include", reason "multi-line scalar"}`, `text[start..end] == "\"ma\\"`; `project: "g/p"` + `ref: 'main'` → span `'main'`; `job:\n  include: {project: g/p, ref: main}` → none; `include:\n  - component: gitlab.com/g/p/c@1.0` → none (G1); `include: [{project: g/p, ref: main, inputs: {a: 1}}]` → one (superset); `include:\n  project: g/p\n  ref: >-\n    main\n` → `Unsupported{kind "include"}`.
 - [ ] GREEN: include grouping per the matcher.
-- [ ] Planted: group by `path` instead of `parent` → parity FAILS on `ci-include.yml` (three `include:` keys) ☐; revert.
-- [ ] Gate → 223; snapshots unchanged. Commit: `feat: M5c-y gitlab-ci include discovery over core::yaml (parity complete)`.
+- [ ] Planted: (a) group by `path` instead of `parent` → parity FAILS on `ci-include.yml` (three `include:` keys) ☐; (b) in `core::yaml` hand out the parser span for an empty plain value (drop the H1 rule) → `yaml_include_forms` FAILS, parity on `ci-quoted-comment` FAILS with two ADDED `include` lines (tokens `"}"` and `", "`), `spans_are_tokens_over_all_fixtures` FAILS ☐. Revert each.
+- [ ] Gate → 225; snapshots unchanged. Commit: `feat: M5c-y gitlab-ci include discovery over core::yaml (parity complete)`.
 
 ## Task Y10 — switch: yaml discovery live; parse errors are file errors; R7/R8/R9 snapshot diffs
 
 **Files:** `crates/pin-gitlab-ci/src/{discover.rs, lib.rs}`, `tests/{common/mod.rs, discovery_parity.rs, plugin.rs}`, 12 snapshots, `README.md`.
 
 - [ ] RED (`plugin.rs`): `scan_invalid_yaml_is_scan_error`: `GitlabCi::default().scan(path, "a: 1\nb: c: d\n", &defaults)` → `Err(ScanError { line: Some(2), msg: "invalid YAML: mapping values are not allowed in this context".into() })`; `"job:\n\timage: alpine:3.20\n"` → `Err` with `line == Some(2)` and `msg.starts_with("invalid YAML: ")` · `invalid_yaml_file_is_parse_error_and_untouched`: `.tmp/plugin-badyaml-{pid}/ci.yml` = `"image: alpine:3.20\nb: c: d\n"`; `pin_file(&GitlabCi::default(), &ctx, &p, &defaults, &RunOptions { dry_run: false, check: false, concurrency: 4 })` → `Err(FileError::Parse { path, line: Some(2), msg })` with the same `msg`; file bytes unchanged; `ctx.resolvers_built()` empty. Both FAIL (old scan never errs).
-- [ ] GREEN: rename old `discover` → `#[doc(hidden)] pub fn legacy_discover`, `discover_yaml` → `discover`; `GitlabCi::scan` = `Ok(discover(text)?…filter…)`, doc "`Err` = the file is not valid YAML (§6.9)". Mechanical test edits (constraint 2): 20 unit tests `discover(x)` → `discover(x).unwrap()`; `common::pin_once` and `check_spans` → `.expect("fixture parses")`; generator test → `legacy_discover`; parity tests → `discover`.
+- [ ] GREEN: rename old `discover` → `#[doc(hidden)] pub fn legacy_discover`, `discover_yaml` → `discover`; `GitlabCi::scan` = `Ok(discover(text)?…filter…)`, doc "`Err` = the file is not valid YAML (§6.9)". Mechanical test edits (constraint 2): 19 unit tests `discover(x)` → `discover(x).unwrap()` (`parse_component_ref_table` does not call it); `common::pin_once` and `check_spans` → `.expect("fixture parses")`; generator test → `legacy_discover`; parity tests → `discover`.
 - [ ] Snapshots: `INSTA_UPDATE=always cargo test -p pin-gitlab-ci --test fixture_snapshots`; `git status` must list exactly `fixture_snapshots__ci-{anchors,r2-crlf,tags,bom}__pin__{human,json,file}.snap`. Expected: `ci-anchors` 3 rows pinned (lines 1, 3, 9; was 4 skipped), file `image: &img alpine:3.20@sha256:…`, `  image: ubuntu:24.04@sha256:…`, `    - &redis redis:7@sha256:…`, alias lines unchanged · `ci-r2-crlf` + 3 pinned rows (lines 6, 9, 10), file `    ref: <sha>  # dev␍`, `    - redis:7@sha256:…␍`, `  image: "node:20@sha256:…"␍` · `ci-tags` rows for lines 5, 6 gone, line 8 pinned, file `  image: !!str node:20@sha256:…` · `ci-bom` + row line 2 pinned. Every other snapshot, all e2e tests and all properties unchanged.
-- [ ] README (`Components & includes` and `What gets skipped`, `Exit codes`): replace "Known gap until M5c-y: block children in CRLF files are not discovered." by: "Discovery reads the YAML structure (M5c-y): anchored values (`&a`, `!!str`) are pinned at their definition; aliases (`*a`), merge keys (`<<:`) and `!reference [...]` are not targets. CRLF files, children of anchored keys (`.base: &base`) and a first key after a BOM are discovered (R7, R8, R9; before: missed or `skipped (unparseable reference)`)." Add skip reason `block scalar` (a `|`/`>` value at an image/component/include path is never rewritten). Add: "A file that is not valid YAML (e.g. tab indentation) is an error for that file (`<path>:<line>: invalid YAML: …`); nothing in it is changed. `pin-ci` exits 1 on it."
+- [ ] README (`Components & includes` and `What gets skipped`, `Exit codes`): replace "Known gap until M5c-y: block children in CRLF files are not discovered." by: "Discovery reads the YAML structure (M5c-y): anchored values (`&a`, `!!str`) are pinned at their definition; aliases (`*a`), merge keys (`<<:`) and `!reference [...]` are not targets. CRLF files, children of anchored keys (`.base: &base`) and a first key after a BOM are discovered (R7, R8, R9; before: missed or `skipped (unparseable reference)`)." Add skip reasons `block scalar` (a `|`/`>` value at an image/component/include path is never rewritten) and `multi-line scalar` (a quoted or plain value continued on the next line is never rewritten). Add: "A file that is not valid YAML (e.g. tab indentation) is an error for that file (`<path>:<line>: invalid YAML: …`); nothing in it is changed. `pin-ci` exits 1 on it."
 - [ ] Planted: point `GitlabCi::scan` back to `legacy_discover` → the 12 snapshots and both new tests FAIL ☐; revert.
-- [ ] Gate + matrix → 225. Commit: `fix: R7/R8/R9 gitlab-ci discovery on core::yaml; invalid YAML is a file error (snapshots updated)`, body lists the 12 snapshot files.
+- [ ] Gate + matrix → 227. Commit: `fix: R7/R8/R9 gitlab-ci discovery on core::yaml; invalid YAML is a file error (snapshots updated)`, body lists the 12 snapshot files.
 
 ## Task Y11 — delete the hand-rolled discoverer (refactor)
 
@@ -446,20 +493,20 @@ Tests use a local `fn scalars(t: &str) -> Vec<(String /*path "job.services[1].na
 - [ ] Evidence before: `INSTA_UPDATE=no cargo test --workspace --all-features > .tmp/y11-before.log 2>&1`.
 - [ ] Delete `legacy_discover` and every primitive only it uses (`component_key`, `push_component_target`, `image_key`, `image_key_colon`, `top_key`, `push_target`, `push_flow_targets`, `push_flow_item`, `dash_item_rest`, `push_item_targets`, `name_value_offset`, `push_name_child_target`, `push_if_parses`, `scalar_token`, `IncludeBlock`, `PendingInclude`, `include_key`, `push_include_target`, `flow_close`, `split_flow_items`, `key_value`, `push_include_flow_pairs`, `push_include_flow_mapping`, `push_include_flow_sequence`, `handle_include_inner`, `record_include_key`) and the generator test `legacy_record_matches_discover` (its subject is gone; the record file stays, frozen). Rewrite the module doc: "Discovery over `pin_core::yaml` (M5c-y): path rules …" (the matcher list).
 - [ ] Evidence after: `diff <(grep '^test ' .tmp/y11-before.log | sort) <(grep '^test ' .tmp/y11-after.log | sort)` = exactly the removed `legacy_record_matches_discover`; no `*.snap` change; `git diff --stat` shows `discover.rs` −≥ 750 lines; `grep -nE 'split_inclusive|trim_start_matches' crates/pin-gitlab-ci/src/discover.rs` → empty.
-- [ ] Gate + matrix → 224. Commit: `refactor: M5c-y delete the hand-rolled YAML discoverer (legacy record kept for parity)`.
+- [ ] Gate + matrix → 226. Commit: `refactor: M5c-y delete the hand-rolled YAML discoverer (legacy record kept for parity)`.
 
 ## Close-out (controller, before merge)
 
 - [ ] Gate + matrix green; `git log --oneline main..` = 11 commits Y1–Y11 in order.
 - [ ] `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features` → 0 warnings (old intra-doc links are gone with Y11).
 - [ ] Coverage gap 1 and 2 by hand; record "not run" if network/devenv is unavailable.
-- [ ] If main approves (Open for main 1, 2, 4): one docs commit on the spec — §9 R-table row R9 (BOM), R7 wording incl. `!tag`/`!reference`, §6.9 `core::yaml` as built (`ScanError`, `line`/`parent`/`in_flow`, opaque local tags, newline-keeping mask), §10 M5c-y done.
+- [ ] If main approves (Open for main 1, 2, 4): one docs commit on the spec — §9 R-table row R9 (BOM), R7 wording incl. `!tag`/`!reference`, §6.9 `core::yaml` as built (`ScanError`, `line`/`parent`/`in_flow`, `parent` on `Alias`/`Tagged`, opaque local tags, newline-keeping mask, trimmed block span (review M2), **implicit null = empty span** with its position — block: the key's `:`, flow: the next token, with properties: the properties (review H1)), §6.9/§9 gitlab-ci rule **a multi-line non-block scalar at a target path → `skipped (multi-line scalar)`** (review M3), §10 M5c-y done.
 
 ## Self-review
 
-- **Spec coverage:** §6.9 table rows: char→byte (Y4), quoted re-scan (Y5), properties (Y5), comments/aliases/merge/`!reference` (Y5, Y8), sticky error + masking (Y4, Y6, Y10), block scalars (Y5, Y7, Y8), CRLF/multi-doc (Y4, fixtures). §6.9 shape: `scan`, `Node`, `ScalarRef` (+3 fields, Y-D3), `ScanOpts`. Parse error = per-file error, no fallback (Y10). §9 M5c-y: path matching (Y8, Y9), primitives deleted (Y11), R7/R8 diffs (Y10), parity (Y1, Y8, Y9). §11: parity incl. token property, fixture list (Y1; masked `{{ }}` at unit level), planted `index()`/re-scan (Y8). §6.1: feature `yaml`, +2 crates (Y4). §14.1: L1 (Y3), L7 (Y2, Y3), L3 deferred (Y-D14).
-- **Spec vs plan differences (Open for main):** R9 is new; R7 widened to tags/`!reference`; `ScanError` instead of `YamlError`; `ScalarRef` extra fields; mask keeps newlines; exit code 1 for parse errors until M5d.
-- **Type consistency:** `scan(text, ScanOpts) -> Result<Vec<Node>, ScanError>` in Y4–Y10; `ScalarRef.{span, line, parent, in_flow, style}` used by Y8/Y9 exactly as defined; `PinTarget::Unsupported { kind, line, start, end, value, reason }` in Y7/Y8/Y9; `discover_yaml` (Y8–Y9) = `discover` (Y10+), `legacy_discover` only in Y10; `plan_once`/`check_spans` signatures in Y2/Y10; `LineIndex::line_of` in Y4/Y2.
+- **Spec coverage:** §6.9 table rows: char→byte (Y4), quoted re-scan (Y5), properties (Y5), comments/aliases/merge/`!reference` (Y5, Y8), sticky error + masking (Y4, Y6, Y10), block and multi-line scalars (Y5, Y7, Y8, Y9), implicit nulls (Y4, Y9), CRLF/multi-doc (Y4, fixtures). §6.9 shape: `scan`, `Node`, `ScalarRef` (+3 fields; `parent` also on `Alias`/`Tagged`, Y-D3), `ScanOpts`. Parse error = per-file error, no fallback (Y10). §9 M5c-y: path matching (Y8, Y9), primitives deleted (Y11), R7/R8 diffs (Y10), parity (Y1, Y8, Y9). §11: parity incl. token property, fixture list (Y1; masked `{{ }}` at unit level), planted `index()`/re-scan (Y8). §6.1: feature `yaml`, +2 crates (Y4). §14.1: L1 (Y3), L7 (Y2, Y3), L3 deferred (Y-D14).
+- **Spec vs plan differences (Open for main):** R9 is new; R7 widened to tags/`!reference`; `ScanError` instead of `YamlError`; `ScalarRef` extra fields; mask keeps newlines; exit code 1 for parse errors until M5d. Added by the plan review (not in the spec yet → close-out checklist): implicit null = empty span (Y-D16), multi-line non-block scalars at target paths are skipped (Y-D17), block spans end trimmed (Y-D6).
+- **Type consistency:** `scan(text, ScanOpts) -> Result<Vec<Node>, ScanError>` in Y4–Y10; `ScalarRef.{span, line, parent, in_flow, style}` used by Y8/Y9 exactly as defined, `Node::{Alias, Tagged}.parent` from Y4/Y5; `PinTarget::Unsupported { kind, line, start, end, value, reason }` in Y7/Y8/Y9 (`reason` ∈ {`block scalar`, `multi-line scalar`}, range = first line); `discover_yaml` (Y8–Y9) = `discover` (Y10+), `legacy_discover` only in Y10; `plan_once`/`check_spans` signatures in Y2/Y10; `LineIndex::line_of` in Y4/Y2.
 - **Planted violations:** every new check has a box; Y11 is a refactor with before/after evidence.
 - **Proportion:** bodies only for the walker table, `token_span`, `mask_templates`, the matcher rules and the exception table — the decisions the signatures and tests do not fix.
 
