@@ -148,7 +148,7 @@ impl GitLabClient {
     /// (no tag or branch)")`. Successful resolutions are cached per
     /// `(project, ref)`.
     pub async fn resolve(&self, project: &str, ref_name: &str) -> Result<String, GitLabError> {
-        if is_sha(ref_name) {
+        if crate::git::is_commit_sha(ref_name) {
             return Ok(ref_name.to_string());
         }
         let key = (project.to_string(), ref_name.to_string());
@@ -329,11 +329,6 @@ fn url_encode(s: &str) -> String {
         }
     }
     out
-}
-
-/// 40-hex lowercase SHA (M3 constraint 7): accepted as-is, no API call.
-fn is_sha(s: &str) -> bool {
-    s.len() == 40 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 #[cfg(test)]

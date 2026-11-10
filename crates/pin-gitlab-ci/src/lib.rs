@@ -15,11 +15,11 @@ use tokio::sync::Semaphore;
 
 use crate::discover::{PinTarget, discover};
 use crate::gitlab::GitLabClient;
-use crate::registry::{Creds, RegError, is_old_enough};
+use crate::registry::{Creds, RegError};
 use crate::report::{RefResult, Report};
+use pin_core::ver::age::is_old_enough;
 
-pub use image_ref::ImageRef;
-pub use registry::RegistryClient;
+pub use pin_core::oci::{ImageRef, RegistryClient};
 
 /// Options for a pin run.
 #[derive(Debug, Clone)]
@@ -100,11 +100,6 @@ fn base_result(text: &str, t: &PinTarget, file: &str) -> RefResult {
         status: String::new(),
         reason: None,
     }
-}
-
-/// A 40-hex lowercase commit SHA (M3 constraint 7): already pinned.
-fn is_sha(s: &str) -> bool {
-    s.len() == 40 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// A component version GitLab resolves via the CI/CD Catalog at pipeline
@@ -371,7 +366,7 @@ async fn resolve_component(
             comment: None,
         };
     }
-    if is_sha(&parts.version) {
+    if pin_core::git::is_commit_sha(&parts.version) {
         result.status = "ok".to_string();
         return Resolved {
             result,
@@ -419,7 +414,7 @@ async fn resolve_include(gitlab: &GitLabClient, text: &str, t: &PinTarget, file:
         unreachable!("resolve_include receives IncludeRef targets")
     };
     let mut result = base_result(text, t, file);
-    if is_sha(value) {
+    if pin_core::git::is_commit_sha(value) {
         result.status = "ok".to_string();
         return Resolved {
             result,
