@@ -9,7 +9,23 @@ use pin_core::report::Status;
 use pin_core::run::Ctx;
 
 use crate::discover::PinTarget;
-use crate::is_catalog_managed;
+
+/// A component version GitLab resolves via the CI/CD Catalog at pipeline
+/// time (M3 constraint 8): starts with `~`, contains an `.x` wildcard, or
+/// is a PARTIAL numeric version — all components digits but fewer than 3
+/// dot-separated components (`1`, `1.0`). Full versions — including full
+/// numeric semvers like `1.0.0` — are concrete tag names and resolve via
+/// the tag endpoint, not the catalog.
+fn is_catalog_managed(version: &str) -> bool {
+    if version.starts_with('~') || version.contains(".x") {
+        return true;
+    }
+    let parts: Vec<&str> = version.split('.').collect();
+    parts
+        .iter()
+        .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        && parts.len() < 3
+}
 
 /// The finding skeleton for `t`: `reference` is the discovered value, `old`
 /// the token as written.
@@ -99,5 +115,26 @@ pub(crate) async fn resolve_include(ctx: &Ctx, text: &str, t: &PinTarget) -> Fin
     match ctx.gitlab_resolve(None, project, value).await {
         Err(e) => with(f, Status::Unresolved, Some(e)),
         Ok(sha) => pinned(f, text, t, &sha, value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_catalog_managed_table() {
+        // Tilde, wildcard and PARTIAL numeric versions (fewer than 3
+        // dot-separated components) are catalog-managed; full versions —
+        // including full numeric semvers like `1.0.0` — resolve as tags.
+        assert!(is_catalog_managed("~latest"));
+        assert!(is_catalog_managed("1.0.x"));
+        assert!(is_catalog_managed("1"));
+        assert!(is_catalog_managed("1.0"));
+        assert!(is_catalog_managed("2024"));
+        assert!(!is_catalog_managed("1.0.0"));
+        assert!(!is_catalog_managed("v1.0.0"));
+        assert!(!is_catalog_managed("1.2.3.4"));
+        assert!(!is_catalog_managed("rc1"));
     }
 }
