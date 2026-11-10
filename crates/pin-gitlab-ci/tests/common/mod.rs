@@ -5,11 +5,15 @@
 
 use std::path::{Path, PathBuf};
 
+use pin_core::edit::{Splice, apply, coalesce_comments};
 use pin_core::gitlab::GitLabClient;
 use pin_core::oci::{ImageRef, RegistryClient};
+use pin_core::plugin::{DynPlugin, Finding, KindSet};
 use pin_core::report::{Report, Row};
+use pin_core::run::{Ctx, ResolverEnv, UpdatePolicy, now_unix};
+use pin_core::text::LineIndex;
 use pin_gitlab_ci::discover::{PinTarget, discover};
-use pin_gitlab_ci::{PinOptions, pin_files};
+use pin_gitlab_ci::{GitlabCi, KINDS, PinOptions, pin_files};
 use wiremock::matchers::path_regex;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -416,6 +420,109 @@ pub fn check_comments_present(
                 i + 1
             ));
         }
+    }
+    Ok(())
+}
+
+/// The findings the plugin plans for `text` (no file is read or written),
+/// resolved against the fakes with the same policy [`pin_once`] uses.
+pub async fn plan_once(f: &Fakes, name: &str, text: &str, mode: Mode) -> Vec<Finding> {
+    let update = UpdatePolicy {
+        enabled: matches!(mode, Mode::Update),
+        ..Default::default()
+    };
+    let env = ResolverEnv {
+        gitlab_host: "gitlab.com".into(),
+        ..Default::default()
+    };
+    let ctx = Ctx::new(update, now_unix(), env)
+        .with_oci(Ok(registry_client(f)))
+        .with_gitlab("gitlab.com", Ok(gitlab_client(f)));
+    GitlabCi::default()
+        .plan(&ctx, Path::new(name), text, &KindSet::defaults(&KINDS), 4)
+        .await
+        .unwrap()
+}
+
+/// P-span (review L7): the edits of `findings` are tied to the spans
+/// `discover(o)` reports, then must produce `e1`.
+///
+/// - an edited finding has exactly one replacement; it is exactly the span
+///   of a discovered target on the finding's line, and `o[span] == old`;
+/// - finding ↦ target is injective (no target is replaced twice);
+/// - every insertion sits at the end of the finding's line, starts with
+///   `"  # "` and has no `\n`;
+/// - all of this is checked BEFORE `apply` (its `debug_assert` panics on
+///   overlapping replacements, so an overlap must be an `Err` here);
+/// - finally `apply(o, coalesce_comments(edits ordered by (line,
+///   replacement start)))` equals `e1`: the combined comment is in byte
+///   order whatever the scan order.
+pub fn check_spans(o: &str, e1: &str, findings: &[Finding]) -> Result<(), String> {
+    let targets = discover(o);
+    let lines = LineIndex::new(o);
+    let mut claimed: Vec<Option<usize>> = vec![None; targets.len()];
+    let mut ordered: Vec<(usize, usize, &Finding)> = Vec::new();
+    for (i, f) in findings.iter().enumerate() {
+        if f.edits.is_empty() {
+            continue;
+        }
+        let at = format!("line {}", f.line + 1);
+        let reps: Vec<&Splice> = f.edits.iter().filter(|s| s.start != s.end).collect();
+        let [r] = reps[..] else {
+            return Err(format!(
+                "{at}: {} replacements, expected exactly one",
+                reps.len()
+            ));
+        };
+        let Some(ti) = targets
+            .iter()
+            .position(|t| t.line() == f.line && t.start() == r.start && t.end() == r.end)
+        else {
+            return Err(format!(
+                "{at}: replacement {}..{} is not the span of a discovered target on this line",
+                r.start, r.end
+            ));
+        };
+        if let Some(prev) = claimed[ti].replace(i) {
+            return Err(format!(
+                "{at}: target {}..{} is replaced by two findings (#{prev} and #{i})",
+                r.start, r.end
+            ));
+        }
+        if o.get(r.start..r.end) != Some(f.old.as_str()) {
+            return Err(format!(
+                "{at}: replaced bytes {:?} differ from the finding's old {:?}",
+                o.get(r.start..r.end),
+                f.old
+            ));
+        }
+        for s in f.edits.iter().filter(|s| s.start == s.end) {
+            if lines.line_end(f.line) != Some(s.start) {
+                return Err(format!(
+                    "{at}: insertion at {} is not at the line end {:?}",
+                    s.start,
+                    lines.line_end(f.line)
+                ));
+            }
+            if !s.text.starts_with("  # ") || s.text.contains('\n') {
+                return Err(format!(
+                    "{at}: insertion {:?} is not a one-line comment",
+                    s.text
+                ));
+            }
+        }
+        ordered.push((f.line, r.start, f));
+    }
+    ordered.sort_by_key(|&(line, start, _)| (line, start));
+    let edits: Vec<Splice> = ordered
+        .iter()
+        .flat_map(|(_, _, f)| f.edits.iter().cloned())
+        .collect();
+    let got = apply(o, &coalesce_comments(edits));
+    if got != e1 {
+        return Err(format!(
+            "the file differs from the original with every replacement and the combined comments applied in byte order:\nexpected {got:?}\nactual   {e1:?}"
+        ));
     }
     Ok(())
 }

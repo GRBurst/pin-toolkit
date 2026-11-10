@@ -9,6 +9,8 @@
 mod common;
 
 use common::*;
+use pin_core::edit::Splice;
+use pin_core::plugin::Finding;
 use pin_core::report::{Report, Row, Status};
 
 /// A pinned row on `line` (1-based) turning `old` into `new`.
@@ -163,4 +165,82 @@ fn checker_rejects_flipped_byte() {
 
     let absent = Report::new(vec![row(1, "x", "x@sha256:2")]);
     assert!(check_byte_exact(o, clean, &absent).is_err());
+}
+
+/// Review L7 / P-span: every replacement is exactly the span of one
+/// discovered target (injective), keeps the finding's `old`, and the
+/// combined comment lands in byte order — checked against the spans
+/// `discover` reports, not against the rows.
+#[tokio::test]
+async fn edits_touch_only_reference_spans_over_all_fixtures() {
+    let fakes = start_fakes().await;
+    let mut failures = Vec::new();
+    for fx in fixtures() {
+        for m in modes(&fx.name) {
+            let p = scratch_copy(&fx, m, "spans");
+            pin_once(&fakes, &p, m).await;
+            let e1 = read(&p);
+            let findings = plan_once(&fakes, &fx.name, &fx.text, m).await;
+            if let Err(msg) = check_spans(&fx.text, &e1, &findings) {
+                failures.push(format!("{}/{}: {msg}", fx.name, m.tag()));
+            }
+            std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// A pinned finding on `line` (0-based) with the given edits.
+fn finding(line: usize, old: &str, edits: Vec<Splice>) -> Finding {
+    Finding {
+        line,
+        kind: "image",
+        reference: old.into(),
+        old: old.into(),
+        new: Some("new".into()),
+        status: Status::Pinned,
+        reason: None,
+        edits,
+        follow_up: None,
+    }
+}
+
+#[test]
+fn span_checker_rejects_wrong_occurrence() {
+    // targets: `a:1` at 11..14 and 16..19
+    let o = "services: [a:1, a:1]\n";
+    let second = || finding(0, "a:1", vec![Splice::replace(16, 19, "a:1@x")]);
+
+    let right = "services: [a:1, a:1@x]\n";
+    assert_eq!(check_spans(o, right, &[second()]), Ok(()));
+
+    // the other occurrence was edited: same bytes in `old`, different place
+    let wrong = "services: [a:1@x, a:1]\n";
+    let err = check_spans(o, wrong, &[second()]).unwrap_err();
+    assert!(err.contains("byte order"), "{err}");
+
+    // not the span of any target
+    let off = finding(0, "a:1", vec![Splice::replace(12, 15, "a:1@x")]);
+    let err = check_spans(o, "services: [aa:1@x, a:1]\n", &[off]).unwrap_err();
+    assert!(err.contains("not the span of a discovered target"), "{err}");
+
+    // two findings on one target: an `Err`, not an `apply` panic
+    let twice = [
+        finding(0, "a:1", vec![Splice::replace(11, 14, "a:1@x")]),
+        finding(0, "a:1", vec![Splice::replace(11, 14, "a:1@y")]),
+    ];
+    let err = check_spans(o, right, &twice).unwrap_err();
+    assert!(err.contains("two findings"), "{err}");
+
+    // an insertion that is not at the line end
+    let stray = finding(
+        0,
+        "a:1",
+        vec![
+            Splice::replace(16, 19, "a:1@x"),
+            Splice::insert(5, "  # a:1"),
+        ],
+    );
+    let err = check_spans(o, "servi  # a:1ces: [a:1, a:1@x]\n", &[stray]).unwrap_err();
+    assert!(err.contains("not at the line end"), "{err}");
 }
