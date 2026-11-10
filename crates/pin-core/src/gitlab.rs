@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -95,8 +96,9 @@ fn classify_ref(ref_name: &str) -> RefKind<'_> {
     }
 }
 
-/// GitLab REST v4 client: ref → commit SHA (M3 pinning).
-#[derive(Debug)]
+/// GitLab REST v4 client: ref → commit SHA (M3 pinning). The cache sits
+/// behind `Arc`, so clones share it (M5c, P11).
+#[derive(Debug, Clone)]
 pub struct GitLabClient {
     base_url: String,
     token: Option<String>,
@@ -106,7 +108,7 @@ pub struct GitLabClient {
     http: reqwest::Client,
     /// Resolved commit SHAs keyed by `(project, ref)`; successful
     /// resolutions only.
-    cache: Mutex<HashMap<(String, String), String>>,
+    cache: Arc<Mutex<HashMap<(String, String), String>>>,
 }
 
 impl GitLabClient {
@@ -123,7 +125,7 @@ impl GitLabClient {
             token,
             job_token,
             http,
-            cache: Mutex::new(HashMap::new()),
+            cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

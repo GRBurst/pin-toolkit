@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -63,7 +64,7 @@ pub enum HostCreds {
 
 /// Registry credentials keyed by registry host (e.g. `"docker.io"`,
 /// `"ghcr.io"`). M4a: per-host Basic or Bearer.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Creds {
     hosts: HashMap<String, HostCreds>,
 }
@@ -213,8 +214,9 @@ fn entry_to_creds(entry: &serde_json::Value) -> Option<HostCreds> {
 /// `https://{host}`).
 ///
 /// The token cache is a `tokio::sync::Mutex` so `digest` is concurrency-safe
-/// (M1's orchestrator calls it from concurrent tasks).
-#[derive(Debug)]
+/// (M1's orchestrator calls it from concurrent tasks). Caches sit behind
+/// `Arc`, so clones share them (M5c, P11).
+#[derive(Debug, Clone)]
 pub struct RegistryClient {
     http: reqwest::Client,
     creds: Creds,
@@ -223,10 +225,10 @@ pub struct RegistryClient {
     /// `None` → `DEFAULT_HUB_API_BASE` (tags URL `{base}/v2/repositories/…`).
     hub_base: Option<String>,
     /// Bearer tokens keyed by the `WWW-Authenticate` scope.
-    tokens: Mutex<HashMap<String, String>>,
+    tokens: Arc<Mutex<HashMap<String, String>>>,
     /// Fetched tag lists keyed by `api_repo()`; avoids re-fetching for
     /// repeated refs to the same repo.
-    tag_lists: Mutex<HashMap<String, Vec<String>>>,
+    tag_lists: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl RegistryClient {
@@ -242,8 +244,8 @@ impl RegistryClient {
             creds,
             base_urls,
             hub_base: None,
-            tokens: Mutex::new(HashMap::new()),
-            tag_lists: Mutex::new(HashMap::new()),
+            tokens: Arc::new(Mutex::new(HashMap::new())),
+            tag_lists: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
