@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use crate::config::repo::{unknown_kind, unknown_plugin};
 use crate::config::{Fatal, Layer, id_list, valid_gitlab_host};
@@ -143,9 +143,14 @@ pub fn dispatch_argv0(mut args: Vec<OsString>) -> Vec<OsString> {
     args
 }
 
-/// Parse `args` (`argv[0]` first, after [`dispatch_argv0`]).
+/// Parse `args` (`argv[0]` first, after [`dispatch_argv0`]). Usage and
+/// help always say `pin-toolkit`: after an alias dispatch, `pin-ci
+/// gitlab-ci …` would not work as shown (review-2 L4).
 pub fn parse(args: &[OsString]) -> Result<(Cli, Mode), clap::Error> {
-    let cli = Cli::try_parse_from(args)?;
+    let matches = Cli::command()
+        .bin_name("pin-toolkit")
+        .try_get_matches_from(args)?;
+    let cli = Cli::from_arg_matches(&matches)?;
     let mode = cli.mode();
     Ok((cli, mode))
 }
@@ -484,5 +489,30 @@ mod tests {
             assert_eq!(with(argv0), want, "{argv0}");
         }
         assert_eq!(dispatch_argv0(vec![]), Vec::<OsString>::new());
+    }
+
+    /// Review-2 L4: usage and help after an alias dispatch name the command
+    /// line that works (`pin-toolkit gitlab-ci …`), not `pin-ci gitlab-ci`.
+    #[test]
+    fn alias_usage_names_pin_toolkit() {
+        for argv in [
+            &["pin-ci", "--bogus"][..],
+            &["/usr/bin/pin-gitlab-ci", "--bogus"],
+            &["/x/pin-toolkit", "gitlab-ci", "--bogus"],
+        ] {
+            let e = parse(&dispatch_argv0(os(argv))).expect_err(argv[0]);
+            let text = e.render().to_string();
+            assert!(
+                text.contains("Usage: pin-toolkit gitlab-ci [OPTIONS] [PATHS]..."),
+                "{argv:?}: {text}"
+            );
+            assert!(!text.contains("pin-ci "), "{argv:?}: {text}");
+        }
+        let help = parse(&dispatch_argv0(os(&["pin-ci", "--help"]))).expect_err("help");
+        let text = help.render().to_string();
+        assert!(
+            text.contains("Usage: pin-toolkit gitlab-ci [OPTIONS] [PATHS]..."),
+            "{text}"
+        );
     }
 }
