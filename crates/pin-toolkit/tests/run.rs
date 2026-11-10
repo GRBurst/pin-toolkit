@@ -37,6 +37,35 @@ async fn pins_a_repo_end_to_end() {
     );
 }
 
+/// Review-2 M1: `--check ../other` (a sibling repo outside the git root)
+/// checks that repo's files instead of being a silent no-op, with and
+/// without a subcommand.
+#[tokio::test]
+async fn explicit_dir_outside_the_git_root() {
+    let f = start_fakes().await;
+    let root = repo("run-outside-repo");
+    let other = repo("run-outside-other");
+    write(&other, ".gitlab-ci.yml", "image: alpine:3.20\n");
+    let dir = format!("../{}", other.file_name().unwrap().to_str().unwrap());
+    for argv in [
+        vec!["pin-toolkit", "--check", &dir],
+        vec!["pin-toolkit", "gitlab-ci", "--check", &dir],
+    ] {
+        let out = run_tuned(&root, &argv, &[], tune(&f)).await;
+        assert_eq!(out.code, 1, "{argv:?}: {}{}", out.stdout, out.stderr);
+        let row = out.stdout.lines().next().unwrap_or_default();
+        assert!(
+            row.starts_with(&format!("{dir}/.gitlab-ci.yml:1  ")) && row.contains("  pinned  "),
+            "{argv:?}: {}",
+            out.stdout
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(other.join(".gitlab-ci.yml")).unwrap(),
+        "image: alpine:3.20\n"
+    );
+}
+
 #[tokio::test]
 async fn same_image_in_two_files_is_one_lookup() {
     let f = start_fakes().await;
