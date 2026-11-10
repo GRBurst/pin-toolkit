@@ -63,8 +63,10 @@ impl RegistryClient {
     /// from the Docker Hub API. Non-docker.io: Ok(empty).
     /// `library/` mapping: no-slash ref → library/<repo> (M1 api_repo rule).
     pub async fn tag_timestamps(&self, r: &ImageRef) -> Result<BTreeMap<String, i64>, RegError>;
-    // constructor gains hub_base_url override (test hook), default
-    // "https://hub.docker.com/v2" — same HashMap pattern as base_urls.
+    // constructor gains hub_base override (test hook), default
+    // DEFAULT_HUB_API_BASE = "https://hub.docker.com" — the tags URL
+    // appends /v2/repositories/... (a default that carried /v2 would
+    // double it → 404 → Ok(empty) → inert guard; caught by the T3 oracle).
 }
 // private, unit-tested:
 fn parse_rfc3339_unix(s: &str) -> Option<i64>;   // Z or ±HH:MM offset, optional .frac
@@ -156,7 +158,7 @@ HARD REQUIREMENT: all pre-existing tests green unchanged (R4; the literal conver
 
 Files: `tests/oracle.rs`, optionally `tests/live.rs`, `README.md`.
 
-- **Oracle (the payoff):** the M2 test `m2_oracle_update_matches_old_pipeline` currently allows one documented divergence (old 14d lag). New logic: for any old≠new tag pair, fetch both tags' Hub `tag_last_pushed` (real network, PIN_CI_ORACLE-gated) and assert the divergence is age-explained: `old_pick_age_days ≥ 14` AND (`new_pick_age_days < 14` OR new pick does not exist as an old pick). No divergence → pass as before. If neither tag has a Hub timestamp → FAIL loudly (data bug, not a divergence).
+- **Oracle (the payoff):** the M2 test `m2_oracle_update_matches_old_pipeline` tag-differs branch keeps the M2 rule: a divergence is allowed ONLY when both tags parse-stable-compatible and `compare(new, old) == Greater`, and both digests are `crane digest`-verified. **Correction (T3 first live run):** the originally specified relaxation (excuse ONLY if real Hub timestamps prove old pick ≥ 14d AND new pick < 14d) was built on a false premise — the old pipeline's config.js scopes `minimumReleaseAge` to `matchUpdateTypes: ['pinDigest','digest']`, so its TAG bumps are NOT age-gated (its own log shows renovate accepting 12-day-old and 2-day-old bumps), and the observed ubuntu 26.04→26.10 divergence is VERSIONING POLICY (renovate's `ubuntu` versioning treats odd-minor interlude releases as unstable where the minimal port does not). Age-gate verification lives in the T2 wiremock e2e suite (deterministic) and `live_guarded_update` (real Hub push timestamps).
 - **Live (optional, PIN_CI_LIVE):** a real `--update --min-age-days 14` run on a scratch file with `alpine:3.19` (known multi-year-old) → must update to the current 3.x latest (which is >14d old) and pin its digest.
 - **README:** flag row in the CLI table + "Release age guard (M4b-1)" section: semantics, docker.io-only (R3), recommended 14 (old pipeline parity), no-timestamp = excluded (R6), no eligible → skipped.
 - **Final gate (controller, before merge):** full suite; `PIN_CI_LIVE=1 cargo test`; `PIN_CI_ORACLE=1` oracle run (devenv: renovate+crane on PATH); release build; merge to main (unsigned), ledger close-out.
@@ -169,7 +171,7 @@ Files: `tests/oracle.rs`, optionally `tests/live.rs`, `README.md`.
 2. **RFC3339 math** — leap day, offsets, fractional seconds; boundary `ts == cutoff` → old enough.
 3. **Double-pick matrix** — the 4 (candidate, age_candidate) combinations map exactly to R5/R6/fall-through; the `skipped` path writes nothing.
 4. **Hub error mapping** — 404 repo → empty map (→ skip via R5, not error); 429/network/malformed → `unresolved (hub api: …)`; no retry.
-5. **Oracle relaxation soundness** — divergence accepted ONLY with fetched timestamps proving the 14d boundary; missing timestamps = loud fail (never a silent pass).
+5. **Oracle divergence rule** — allowed ONLY when both tags parse-stable-compatible AND new > old AND both digests crane-verified (versioning-policy gap); the 14d boundary is NOT enforced in the oracle (disproven premise, see Task 3 correction) — age-gate soundness is covered by the T2 wiremock suite + `live_guarded_update`.
 6. **No new deps** — Cargo.toml untouched.
 
 ## Self-review (controller, post-write)

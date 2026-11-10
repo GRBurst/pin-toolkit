@@ -77,9 +77,9 @@ Two deliberate divergences from `pin-ci-images.sh` (renovate + crane):
   `minimumReleaseAge: 14d`; by default pin-ci has no such guard and will
   pick a just-published stable tag — `--min-age-days 14` restores parity
   (see [Release age guard (M4b-1)](#release-age-guard-m4b1)). With the
-  guard off, the M2 oracle accepts a strictly-newer stable tag only as the
-  age-explained divergence proven by real Hub push timestamps (old pick
-  ≥ 14 days old, new pick younger).
+  guard off, the M2 oracle accepts a tag divergence from the old pipeline
+  only as a versioning-policy difference (both tags crane-verified; e.g.
+  renovate's `ubuntu` versioning treats odd-minor interludes as unstable).
 
 ## Release age guard (M4b-1)
 
@@ -94,10 +94,10 @@ fallback `last_updated`).
   references (including the no-slash default). References on any other
   host are a documented no-op: M2 update behavior, unchanged.
 - **Recommended: `14`.** The old pipeline (`pin-ci-images.sh`, renovate)
-  sets `minimumReleaseAge: 14d`; `--min-age-days 14` restores parity, and
-  the M2 oracle accepts a tag divergence from the old pipeline only when
-  the real Hub timestamps prove the 14-day boundary (old pick ≥ 14d old,
-  new pick younger).
+  sets `minimumReleaseAge: 14d` in its config — but that rule is scoped to
+  `matchUpdateTypes: ['pinDigest','digest']`, so it did not apply to tag
+  bumps (proven in the oracle run log); `--min-age-days 14` gates bumps
+  too, matching renovate's documented intent.
 - **No timestamp = excluded.** A tag missing from the Hub timestamp map
   (neither `tag_last_pushed` nor `last_updated`) is treated as NOT old
   enough (conservative; parity with renovate's `timestamp-required`).

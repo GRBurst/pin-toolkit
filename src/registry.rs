@@ -21,6 +21,15 @@ use tokio::sync::Mutex;
 use crate::image_ref::ImageRef;
 
 const DEFAULT_DOCKER_HUB_BASE: &str = "https://registry-1.docker.io";
+/// Default Docker Hub API base (M4b-1 `tag_timestamps`); the tags URL is
+/// `{base}/v2/repositories/<repo>/tags` — the base itself must NOT carry
+/// a `/v2` segment.
+const DEFAULT_HUB_API_BASE: &str = "https://hub.docker.com";
+
+/// Docker Hub tags API URL for one page (M4b-1).
+fn hub_tags_url(base: &str, repo: &str) -> String {
+    format!("{base}/v2/repositories/{repo}/tags?page_size=100")
+}
 const MANIFEST_ACCEPT: &str = "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.index.v1+json";
 
 /// Errors from registry lookups. Plain enum + manual `Display`; no thiserror.
@@ -210,7 +219,7 @@ pub struct RegistryClient {
     creds: Creds,
     base_urls: HashMap<String, String>,
     /// Test hook: override the Docker Hub API base (M4b-1);
-    /// `None` → `https://hub.docker.com/v2`.
+    /// `None` → `DEFAULT_HUB_API_BASE` (tags URL `{base}/v2/repositories/…`).
     hub_base: Option<String>,
     /// Bearer tokens keyed by the `WWW-Authenticate` scope.
     tokens: Mutex<HashMap<String, String>>,
@@ -480,8 +489,8 @@ impl RegistryClient {
         let base = self
             .hub_base
             .clone()
-            .unwrap_or_else(|| "https://hub.docker.com/v2".to_string());
-        let mut url = format!("{base}/v2/repositories/{}/tags?page_size=100", r.api_repo());
+            .unwrap_or_else(|| DEFAULT_HUB_API_BASE.to_string());
+        let mut url = hub_tags_url(&base, &r.api_repo());
         let mut out: BTreeMap<String, i64> = BTreeMap::new();
         loop {
             let resp = self
@@ -1151,6 +1160,18 @@ mod tests {
         assert_eq!(parse_rfc3339_unix("2026-11-08 14:24:40Z"), None);
         assert_eq!(parse_rfc3339_unix("2026-11-08T14:24:40"), None);
         assert_eq!(parse_rfc3339_unix(""), None);
+    }
+
+    #[test]
+    fn default_hub_api_url_is_single_v2() {
+        // The default base must not carry /v2 itself: hub_tags_url appends
+        // /v2/repositories/... — a doubled /v2 is a 404, which
+        // tag_timestamps maps to Ok(empty) and silently inert-izes the
+        // release-age guard (M4b-1 T3 oracle finding).
+        assert_eq!(
+            hub_tags_url(DEFAULT_HUB_API_BASE, "library/ubuntu"),
+            "https://hub.docker.com/v2/repositories/library/ubuntu/tags?page_size=100"
+        );
     }
 
     #[test]

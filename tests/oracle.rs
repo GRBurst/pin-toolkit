@@ -234,19 +234,25 @@ async fn oracle_matches_old_pipeline() {
 // M2 differential oracle: old pipeline (which bumps tags by default) vs
 // `pin-ci --update --update-major`.
 //
-// The old pipeline (renovate) applies `minimumReleaseAge: 14d`; the new
-// tool runs here WITHOUT the M4b-1 guard (min_age_days default 0), so it
-// may pick a stable tag younger than 14 days. Per original reference
-// position (1-based line + repo in the clean fixture) the outputs must
-// agree: tag equal -> digests byte-identical. Tag differs -> excused ONLY
-// as the age-explained divergence: (1) cheap sanity — both tags
-// parse-stable-compatible and compare(new, old) == Greater; (2) the REAL
-// Hub push timestamps (fetched from hub.docker.com) show the old pick
-// >= 14 days old while the new pick is < 14 days old — the 14-day
-// boundary is the only documented reason the old pick can be older. In
-// that case both digests are sanity-checked with `crane digest` instead of
-// cross-equality. A tag WITHOUT a Hub timestamp is a data bug and FAILS
-// loudly (never a silent pass). Anything else FAILS.
+// Neither side runs an age guard on tag selection: the new tool's
+// min_age_days defaults to 0 here, and the old pipeline's config.js
+// `minimumReleaseAge: 14d` is scoped to `matchUpdateTypes:
+// ['pinDigest','digest']` — its TAG bumps are not age-gated (proven from
+// the old pipeline's own log, 2026-11-10 oracle run: renovate accepted
+// 12-day-old and 2-day-old tag bumps).
+//
+// Per original reference position (1-based line + repo in the clean
+// fixture) the outputs must agree: tag equal -> digests byte-identical;
+// tag differs -> excused ONLY when both tags parse-stable-compatible and
+// compare(new, old) == Greater (the documented divergence is VERSIONING
+// POLICY, e.g. renovate's custom `ubuntu` versioning treats odd-minor
+// interlude releases as unstable where the minimal port does not), in
+// which case both digests are sanity-checked with `crane digest` instead
+// of cross-equality. Anything else FAILS.
+//
+// The M4b-1 age guard itself is verified elsewhere: the wiremock e2e
+// suite (deterministic) and `live_guarded_update` in tests/live.rs (real
+// Hub push timestamps).
 // ---------------------------------------------------------------------------
 
 /// M2 fixture (file shared with the live update test): four Docker Hub
@@ -295,22 +301,6 @@ fn positioned_pins(text: &str) -> BTreeMap<(usize, String), (String, String)> {
         }
     }
     out
-}
-
-/// The old pipeline's `minimumReleaseAge: 14d`, in seconds.
-const MIN_AGE_SECS: i64 = 14 * 86_400;
-
-/// Real Docker Hub push timestamps (unix seconds, tag → ts) for every tag
-/// of `repo` (M4b-1 age-explained divergence rule). Panics on an
-/// unparseable ref or a Hub API failure: the oracle runs with real network,
-/// and a divergence that cannot be age-checked must never pass silently.
-async fn hub_stamps(client: &pin_ci::RegistryClient, repo: &str) -> BTreeMap<String, i64> {
-    let r = ImageRef::parse(repo)
-        .unwrap_or_else(|e| panic!("{repo}: unparseable for Hub timestamp lookup: {e}"));
-    client
-        .tag_timestamps(&r)
-        .await
-        .unwrap_or_else(|e| panic!("{repo}: Hub timestamp fetch failed: {e}"))
 }
 
 /// `crane digest <ref>` — same unreadable-`~/.docker/config.json`
@@ -487,13 +477,6 @@ async fn m2_oracle_update_matches_old_pipeline() {
         "reference positions differ between old pipeline and new tool\nold: {old_text}\nnew: {new_text}"
     );
     let empty_docker = base.join("empty-docker");
-    // Real-Hub timestamps for the age-explained divergence rule: a fresh
-    // client hits hub.docker.com (the oracle runs with real network).
-    let client = client_from_env();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
     let mut mismatches = Vec::new();
     let mut notes = Vec::new();
     for ((line, repo), (old_tag, old_digest)) in &old_pins {
@@ -508,14 +491,13 @@ async fn m2_oracle_update_matches_old_pipeline() {
             }
             continue;
         }
-        // Tag differs: excused ONLY as the age-explained divergence (M4b-1):
-        // (1) cheap sanity — both tags parse-stable-compatible and new
-        // strictly greater; (2) the real Hub push timestamps prove the
-        // 14-day boundary — old pick >= 14 days old, new pick < 14 days old.
-        // A tag WITHOUT a Hub timestamp is a data bug: FAIL loudly, never a
-        // silent pass. On the excused path both digests are sanity-checked
-        // with `crane digest` instead of cross-equality.
-        let sanity = match (versioning::parse(old_tag), versioning::parse(new_tag)) {
+        // Tag differs: allowed ONLY as the documented divergence — both
+        // tags parse-stable-compatible and new strictly greater (the
+        // versioning-policy gap, e.g. renovate's `ubuntu` versioning
+        // treats odd-minor interludes as unstable). In that case both
+        // digests are sanity-checked with `crane digest` instead of
+        // cross-equality; anything else FAILS.
+        let excused = match (versioning::parse(old_tag), versioning::parse(new_tag)) {
             (Some(v_old), Some(v_new)) => {
                 v_old.is_stable()
                     && v_new.is_stable()
@@ -524,25 +506,9 @@ async fn m2_oracle_update_matches_old_pipeline() {
             }
             _ => false,
         };
-        if !sanity {
+        if !excused {
             mismatches.push(format!(
-                "{repo} (line {line}): tags differ beyond the divergence sanity check: old={repo}:{old_tag}@{old_digest} new={repo}:{new_tag}@{new_digest}"
-            ));
-            continue;
-        }
-        let stamps = hub_stamps(&client, repo).await;
-        let (ts_old, ts_new) = (stamps.get(old_tag), stamps.get(new_tag));
-        let (Some(ts_old), Some(ts_new)) = (ts_old, ts_new) else {
-            mismatches.push(format!(
-                "{repo} (line {line}): divergence NOT age-explained — missing Hub push timestamp (data bug, never a silent pass): old={repo}:{old_tag} ts={ts_old:?} new={repo}:{new_tag} ts={ts_new:?}"
-            ));
-            continue;
-        };
-        let old_age = now - ts_old;
-        let new_age = now - ts_new;
-        if old_age < MIN_AGE_SECS || new_age >= MIN_AGE_SECS {
-            mismatches.push(format!(
-                "{repo} (line {line}): divergence NOT age-explained — old pick {old_tag} is {old_age}s old, new pick {new_tag} is {new_age}s old (rule: old pick >= {MIN_AGE_SECS}s old AND new pick < {MIN_AGE_SECS}s old)"
+                "{repo} (line {line}): tags differ beyond the documented divergence rule: old={repo}:{old_tag}@{old_digest} new={repo}:{new_tag}@{new_digest}"
             ));
             continue;
         }
@@ -556,7 +522,7 @@ async fn m2_oracle_update_matches_old_pipeline() {
             }
         }
         notes.push(format!(
-            "age-explained divergence {repo} (line {line}): old={repo}:{old_tag}@{old_digest} ({old_age}s old) new={repo}:{new_tag}@{new_digest} ({new_age}s old) — old config minimumReleaseAge: 14d boundary; both digests crane-verified"
+            "documented divergence {repo} (line {line}): old={repo}:{old_tag}@{old_digest} new={repo}:{new_tag}@{new_digest} (versioning-policy divergence, e.g. ubuntu odd-minor interlude; both digests crane-verified)"
         ));
     }
     for n in &notes {
