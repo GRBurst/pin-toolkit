@@ -62,6 +62,15 @@ fn pinned(mut f: Finding, text: &str, t: &PinTarget, new_value: &str, orig: &str
     f
 }
 
+/// A target that cannot be spliced (block or multi-line scalar): reported
+/// `skipped (<reason>)`, no edit and no resolver.
+pub(crate) fn unsupported(text: &str, t: &PinTarget) -> Finding {
+    let PinTarget::Unsupported { kind, reason, .. } = t else {
+        unreachable!("unsupported receives Unsupported targets")
+    };
+    with(base(text, t, kind), Status::Skipped, Some((*reason).into()))
+}
+
 /// A component target → `@<sha>` (M3 Task 4 rules): unparseable, host not
 /// in `gitlab_hosts`, already a SHA, or catalog-managed → no resolve.
 pub(crate) async fn resolve_component(

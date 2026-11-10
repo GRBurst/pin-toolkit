@@ -24,6 +24,7 @@ fn kind(t: &PinTarget) -> &'static str {
         PinTarget::Image { .. } => "image",
         PinTarget::Component { .. } => "component",
         PinTarget::IncludeRef { .. } => "include",
+        PinTarget::Unsupported { kind, .. } => kind,
     }
 }
 
@@ -47,6 +48,9 @@ fn render(name: &str, text: &str, ts: &[PinTarget]) -> Vec<String> {
                     flow,
                     ..
                 } => format!("value={value:?} project={project:?} flow={flow}"),
+                PinTarget::Unsupported { value, reason, .. } => {
+                    format!("value={value:?} reason={reason}")
+                }
             };
             format!(
                 "{name}:{}\t{}\t{}..{}\t{:?}\t{detail}",

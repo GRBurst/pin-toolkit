@@ -110,3 +110,28 @@ async fn include_pin_has_replacement_and_comment() {
         ]
     );
 }
+
+/// A reference at a target path that cannot be spliced (block scalar) is
+/// reported `skipped (<reason>)`; no resolver is built and nothing is edited.
+#[tokio::test]
+async fn unsupported_target_is_skipped_without_client() {
+    let p = GitlabCi::default();
+    let ctx = Ctx::new(Default::default(), 0, env());
+    let text = "image: >-\n  alpine:3.20\n";
+    let t = PinTarget::Unsupported {
+        kind: "image",
+        line: 1,
+        start: 12,
+        end: 23,
+        value: "alpine:3.20".into(),
+        reason: "block scalar",
+    };
+    let f = p.resolve(&ctx, text, &t).await;
+    assert_eq!(f.status, Status::Skipped);
+    assert_eq!(f.reason.as_deref(), Some("block scalar"));
+    assert_eq!(f.kind, "image");
+    assert_eq!(f.old, "alpine:3.20");
+    assert_eq!(f.line, 1);
+    assert!(f.edits.is_empty());
+    assert_eq!(ctx.resolvers_built(), Vec::<&str>::new());
+}

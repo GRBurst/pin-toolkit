@@ -63,6 +63,26 @@ pub enum PinTarget {
         /// (`{ project: ..., ref: ... }`).
         flow: bool,
     },
+    /// A reference at a target path that cannot be spliced (a block or
+    /// multi-line scalar): reported `skipped (<reason>)`, never edited.
+    ///
+    /// `reason` is `block scalar` or `multi-line scalar`; `start..end` is
+    /// one line (the range is cut at the first line break).
+    Unsupported {
+        /// The kind the reference would have: `image`, `component` or
+        /// `include`.
+        kind: &'static str,
+        /// 0-based line index in the file text.
+        line: usize,
+        /// Byte offset where the value begins.
+        start: usize,
+        /// Byte offset where the (one-line) range ends.
+        end: usize,
+        /// The decoded value.
+        value: String,
+        /// Why it is skipped.
+        reason: &'static str,
+    },
 }
 
 /// Parsed pieces of a component reference
@@ -85,7 +105,8 @@ impl PinTarget {
         match self {
             Self::Image { line, .. }
             | Self::Component { line, .. }
-            | Self::IncludeRef { line, .. } => *line,
+            | Self::IncludeRef { line, .. }
+            | Self::Unsupported { line, .. } => *line,
         }
     }
 
@@ -94,7 +115,8 @@ impl PinTarget {
         match self {
             Self::Image { start, .. }
             | Self::Component { start, .. }
-            | Self::IncludeRef { start, .. } => *start,
+            | Self::IncludeRef { start, .. }
+            | Self::Unsupported { start, .. } => *start,
         }
     }
 
@@ -103,7 +125,8 @@ impl PinTarget {
         match self {
             Self::Image { end, .. }
             | Self::Component { end, .. }
-            | Self::IncludeRef { end, .. } => *end,
+            | Self::IncludeRef { end, .. }
+            | Self::Unsupported { end, .. } => *end,
         }
     }
 
@@ -114,7 +137,8 @@ impl PinTarget {
         match self {
             Self::Image { value, .. }
             | Self::Component { value, .. }
-            | Self::IncludeRef { value, .. } => value,
+            | Self::IncludeRef { value, .. }
+            | Self::Unsupported { value, .. } => value,
         }
     }
 }
@@ -1191,6 +1215,7 @@ mod tests {
                 PinTarget::Image { .. } => (x.line(), x.start(), "image"),
                 PinTarget::Component { .. } => (x.line(), x.start(), "component"),
                 PinTarget::IncludeRef { .. } => (x.line(), x.start(), "include"),
+                PinTarget::Unsupported { .. } => unreachable!("not produced"),
             })
             .collect();
         assert_eq!(

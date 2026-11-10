@@ -92,6 +92,7 @@ impl Plugin for GitlabCi {
                 policy::resolve_component(&self.gitlab_hosts, ctx, text, t).await
             }
             PinTarget::IncludeRef { .. } => policy::resolve_include(ctx, text, t).await,
+            PinTarget::Unsupported { .. } => policy::unsupported(text, t),
         }
     }
 }
@@ -102,5 +103,6 @@ fn target_kind(t: &PinTarget) -> &'static str {
         PinTarget::Image { .. } => "image",
         PinTarget::Component { .. } => "component",
         PinTarget::IncludeRef { .. } => "include",
+        PinTarget::Unsupported { kind, .. } => kind,
     }
 }
