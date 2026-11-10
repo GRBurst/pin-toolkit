@@ -56,6 +56,75 @@ impl KindSet {
     }
 }
 
+/// `ignore` patterns (spec §7.1, T-D17) over a plugin's
+/// [`Plugin::ignore_key`]: `*` matches any run of characters (incl. `/`,
+/// incl. none), `?` exactly one; a pattern matches the whole key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RefPatterns(Vec<String>);
+
+impl RefPatterns {
+    pub fn new(patterns: impl IntoIterator<Item = String>) -> Self {
+        Self(patterns.into_iter().collect())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Some pattern matches the whole `key`.
+    pub fn matches(&self, key: &str) -> bool {
+        let key: Vec<char> = key.chars().collect();
+        self.0.iter().any(|p| {
+            let p: Vec<char> = p.chars().collect();
+            wildcard(&p, &key)
+        })
+    }
+}
+
+/// Whole-string wildcard match (`*`, `?`) over chars: two pointers,
+/// backtracking to the last `*`.
+fn wildcard(p: &[char], s: &[char]) -> bool {
+    let (mut i, mut j) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while j < s.len() {
+        if i < p.len() && (p[i] == '?' || p[i] == s[j]) {
+            i += 1;
+            j += 1;
+        } else if i < p.len() && p[i] == '*' {
+            star = Some((i, j));
+            i += 1;
+        } else if let Some((si, sj)) = star {
+            i = si + 1;
+            j = sj + 1;
+            star = Some((si, sj + 1));
+        } else {
+            return false;
+        }
+    }
+    while i < p.len() && p[i] == '*' {
+        i += 1;
+    }
+    i == p.len()
+}
+
+/// What one plugin plans in a file: the enabled kinds and the `ignore`
+/// patterns.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selection {
+    pub kinds: KindSet,
+    pub ignore: RefPatterns,
+}
+
+impl From<KindSet> for Selection {
+    /// `kinds`, nothing ignored.
+    fn from(kinds: KindSet) -> Self {
+        Self {
+            kinds,
+            ignore: RefPatterns::default(),
+        }
+    }
+}
+
 /// One reference, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
@@ -116,19 +185,25 @@ pub trait Plugin: PluginMeta {
     type Target;
     /// Pure; targets sorted by (line, start); `Err` = the file does not parse.
     fn scan(&self, path: &Path, text: &str, on: &KindSet) -> Result<Vec<Self::Target>, ScanError>;
+    /// The key `ignore` patterns match (spec §7.1); `None` = never
+    /// ignored.
+    fn ignore_key(&self, _t: &Self::Target) -> Option<String> {
+        None
+    }
     /// `src` is the scanned file (one [`LineIndex`] per file).
     async fn resolve(&self, ctx: &Ctx, src: &Source<'_>, t: &Self::Target) -> Finding;
 }
 
-/// Object-safe face of [`Plugin`]: scan, then resolve every target with at
-/// most `concurrency` (min 1) in flight; findings in target order.
+/// Object-safe face of [`Plugin`]: scan the selected kinds, drop the
+/// targets `sel.ignore` matches (never resolved), then resolve every target
+/// with at most `concurrency` (min 1) in flight; findings in target order.
 pub trait DynPlugin: PluginMeta {
     fn plan<'a>(
         &'a self,
         ctx: &'a Ctx,
         path: &'a Path,
         text: &'a str,
-        on: &'a KindSet,
+        sel: &'a Selection,
         concurrency: usize,
     ) -> LocalBoxFuture<'a, Result<Vec<Finding>, ScanError>>;
 }
@@ -139,11 +214,14 @@ impl<P: Plugin> DynPlugin for P {
         ctx: &'a Ctx,
         path: &'a Path,
         text: &'a str,
-        on: &'a KindSet,
+        sel: &'a Selection,
         concurrency: usize,
     ) -> LocalBoxFuture<'a, Result<Vec<Finding>, ScanError>> {
         Box::pin(async move {
-            let targets = self.scan(path, text, on)?;
+            let mut targets = self.scan(path, text, &sel.kinds)?;
+            if !sel.ignore.is_empty() {
+                targets.retain(|t| !self.ignore_key(t).is_some_and(|k| sel.ignore.matches(&k)));
+            }
             let src = Source::new(path, text);
             let src = &src;
             let sem = Semaphore::new(concurrency.max(1));
@@ -224,5 +302,38 @@ mod tests {
         assert!(!on.contains("a"));
         on.set("b", true);
         assert!(on.contains("b"));
+    }
+
+    /// T-D17: `*` matches any run (incl. `/`, incl. empty), `?` one char,
+    /// over the whole key.
+    #[test]
+    fn wildcard_matches_whole_key() {
+        let table = [
+            (
+                "registry.example.com/legacy/*",
+                "registry.example.com/legacy/a/b:1",
+                true,
+            ),
+            ("*/legacy/*", "x/legacy/y", true),
+            ("alpine:3.??", "alpine:3.20", true),
+            ("alpine:3.??", "alpine:3.2", false),
+            ("alpine", "alpine:3", false),
+            ("alpine:3", "alpine", false),
+            ("*", "", true),
+            ("ä?", "äb", true),
+            ("a*b*c", "a-b-x-c", true),
+            ("a*b*c", "a-c-b", false),
+            ("alpine:3.20*", "alpine:3.20@sha256:x", true),
+        ];
+        for (pattern, key, want) in table {
+            let p = RefPatterns::new([pattern.to_string()]);
+            assert_eq!(p.matches(key), want, "{pattern} vs {key}");
+        }
+        let none = RefPatterns::default();
+        assert!(none.is_empty());
+        assert!(!none.matches(""));
+        let two = RefPatterns::new(["a".to_string(), "b*".to_string()]);
+        assert!(!two.is_empty());
+        assert!(two.matches("a") && two.matches("bc") && !two.matches("c"));
     }
 }

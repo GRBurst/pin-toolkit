@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use pin_core::gitlab::GitLabClient;
 use pin_core::oci::RegistryClient;
 use pin_core::oci::registry::Creds;
-use pin_core::plugin::KindSet;
+use pin_core::plugin::{KindSet, Selection};
 use pin_core::report::Report;
 use pin_core::run::{AgePolicy, Ctx, ResolverEnv, RunOptions, UpdatePolicy, now_unix, pin_file};
 
@@ -118,7 +118,7 @@ pub async fn pin_files(
     .with_oci(Ok(reg.clone()))
     .with_gitlab(&opts.gitlab_host, Ok(gitlab.clone()));
     let plugin = GitlabCi;
-    let on = KindSet::defaults(&KINDS);
+    let sel: Selection = KindSet::defaults(&KINDS).into();
     let run = RunOptions {
         dry_run: opts.dry_run,
         check: false,
@@ -126,7 +126,7 @@ pub async fn pin_files(
     };
     let mut rows = Vec::new();
     for path in paths {
-        match pin_file(&plugin, &ctx, path, &on, &run).await {
+        match pin_file(&plugin, &ctx, path, &sel, &run).await {
             Ok(file_rows) => rows.extend(file_rows),
             Err(e) => {
                 return Err(PinFilesError {

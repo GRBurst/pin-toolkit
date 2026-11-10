@@ -7,7 +7,10 @@ use std::path::Path;
 
 use common::*;
 use pin_core::edit::Splice;
-use pin_core::plugin::{DynPlugin, KindSet, Plugin, PluginMeta, ScanError, Source};
+use pin_core::oci::RegistryClient;
+use pin_core::plugin::{
+    DynPlugin, KindSet, Plugin, PluginMeta, RefPatterns, ScanError, Selection, Source,
+};
 use pin_core::report::Status;
 use pin_core::run::{Ctx, FileError, GitlabEnv, ResolverEnv, RunOptions, pin_file};
 use pin_gitlab_ci::discover::PinTarget;
@@ -210,9 +213,15 @@ async fn include_without_a_safe_comment_place_is_skipped() {
             check: false,
             concurrency: 4,
         };
-        let rows = pin_file(&GitlabCi, &ctx, &path, &KindSet::defaults(&KINDS), &opts)
-            .await
-            .unwrap();
+        let rows = pin_file(
+            &GitlabCi,
+            &ctx,
+            &path,
+            &KindSet::defaults(&KINDS).into(),
+            &opts,
+        )
+        .await
+        .unwrap();
         let got: Vec<(usize, Status, Option<&str>)> = rows
             .iter()
             .map(|r| (r.line, r.status, r.reason.as_deref()))
@@ -317,9 +326,15 @@ async fn invalid_yaml_file_is_parse_error_and_untouched() {
         check: false,
         concurrency: 4,
     };
-    let err = pin_file(&GitlabCi, &ctx, &path, &KindSet::defaults(&KINDS), &opts)
-        .await
-        .unwrap_err();
+    let err = pin_file(
+        &GitlabCi,
+        &ctx,
+        &path,
+        &KindSet::defaults(&KINDS).into(),
+        &opts,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(
         err,
         FileError::Parse {
@@ -336,4 +351,58 @@ async fn invalid_yaml_file_is_parse_error_and_untouched() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     assert_eq!(ctx.resolvers_built(), Vec::<&str>::new());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// §7.1 `ignore` (T-D17): image keys are the unquoted value, include keys
+/// `{project}@{ref}`; ignored targets have no finding, the others are
+/// unchanged (P-ignore).
+#[tokio::test]
+async fn gitlab_ci_ignore_keys() {
+    let fakes = start_fakes().await;
+    let text = "\
+image: \"registry.example.com/legacy/x:1\"
+job:
+  image: alpine:3.20
+  services:
+    - registry.example.com/current/y:2
+include:
+  - project: g/p
+    ref: main
+  - project: g/q
+    ref: main
+";
+    let hosts = ["docker.io", "registry.example.com"];
+    let reg = RegistryClient::new(
+        Default::default(),
+        hosts
+            .iter()
+            .map(|h| (h.to_string(), fakes.registry.uri()))
+            .collect(),
+    );
+    let ctx = || {
+        Ctx::new(Default::default(), 0, env())
+            .with_oci(Ok(reg.clone()))
+            .with_gitlab("gitlab.com", Ok(gitlab_client(&fakes)))
+    };
+    let path = Path::new("x.yml");
+    let kinds = KindSet::defaults(&KINDS);
+    let all = GitlabCi
+        .plan(&ctx(), path, text, &kinds.clone().into(), 4)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 5);
+    let sel = Selection {
+        kinds,
+        ignore: RefPatterns::new([
+            "registry.example.com/legacy/*".to_string(),
+            "g/p@main".to_string(),
+        ]),
+    };
+    let kept = GitlabCi.plan(&ctx(), path, text, &sel, 4).await.unwrap();
+    let want: Vec<_> = all
+        .into_iter()
+        .filter(|f| f.reference != "registry.example.com/legacy/x:1" && f.line != 7)
+        .collect();
+    assert_eq!(want.len(), 3);
+    assert_eq!(kept, want);
 }

@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pin_core::edit::{Splice, apply};
-use pin_core::plugin::{Finding, KindSet, KindSpec, Plugin, PluginMeta, ScanError, Source};
+use pin_core::plugin::{
+    Finding, KindSet, KindSpec, Plugin, PluginMeta, RefPatterns, ScanError, Selection, Source,
+};
 use pin_core::report::Status;
 use pin_core::run::{Ctx, FileError, ResolverEnv, RunOptions, pin_file};
 
@@ -21,6 +23,7 @@ struct Fake {
     scan_error: Option<ScanError>,
     in_flight: Cell<usize>,
     max_in_flight: Cell<usize>,
+    resolved: Cell<usize>,
 }
 
 impl Fake {
@@ -30,6 +33,7 @@ impl Fake {
             scan_error: None,
             in_flight: Cell::new(0),
             max_in_flight: Cell::new(0),
+            resolved: Cell::new(0),
         }
     }
 }
@@ -58,7 +62,12 @@ impl Plugin for Fake {
             .collect())
     }
 
+    fn ignore_key(&self, t: &usize) -> Option<String> {
+        Some(format!("r{t}"))
+    }
+
     async fn resolve(&self, _ctx: &Ctx, _src: &Source<'_>, t: &usize) -> Finding {
+        self.resolved.set(self.resolved.get() + 1);
         self.in_flight.set(self.in_flight.get() + 1);
         self.max_in_flight
             .set(self.max_in_flight.get().max(self.in_flight.get()));
@@ -96,8 +105,8 @@ fn opts(concurrency: usize) -> RunOptions {
     }
 }
 
-fn on() -> KindSet {
-    KindSet::defaults(&KINDS)
+fn on() -> Selection {
+    KindSet::defaults(&KINDS).into()
 }
 
 /// Write `text` to `.tmp/run-pin-file-{test}-{pid}/f.yml` (fresh dir).
@@ -384,5 +393,35 @@ async fn non_pinned_edits_are_not_written() {
     assert_eq!(rows[0].status, Status::Skipped);
     assert_eq!(rows[0].old, "old");
     assert_eq!(rows[1].status, Status::Pinned);
+    cleanup(&p);
+}
+
+/// §7.1 `ignore` (T-D17, P-ignore): a target whose key matches a pattern
+/// has no row and is never resolved; the other rows are unchanged.
+#[tokio::test]
+async fn ignored_targets_have_no_row_and_no_resolve() {
+    let p = scratch("ignore", TEXT);
+    let findings = vec![
+        finding(0, Status::Ok, vec![]),
+        finding(1, Status::Ok, vec![]),
+        finding(2, Status::Ok, vec![]),
+    ];
+    let all = Fake::new(findings.clone());
+    let want: Vec<_> = pin_file(&all, &ctx(), &p, &on(), &opts(4))
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.reference != "ref1")
+        .collect();
+
+    let fake = Fake::new(findings);
+    let sel = Selection {
+        kinds: KindSet::defaults(&KINDS),
+        ignore: RefPatterns::new(["r1".to_string()]),
+    };
+    let rows = pin_file(&fake, &ctx(), &p, &sel, &opts(4)).await.unwrap();
+    assert_eq!(rows, want);
+    assert_eq!(rows.iter().map(|r| r.line).collect::<Vec<_>>(), [1, 3]);
+    assert_eq!(fake.resolved.get(), 3 - 1);
     cleanup(&p);
 }

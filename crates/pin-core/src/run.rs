@@ -20,7 +20,7 @@ use crate::gitlab::{GitLabClient, GitLabHosts};
 use crate::oci::ImageRef;
 #[cfg(feature = "oci")]
 use crate::oci::registry::{Creds, RegError, RegistryClient};
-use crate::plugin::{DynPlugin, Finding, KindSet};
+use crate::plugin::{DynPlugin, Finding, Selection};
 use crate::report::{Row, Status};
 
 /// `release_age.unknown` (spec §6.8): what the release-age guard does when
@@ -592,7 +592,8 @@ impl fmt::Display for FileError {
 
 const OVERLAP: &str = "internal: overlapping edits";
 
-/// Read `path`, resolve every target `p` finds (kinds in `on`), apply the
+/// Read `path`, resolve every target `p` finds (kinds in `sel`, minus the
+/// targets its `ignore` patterns match: no row, never resolved), apply the
 /// edits unless `o.dry_run`/`o.check`, and write only if there is at least
 /// one splice. Rows are sorted by line (stable). Findings whose splices
 /// overlap another finding's become `unresolved (internal: overlapping
@@ -603,7 +604,7 @@ pub async fn pin_file(
     p: &dyn DynPlugin,
     ctx: &Ctx,
     path: &Path,
-    on: &KindSet,
+    sel: &Selection,
     o: &RunOptions,
 ) -> Result<Vec<Row>, FileError> {
     let file = path.display().to_string();
@@ -612,7 +613,7 @@ pub async fn pin_file(
         msg: e.to_string(),
     })?;
     let mut findings = p
-        .plan(ctx, path, &text, on, o.concurrency)
+        .plan(ctx, path, &text, sel, o.concurrency)
         .await
         .map_err(|e| FileError::Parse {
             path: file.clone(),
@@ -714,7 +715,7 @@ mod resolver_tests {
     use crate::gitlab::GitLabClient;
     use crate::oci::ImageRef;
     use crate::oci::registry::RegError;
-    use crate::plugin::{KindSpec, Plugin, PluginMeta, ScanError, Source};
+    use crate::plugin::{KindSet, KindSpec, Plugin, PluginMeta, ScanError, Source};
 
     static KINDS: [KindSpec; 1] = [KindSpec {
         id: "x",
@@ -783,7 +784,7 @@ mod resolver_tests {
             check: false,
             concurrency: 4,
         };
-        pin_file(fake, ctx, &p, &KindSet::defaults(&KINDS), &o)
+        pin_file(fake, ctx, &p, &KindSet::defaults(&KINDS).into(), &o)
             .await
             .unwrap();
         let _ = std::fs::remove_dir_all(&dir);

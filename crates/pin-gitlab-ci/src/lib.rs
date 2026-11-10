@@ -82,6 +82,16 @@ impl Plugin for GitlabCi {
             .collect())
     }
 
+    /// `ignore` key (T-D17): `{project}@{ref}` for an include, else the value
+    /// with quotes stripped (`alpine:3.20` does not match a pinned
+    /// `alpine:3.20@sha256:…`; `alpine:3.20*` does).
+    fn ignore_key(&self, t: &PinTarget) -> Option<String> {
+        Some(match t {
+            PinTarget::IncludeRef { project, value, .. } => format!("{project}@{value}"),
+            _ => t.value().to_string(),
+        })
+    }
+
     async fn resolve(&self, ctx: &Ctx, src: &Source<'_>, t: &PinTarget) -> Finding {
         match t {
             PinTarget::Image {
