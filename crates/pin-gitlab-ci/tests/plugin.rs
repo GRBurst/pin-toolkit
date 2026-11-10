@@ -111,6 +111,32 @@ async fn include_pin_has_replacement_and_comment() {
     );
 }
 
+/// Review H1: tab separators after `key:` do not change what is pinned; the
+/// edits index the original text.
+#[tokio::test]
+async fn include_pin_with_tab_separators() {
+    let fakes = start_fakes().await;
+    let p = GitlabCi::default();
+    let ctx =
+        Ctx::new(Default::default(), 0, env()).with_gitlab("gitlab.com", Ok(gitlab_client(&fakes)));
+    let text = "include:\n  project:\tg/p\n  ref:\tmain\n";
+    let targets = p
+        .scan(Path::new("x.yml"), text, &KindSet::defaults(&KINDS))
+        .unwrap();
+    assert_eq!(targets.len(), 1);
+    let f = p.resolve(&ctx, text, &targets[0]).await;
+    let sha = fake_hex("g%2Fp@main", 40);
+    let start = text.find("main").unwrap();
+    assert_eq!(f.status, Status::Pinned, "{:?}", f.reason);
+    assert_eq!(
+        f.edits,
+        [
+            Splice::replace(start, start + 4, sha),
+            Splice::insert(text.len() - 1, "  # main"),
+        ]
+    );
+}
+
 /// A reference at a target path that cannot be spliced (block scalar) is
 /// reported `skipped (<reason>)`; no resolver is built and nothing is edited.
 #[tokio::test]

@@ -393,6 +393,25 @@ mod tests {
         assert_eq!(t[0].value(), "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}");
     }
 
+    /// Review H1: a tab after `key:` is valid YAML (GitLab accepts it); the
+    /// target spans index the original text.
+    #[test]
+    fn tab_after_colon_is_discovered() {
+        let text = "variables:\n  FOO:\tbar\nimage:\tnginx:1.25\njob:\n  image:\t\talpine:3.20\n";
+        let t = discover(text).unwrap();
+        let got: Vec<(usize, &str, &str)> = t
+            .iter()
+            .map(|x| (x.line(), x.value(), &text[x.start()..x.end()]))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (2, "nginx:1.25", "nginx:1.25"),
+                (4, "alpine:3.20", "alpine:3.20")
+            ]
+        );
+    }
+
     // ── M3 Task 2: classic include: discovery ───────────────────────
 
     #[test]

@@ -272,10 +272,10 @@ struct Walker<'a> {
     /// The text the parser saw (same bytes unless masked).
     src: &'a [u8],
     /// Parser char index → byte offset in `src`.
-    c2b: Vec<usize>,
-    lines: LineIndex,
+    c2b: &'a [usize],
+    lines: &'a LineIndex,
     /// Masked `{{…}}` byte ranges (empty unless masking).
-    mask: Vec<Range<usize>>,
+    mask: &'a [Range<usize>],
     stack: Vec<Frame>,
     next_id: usize,
     docs_seen: usize,
@@ -502,6 +502,68 @@ impl Walker<'_> {
     }
 }
 
+/// The parser's message for a tab after `:` (and no space): YAML allows a
+/// tab as separation there, saphyr does not (review H1).
+const TAB_AFTER_COLON: &str = "':' must be followed by a valid YAML whitespace";
+
+/// A failed parse: the error, and — when it is [`TAB_AFTER_COLON`] — the
+/// parser's char index of the error (just after the tab run).
+type Failure = (ScanError, Option<usize>);
+
+/// One pass over the events of `src` (the text the parser sees; same bytes
+/// and chars as `text` except for masking and blanked tabs).
+fn walk(
+    text: &str,
+    src: &str,
+    c2b: &[usize],
+    lines: &LineIndex,
+    mask: &[Range<usize>],
+) -> Result<Vec<Node>, Failure> {
+    let mut walker = Walker {
+        text,
+        src: src.as_bytes(),
+        c2b,
+        lines,
+        mask,
+        stack: Vec::new(),
+        next_id: 1,
+        docs_seen: 0,
+        skip: None,
+        nodes: Vec::new(),
+    };
+    for item in Parser::new_from_str(src) {
+        let (ev, span) = item.map_err(|e| {
+            let marker = (e.info() == TAB_AFTER_COLON).then(|| e.marker().index());
+            let err = ScanError {
+                line: Some(e.marker().line()),
+                msg: format!("invalid YAML: {}", e.info()),
+            };
+            (err, marker)
+        })?;
+        walker.event(ev, &span).map_err(|e| (e, None))?;
+    }
+    Ok(walker.nodes)
+}
+
+/// `src` with the tab run that ends at char `marker` blanked (tab → space:
+/// same length, so every offset stays); `None` when no tab precedes it.
+fn blank_tabs_before(src: &str, c2b: &[usize], marker: usize) -> Option<String> {
+    let end = *c2b.get(marker)?;
+    let bytes = src.as_bytes();
+    let mut start = end;
+    while start > 0 && bytes.get(start - 1) == Some(&b'\t') {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    let mut out = String::with_capacity(src.len());
+    out.push_str(&src[..start]);
+    out.extend(std::iter::repeat_n(' ', end - start));
+    out.push_str(&src[end..]);
+    Some(out)
+}
+
 /// Every value node of `text` in event order.
 ///
 /// `Err` on the first parser error (sticky upstream): no partial result.
@@ -512,36 +574,46 @@ impl Walker<'_> {
 /// blanked (see `mask_templates`): `value`s come from the masked text,
 /// `span`s are byte ranges of the original, and a scalar whose non-empty
 /// span overlaps a masked range is `templated`.
+///
+/// A tab after `key:` is separator whitespace in YAML but an error for the
+/// parser: it is blanked (tab → space, offsets unchanged) in the scan copy
+/// and the parse retried, once per flagged tab at most and within
+/// [`RETRY_BUDGET`]. The spans index the original text; block indentation
+/// tabs stay errors.
 pub fn scan(text: &str, opts: ScanOpts) -> Result<Vec<Node>, ScanError> {
-    let (src, mask) = if opts.mask_templates {
-        let (masked, mask) = mask_templates(text);
-        (Cow::Owned(masked), mask)
+    scan_within(text, opts, RETRY_BUDGET)
+}
+
+/// Bytes of text the tab retries may re-parse in all (each retry parses
+/// the file again, up to the next flagged tab): bounds a file full of tab
+/// separators to seconds. Beyond it the parser's error is returned.
+const RETRY_BUDGET: usize = 64 << 20;
+
+fn scan_within(text: &str, opts: ScanOpts, mut budget: usize) -> Result<Vec<Node>, ScanError> {
+    let (mut src, mask) = if opts.mask_templates {
+        mask_templates(text)
     } else {
-        (Cow::Borrowed(text), Vec::new())
+        (text.to_string(), Vec::new())
     };
-    // the parser counts the chars of the text it sees
+    // the parser counts the chars of the text it sees; a blanked tab is
+    // one char for one char, so the table serves every retry
     let mut c2b: Vec<usize> = src.char_indices().map(|(b, _)| b).collect();
     c2b.push(src.len());
-    let mut walker = Walker {
-        text,
-        src: src.as_bytes(),
-        c2b,
-        lines: LineIndex::new(text),
-        mask,
-        stack: Vec::new(),
-        next_id: 1,
-        docs_seen: 0,
-        skip: None,
-        nodes: Vec::new(),
-    };
-    for item in Parser::new_from_str(&src) {
-        let (ev, span) = item.map_err(|e| ScanError {
-            line: Some(e.marker().line()),
-            msg: format!("invalid YAML: {}", e.info()),
-        })?;
-        walker.event(ev, &span)?;
+    let lines = LineIndex::new(text);
+    loop {
+        match walk(text, &src, &c2b, &lines, &mask) {
+            Ok(nodes) => return Ok(nodes),
+            // every retry blanks at least one tab: the loop ends
+            Err((err, Some(marker))) if budget >= src.len() => {
+                let Some(next) = blank_tabs_before(&src, &c2b, marker) else {
+                    return Err(err);
+                };
+                budget -= src.len();
+                src = next;
+            }
+            Err((err, _)) => return Err(err),
+        }
     }
-    Ok(walker.nodes)
 }
 
 #[cfg(test)]
@@ -804,6 +876,94 @@ mod tests {
         ));
     }
 
+    /// Review H1: a tab after `key:` is separator whitespace (valid YAML,
+    /// accepted by GitLab) that saphyr rejects. `scan` blanks the flagged
+    /// tab in a scan copy and retries; spans index the ORIGINAL text and
+    /// every other tab keeps its meaning.
+    #[test]
+    fn tab_after_colon_is_a_separator() {
+        let t = "variables:\n  FOO:\tbar\nimage:\tnginx:1.25\njob:\n  image:\t\talpine:3.20\nf: {a:\tb, c: d}\nq: \"x:\ty\"\n";
+        assert_eq!(
+            scalars(t),
+            [
+                row("variables.FOO", "bar", "bar", 1),
+                row("image", "nginx:1.25", "nginx:1.25", 2),
+                row("job.image", "alpine:3.20", "alpine:3.20", 4),
+                row("f.a", "b", "b", 5),
+                row("f.c", "d", "d", 5),
+                // a tab inside a scalar is not touched
+                row("q", "x:\ty", "\"x:\ty\"", 6),
+            ]
+        );
+        let s = scalar_at(t, "image");
+        assert_eq!(s.span, t.find("nginx").unwrap()..t.find("\njob").unwrap());
+    }
+
+    /// Review H1: the retry is not a general tab forgiveness: block
+    /// indentation and shapes that stay invalid with a space are still
+    /// errors, and the message is the parser's.
+    #[test]
+    fn tab_indentation_and_invalid_shapes_stay_errors() {
+        for t in [
+            "job:\n\timage: x\n",
+            "a:\n\t- b\n",
+            "a: |\n\tx\n",
+            "a:\t- b\n",
+            "a:\tb\nc: d: e\n",
+        ] {
+            let e = scan(t, ScanOpts::default()).unwrap_err();
+            assert!(e.msg.starts_with("invalid YAML: "), "{t:?}: {e:?}");
+        }
+        let e = scan("job:\n\timage: x\n", ScanOpts::default()).unwrap_err();
+        assert_eq!(
+            e,
+            ScanError {
+                line: Some(2),
+                msg: "invalid YAML: tabs disallowed within this context (block indentation)".into()
+            }
+        );
+        // the error of the retried text is reported at its own line
+        let e = scan("a:\tb\nc: d: e\n", ScanOpts::default()).unwrap_err();
+        assert_eq!(e.line, Some(2));
+    }
+
+    /// Review H1: one retry per flagged tab, within a budget of re-parsed
+    /// bytes; also with masking; spans stay on the original text.
+    #[test]
+    fn many_tab_separators_and_masking() {
+        let mut t = String::new();
+        for i in 0..200 {
+            writeln!(t, "k{i}:\tv{i}").unwrap();
+        }
+        let nodes = scan(&t, ScanOpts::default()).unwrap();
+        assert_eq!(nodes.len(), 200);
+        // out of budget: the parser's error, at the first tab not retried
+        let small = "a:\tb\nc:\td\ne:\tf\n";
+        let opts = ScanOpts::default();
+        assert!(scan_within(small, opts, small.len() * 3).is_ok());
+        let e = scan_within(small, opts, small.len() * 2).unwrap_err();
+        assert_eq!(
+            e,
+            ScanError {
+                line: Some(3),
+                msg: "invalid YAML: ':' must be followed by a valid YAML whitespace".into()
+            }
+        );
+        let masked = "a:\tx-{{ .y }}\nb:\t\"q\"\n";
+        let nodes = scan(
+            masked,
+            ScanOpts {
+                mask_templates: true,
+            },
+        )
+        .unwrap();
+        let [Node::Scalar(a), Node::Scalar(b)] = &nodes[..] else {
+            panic!("{nodes:?}")
+        };
+        assert_eq!(&masked[a.span.clone()], "x-");
+        assert_eq!(&masked[b.span.clone()], "\"q\"");
+    }
+
     /// Review M2: a block scalar's span is its content (end trimmed), also
     /// with properties; the style is kept.
     #[test]
@@ -937,6 +1097,9 @@ mod tests {
         "a: {{ .x }}\n{{- if y\n }}\nb: \"r:{{ ü }}\"\nc: {{ open\n",
         "img: \"r:{{ .t }}\"\nplain: r:1\n{{- if .x }}\nother: v\n{{- end }}\n",
         "image: {{ .x }}\n",
+        "variables:\n  FOO:\tbar\nimage:\tnginx:1.25\n",
+        "a:\t- b\n",
+        "job:\n\timage: x\n",
     ];
 
     #[test]
