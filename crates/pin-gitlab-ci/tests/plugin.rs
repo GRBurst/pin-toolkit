@@ -248,6 +248,20 @@ fn scan_invalid_yaml_is_scan_error() {
     assert!(err.msg.starts_with("invalid YAML: "), "{}", err.msg);
 }
 
+/// Review L1: bare-CR line endings are a scan error, not a mangled scan.
+#[test]
+fn scan_bare_cr_is_scan_error() {
+    let p = GitlabCi::default();
+    let on = KindSet::defaults(&KINDS);
+    assert_eq!(
+        p.scan(Path::new("x.yml"), "image: alpine:3.20\rjob: x\r", &on),
+        Err(ScanError {
+            line: Some(1),
+            msg: "bare CR line endings are not supported".into()
+        })
+    );
+}
+
 /// A parse error becomes `FileError::Parse` with path and line; nothing is
 /// written and no resolver is built.
 #[tokio::test]

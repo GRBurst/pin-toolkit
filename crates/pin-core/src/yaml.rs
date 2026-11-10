@@ -598,11 +598,23 @@ fn blank_tabs_before(src: &str, c2b: &[usize], marker: usize) -> Option<String> 
     Some(out)
 }
 
+/// The first bare CR (a `\r` not followed by `\n`) as a [`ScanError`]: the
+/// parser breaks lines at a lone `\r`, the line model does not (review L1).
+fn bare_cr(text: &str) -> Option<ScanError> {
+    let b = text.as_bytes();
+    let at = (0..b.len()).find(|&i| b[i] == b'\r' && b.get(i + 1) != Some(&b'\n'))?;
+    Some(ScanError {
+        line: Some(LineIndex::new(text).line_of(at) + 1),
+        msg: "bare CR line endings are not supported".into(),
+    })
+}
+
 /// Every value node of `text` in event order.
 ///
 /// `Err` on the first parser error (sticky upstream): no partial result.
 /// The message is `invalid YAML: {parser info}`, `line` the 1-based line of
-/// the error.
+/// the error. A bare CR (`\r` not followed by `\n`) is an error too: lines
+/// end at `\n` or `\r\n`.
 ///
 /// With `opts.mask_templates` the parser sees the text with every `{{…}}`
 /// blanked (see `mask_templates`): `value`s come from the masked text,
@@ -625,6 +637,9 @@ pub fn scan(text: &str, opts: ScanOpts) -> Result<Vec<Node>, ScanError> {
 const RETRY_BUDGET: usize = 64 << 20;
 
 fn scan_within(text: &str, opts: ScanOpts, mut budget: usize) -> Result<Vec<Node>, ScanError> {
+    if let Some(err) = bare_cr(text) {
+        return Err(err);
+    }
     let (mut src, mask) = if opts.mask_templates {
         mask_templates(text)
     } else {
@@ -1078,6 +1093,25 @@ mod tests {
         assert!(!find("plain").templated);
         assert!(!find("other").templated);
         assert_eq!(find("other").line, 3);
+    }
+
+    /// Review L1: the parser breaks lines at a lone `\r`, the line model
+    /// (`LineIndex`, comment placement, multi-line checks) does not; a file
+    /// with a bare CR is refused, CRLF is fine.
+    #[test]
+    fn bare_cr_is_an_error() {
+        let err = |line| ScanError {
+            line: Some(line),
+            msg: "bare CR line endings are not supported".into(),
+        };
+        for mask_templates in [false, true] {
+            let opts = ScanOpts { mask_templates };
+            assert_eq!(scan("a: x\rb: y\r", opts), Err(err(1)));
+            assert_eq!(scan("a: x\r\nb: y\rc: z\r\n", opts), Err(err(2)));
+            assert_eq!(scan("a: x\n\nb: y\r", opts), Err(err(3)));
+            assert_eq!(scan("a: &x # c\r b\n", opts), Err(err(1)));
+            assert!(scan("a: x\r\nb: y\r\n", opts).is_ok());
+        }
     }
 
     /// Review M1: the masked bytes are blanks, so a plain scalar ends before
