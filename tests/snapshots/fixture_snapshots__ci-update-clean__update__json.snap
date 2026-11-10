@@ -1,0 +1,47 @@
+---
+source: tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-update-clean.yml",
+      "line": 2,
+      "reference": "alpine:3.20",
+      "old": "alpine:3.20",
+      "new": "alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba",
+      "status": "updated"
+    },
+    {
+      "file": "ci-update-clean.yml",
+      "line": 4,
+      "reference": "docker:24",
+      "old": "docker:24",
+      "new": "docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-update-clean.yml",
+      "line": 6,
+      "reference": "ubuntu:24.04",
+      "old": "ubuntu:24.04",
+      "new": "ubuntu:24.04@sha256:ca8beb9b4f1c0bdf19aee0c1099d4f61387e12cf4ea93953da4884b58e1394db",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-update-clean.yml",
+      "line": 9,
+      "reference": "alpine:3.20",
+      "old": "alpine:3.20",
+      "new": "alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba",
+      "status": "updated"
+    }
+  ],
+  "summary": {
+    "pinned": 2,
+    "ok": 0,
+    "updated": 2,
+    "skipped": 0,
+    "unresolved": 0
+  }
+}

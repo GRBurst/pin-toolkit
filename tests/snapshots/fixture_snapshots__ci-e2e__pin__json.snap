@@ -1,0 +1,48 @@
+---
+source: tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-e2e.yml",
+      "line": 1,
+      "reference": "alpine:3.20",
+      "old": "alpine:3.20",
+      "new": "alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-e2e.yml",
+      "line": 3,
+      "reference": "ghcr.io/org/img:v1",
+      "old": "ghcr.io/org/img:v1",
+      "new": "ghcr.io/org/img:v1@sha256:2a108285b4dd2ebf122192bc49df9768fb7083d68456a58109f098a3e9cc6be8",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-e2e.yml",
+      "line": 5,
+      "reference": "mystery:1.0",
+      "old": "mystery:1.0",
+      "new": null,
+      "status": "unresolved",
+      "reason": "library/mystery:1.0 not found"
+    },
+    {
+      "file": "ci-e2e.yml",
+      "line": 7,
+      "reference": "alpine:3.20",
+      "old": "alpine:3.20",
+      "new": "alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313",
+      "status": "pinned"
+    }
+  ],
+  "summary": {
+    "pinned": 3,
+    "ok": 0,
+    "updated": 0,
+    "skipped": 0,
+    "unresolved": 1
+  }
+}

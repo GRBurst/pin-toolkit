@@ -1,0 +1,47 @@
+---
+source: tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-update.yml",
+      "line": 2,
+      "reference": "alpine:3.20",
+      "old": "alpine:3.20",
+      "new": "alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba",
+      "status": "updated"
+    },
+    {
+      "file": "ci-update.yml",
+      "line": 5,
+      "reference": "alpine:3.20",
+      "old": "alpine:3.20",
+      "new": "alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba",
+      "status": "updated"
+    },
+    {
+      "file": "ci-update.yml",
+      "line": 7,
+      "reference": "nginx:stable",
+      "old": "nginx:stable",
+      "new": "nginx:stable@sha256:c319109e08e2468156853f93d79fa8b280cf82067032f2fbda395c8db8753b94",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-update.yml",
+      "line": 9,
+      "reference": "ghcr.io/org/img:v1",
+      "old": "ghcr.io/org/img:v1",
+      "new": "ghcr.io/org/img:v1@sha256:2a108285b4dd2ebf122192bc49df9768fb7083d68456a58109f098a3e9cc6be8",
+      "status": "pinned"
+    }
+  ],
+  "summary": {
+    "pinned": 2,
+    "ok": 0,
+    "updated": 2,
+    "skipped": 0,
+    "unresolved": 0
+  }
+}

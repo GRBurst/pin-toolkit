@@ -1,0 +1,25 @@
+---
+source: tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+# rich fixture
+default:
+  image: alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313   # trailing comment
+  services: [docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632, redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e]
+
+build:
+  image:
+    name: "node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08"
+    entrypoint: node
+  services:
+    - docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632
+    - name: redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e
+      entrypoint: /x
+
+include:
+  - project: 'group/proj'
+    ref: 608ddd8aed1b3cd1e966182f661a9bfbf44b4550  # v1.0.0
+
+no-image-job:
+  script:
+    - echo hi

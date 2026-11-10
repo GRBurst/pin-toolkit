@@ -1,0 +1,13 @@
+---
+source: tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+build:
+  image: alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba
+app:
+  image: docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632
+ubuntu:
+  image: ubuntu:24.04@sha256:ca8beb9b4f1c0bdf19aee0c1099d4f61387e12cf4ea93953da4884b58e1394db
+sidecars:
+  services:
+    - alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba

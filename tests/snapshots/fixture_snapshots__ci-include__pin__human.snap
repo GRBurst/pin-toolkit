@@ -1,0 +1,8 @@
+---
+source: tests/fixture_snapshots.rs
+expression: redact(&r.render_human())
+---
+ci-include.yml:1  pinned  main -> 98bf6109a195042a737dbbcc9b2b88c57400a08d  # main
+ci-include.yml:4  pinned  v1.2.3 -> 1d63c2f1d8572a80d6ac33944f3e479b550d739d  # v1.2.3
+ci-include.yml:11  pinned  develop -> 33b747281df81e213f86ba836057341787fbeec1  # develop
+pinned: 3, ok: 0, updated: 0, skipped: 0, unresolved: 0

@@ -1,0 +1,55 @@
+---
+source: tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-simple.yml",
+      "line": 2,
+      "reference": "alpine:3.20",
+      "old": "alpine:3.20",
+      "new": "alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-simple.yml",
+      "line": 5,
+      "reference": "ubuntu:24.04",
+      "old": "ubuntu:24.04",
+      "new": "ubuntu:24.04@sha256:ca8beb9b4f1c0bdf19aee0c1099d4f61387e12cf4ea93953da4884b58e1394db",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-simple.yml",
+      "line": 8,
+      "reference": "node:20",
+      "old": "\"node:20\"",
+      "new": "\"node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08\"",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-simple.yml",
+      "line": 9,
+      "reference": "redis:7",
+      "old": "redis:7",
+      "new": "redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-simple.yml",
+      "line": 12,
+      "reference": "alpine:3.20",
+      "old": "alpine:3.20",
+      "new": "alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313",
+      "status": "pinned"
+    }
+  ],
+  "summary": {
+    "pinned": 5,
+    "ok": 0,
+    "updated": 0,
+    "skipped": 0,
+    "unresolved": 0
+  }
+}

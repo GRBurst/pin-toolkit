@@ -1,0 +1,11 @@
+---
+source: tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+image: alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313
+ghcr-job:
+  image: ghcr.io/org/img:v1@sha256:2a108285b4dd2ebf122192bc49df9768fb7083d68456a58109f098a3e9cc6be8
+missing-job:
+  image: mystery:1.0
+dup:
+  image: alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313

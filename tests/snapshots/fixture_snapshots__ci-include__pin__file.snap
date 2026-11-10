@@ -1,0 +1,17 @@
+---
+source: tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+include: { project: gitlab-org/example, ref: 98bf6109a195042a737dbbcc9b2b88c57400a08d }          # flow single mapping → target
+include:                                                      # block sequence
+  - project: gitlab-org/example2
+    ref: 1d63c2f1d8572a80d6ac33944f3e479b550d739d  # v1.2.3
+    file: /ci/test.yml                                        # → target (ref value)
+  - "local-template.yml"                                      # string item → no target
+  - project: gitlab-org/no-ref                                # bare {project} → no target (spec)
+  - remote: https://example.com/ci.yml                        # → no target
+include:
+  project: gitlab-org/single
+  ref: 33b747281df81e213f86ba836057341787fbeec1                                                # block single mapping → target
+job:
+  include: { project: gitlab-org/indented, ref: main }        # indented → no target
