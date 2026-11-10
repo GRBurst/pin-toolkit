@@ -371,23 +371,6 @@ async fn list_tags_bearer_flow() {
 }
 
 #[tokio::test]
-async fn list_tags_caches_per_repo() {
-    let server = MockServer::start().await;
-    let _tags = Mock::given(method("GET"))
-        .and(path("/v2/library/alpine/tags/list"))
-        .and(query_param("n", "1000"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({"tags": ["a", "b"]})),
-        )
-        .expect(1) // second list_tags call must be served from the per-repo cache
-        .mount(&server)
-        .await;
-    let c = client(&server, Creds::none());
-    assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b"]);
-    assert_eq!(c.list_tags(&alpine()).await.unwrap(), vec!["a", "b"]);
-}
-
-#[tokio::test]
 async fn not_found_is_unresolved() {
     let server = MockServer::start().await;
     Mock::given(method("HEAD"))

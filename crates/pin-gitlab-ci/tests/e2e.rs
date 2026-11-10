@@ -515,8 +515,7 @@ async fn update_same_major_restriction() {
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", D5))
         .mount(&s)
         .await;
-    // One client for both runs: the second run also exercises the
-    // per-repo tag-list cache.
+    // One client for both runs (each run has its own memo, review M1).
     let client = mock_client(&s);
     let dir = std::env::temp_dir().join(format!("pin-ci-e2e-update3-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

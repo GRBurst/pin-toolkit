@@ -106,3 +106,36 @@ async fn distinct_keys_are_not_shared() {
     assert_eq!(da, Ok(DIGEST.to_string()));
     assert_eq!(db, Ok(OTHER.to_string()));
 }
+
+/// Review M1: one repo path on two hosts is two keys with two answers (no
+/// cache below the memo shares them); each is fetched once per run.
+#[tokio::test]
+async fn same_repo_on_two_hosts_is_two_lookups() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    for (server, tags) in [(&a, ["1.0", "1.1"]), (&b, ["2.0", "2.1"])] {
+        Mock::given(method("GET"))
+            .and(path("/v2/org/app/tags/list"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "tags": tags })),
+            )
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+    let client = RegistryClient::new(
+        Creds::none(),
+        HashMap::from([
+            ("a.example".to_string(), a.uri()),
+            ("b.example".to_string(), b.uri()),
+        ]),
+    );
+    let ctx = Ctx::new(Default::default(), 0, ResolverEnv::default()).with_oci(Ok(client));
+    let ra = ImageRef::parse("a.example/org/app:1.0").unwrap();
+    let rb = ImageRef::parse("b.example/org/app:2.0").unwrap();
+    let tags = |t: [&str; 2]| Ok(t.map(str::to_string).to_vec());
+    assert_eq!(ctx.oci_tags(&ra).await, tags(["1.0", "1.1"]));
+    assert_eq!(ctx.oci_tags(&rb).await, tags(["2.0", "2.1"]));
+    assert_eq!(ctx.oci_tags(&ra).await, tags(["1.0", "1.1"]));
+    a.verify().await;
+    b.verify().await;
+}

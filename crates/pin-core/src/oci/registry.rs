@@ -233,8 +233,9 @@ type TokenKey = [String; 4];
 /// `https://{host}`).
 ///
 /// The token cache is a `tokio::sync::Mutex` so `digest` is concurrency-safe
-/// (M1's orchestrator calls it from concurrent tasks). Caches sit behind
-/// `Arc`, so clones share them (M5c, P11).
+/// (M1's orchestrator calls it from concurrent tasks). The cache sits behind
+/// `Arc`, so clones share it (M5c, P11). Lookups are memoised per run in
+/// `Ctx`, not here (D19).
 #[derive(Debug, Clone)]
 pub struct RegistryClient {
     http: reqwest::Client,
@@ -247,9 +248,6 @@ pub struct RegistryClient {
     /// only ever replayed to the host that challenged for it (§7.3,
     /// review H1).
     tokens: Arc<Mutex<HashMap<TokenKey, String>>>,
-    /// Fetched tag lists keyed by `api_repo()`; avoids re-fetching for
-    /// repeated refs to the same repo.
-    tag_lists: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl RegistryClient {
@@ -274,7 +272,6 @@ impl RegistryClient {
             base_urls,
             hub_base: None,
             tokens: Arc::new(Mutex::new(HashMap::new())),
-            tag_lists: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -579,16 +576,11 @@ impl RegistryClient {
     /// All tags of the repo, following `Link: <url>; rel="next"` until
     /// exhausted. First request carries `?n=1000`. Anonymous probe first;
     /// 401 → WWW-Authenticate → bearer token (scope `repository:{repo}:pull`)
-    /// → retry. 404 → `Unresolved("{repo} not found")`. Cached per
-    /// `api_repo()` for the client's lifetime.
+    /// → retry. 404 → `Unresolved("{repo} not found")`. Not cached here:
+    /// the per-run memo (`Ctx::oci_tags`, keyed `(host, api_repo)`) is the
+    /// one cache (D19, review M1).
     pub async fn list_tags(&self, r: &ImageRef) -> Result<Vec<String>, RegError> {
         let repo = r.api_repo();
-        {
-            let cache = self.tag_lists.lock().await;
-            if let Some(tags) = cache.get(&repo) {
-                return Ok(tags.clone());
-            }
-        }
         let base = self.base_for(r);
         let mut tags: Vec<String> = Vec::new();
         let mut url = format!("{base}/v2/{repo}/tags/list?n=1000");
@@ -627,7 +619,6 @@ impl RegistryClient {
                 None => break,
             }
         }
-        self.tag_lists.lock().await.insert(repo, tags.clone());
         Ok(tags)
     }
 
