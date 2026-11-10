@@ -2,7 +2,7 @@
 
 Status: approved by owner 2026-11-10; revised 2026-11-10 with four owner changes (O5–O8 in [§13](#13-owner-answers)):
 no compatibility layer, parser-based YAML discovery (spike S2 done: adopt with caveats, §6.9), real use
-(D1 dogfood) before Helm with a smaller config first, lazy feature-gated resolvers. M4b-1 merged (0e2047b); next: M5a–c plan.
+(DF1) before Helm with a smaller config first, lazy feature-gated resolvers. M4b-1 merged (0e2047b); next: M5a–c plan.
 Date: 2026-11-09. Supersedes the "Helm chart pinning — separate tool" note in
 `2026-11-01-pin-ci-design.md`. That spec describes the `pin-ci` behaviour the restructure starts
 from; pin-toolkit promises no compatibility with it (D33).
@@ -359,7 +359,7 @@ Plugins match path patterns over `Vec<Node>` (`image`, `services[*].name`, `incl
 
 A file that does not parse (after masking) is a per-file error under `plugins.<id>.errors` (exit 2)
 with the line from `YamlError`: no partial targets, no second hand-rolled discoverer (my call;
-revisit in D1 dogfood). Hand-rolled code stays only for the fix-ups, template masking, trailing-comment
+revisit in DF1). Hand-rolled code stays only for the fix-ups, template masking, trailing-comment
 detection, `requote` and the C5 shell tokenizer. Behaviour change versus `discover.rs` (a bug it
 fixes, reviewed as a snapshot diff): `image: &img "ubuntu:24.04"` no longer yields a value containing
 `&img`, and `image: *img` is no longer a target.
@@ -377,7 +377,7 @@ higher layer, `ignore` lists **concatenate**. `--no-config` skips the global and
 Smaller config first (D35): M5d implements `defaults < repo < env < CLI` with the full repo schema
 below; M5e' inserts the global layer, `[hosts]` and `config show --origin`. The security rule (§7.3)
 holds from M5d: a global-only key in a repo file is exit 2, and without a global layer tokens come
-from env only, to the primary host (D31).
+from env only, to the primary host (D31); `CI_JOB_TOKEN` only to `CI_SERVER_HOST` (D37).
 
 ```toml
 version = 1
@@ -417,7 +417,7 @@ A token is sent only to a host that the user, global config, env or CLI bound it
 the repo could exfiltrate the token. So a repo file may *reference* a host (component hosts,
 helm aliases): references to an unbound host resolve **anonymously**, and if that fails the
 reference is `unresolved (<host>: not trusted for credentials — bind it in ~/.config/pin-toolkit/config.toml)`.
-`CI_JOB_TOKEN` is bound to `CI_SERVER_HOST` only (F3). Today it would also be sent to the default
+`CI_JOB_TOKEN` is bound to `CI_SERVER_HOST` only (M5d, pulled from F3). Today it would also be sent to the default
 gitlab.com. The HM-generated config sits in the world-readable `/nix/store`, so it holds env var
 *names* only, never secrets.
 
@@ -536,13 +536,13 @@ frozen output. Rows are in execution order.
 | M5b | `git mv src tests` → `crates/pin-gitlab-ci/`. The package is still named `pin-ci`. Root workspace manifest, root `Cargo.lock`. Oracle path: `oracle.rs:21` `REPO = env!("CARGO_MANIFEST_DIR")` → `concat!(env!("CARGO_MANIFEST_DIR"), "/../..")` | all tests green, snapshots unchanged |
 | M5c | Split out `pin-core`. First `git mv` image_ref, registry, gitlab, versioning and report verbatim, in move-only commits. Then add `Status`, `Splice`/`Finding`, the lazy feature-gated `Ctx` (§6.2, D36), `decide_image`/`pin_inline_image`, `Plugin` + `run::pin_file`. lib.rs becomes `GitlabCi`; today's `pin_files(paths, &PinOptions, &reg, &gitlab)` may survive as a test helper until M5d, not as API. Rename the package to `pin-gitlab-ci`. `is_sha` dedups into `gitlab::is_commit_sha`. `discover.rs` moves verbatim. Fix R1 (`coalesce_comments`) and R2 (one shared `LineIndex`), one commit each. `main.rs` stays as the crate's `[[bin]] pin-ci` until M5d. Tests: mock_registry, registry_hosts, hub_api, gitlab_client and live_gitlab move to `pin-core`; e2e, e2e_components, live, oracle and fixtures stay in `pin-gitlab-ci`. Relative `.tmp` paths resolve per package and are still covered by the root `.gitignore` | snapshots unchanged except the reviewed R1/R2 diffs; properties green |
 | M5c-y | Own step right after M5c (keeps M5c manageable): `core::yaml` = saphyr-parser + fix-ups (§6.9); gitlab-ci discovery becomes path matching over `Vec<Node>`; the `discover.rs` YAML primitives are deleted. Fixes the anchor/alias bug | discovery-parity test (§11); snapshots unchanged except the reviewed anchor/alias diff |
-| M5d | Minimal `pin-toolkit` binary, replaces `pin-ci`: walk, routing, `pin-toolkit gitlab-ci` and `pin-<plugin>` aliases (optional `pin-ci` alias, §6.6), `service` kind tag, combined report, exit codes 0/1/2, `--check`, memo. Config: repo `.pin-toolkit.toml` + env + CLI only (§7.1, D35). Delete the crate's `[[bin]] pin-ci` | toolkit snapshots (human + JSON) over the M5a fixtures, diffs reviewed; exit-code table tests; repo `[hosts]` → exit 2 |
+| M5d | Minimal `pin-toolkit` binary, replaces `pin-ci`: walk, routing, `pin-toolkit gitlab-ci` and `pin-<plugin>` aliases (optional `pin-ci` alias, §6.6), `service` kind tag, combined report, exit codes 0/1/2, `--check`, memo. Config: repo `.pin-toolkit.toml` + env + CLI only (§7.1, D35). `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` only (D37). Delete the crate's `[[bin]] pin-ci` | toolkit snapshots (human + JSON) over the M5a fixtures, diffs reviewed; exit-code table tests; repo `[hosts]` → exit 2; wiremock: `CI_JOB_TOKEN` never sent to another host |
 | M5f | Docs: README → toolkit README plus per-plugin sections (fix R5 drift; states the `pin-ci` alias decision), a pointer from the old spec, LICENSE (O4), push to GitHub with full history (O3) | — |
 | M5e' | Global config layer (`~/.config/pin-toolkit/config.toml`, written by the HM module), `[hosts]` bindings (D31), `config show --origin`. Right before M6, whose HM module needs it | precedence table tests; token-binding tests (§7.3) |
 
-**Oracle, while useful:** the root files stay unmodified and `tests/oracle.rs` is adapted to the new
+**Oracle, kept until DF1:** the root files stay unmodified and `tests/oracle.rs` is adapted to the new
 crate API. `PIN_CI_LIVE` and `PIN_CI_ORACLE` keep their names; the command becomes
-`cargo test -p pin-gitlab-ci --test oracle`. Retiring the oracle is the owner's call.
+`cargo test -p pin-gitlab-ci --test oracle`. The owner decides its retirement after dogfooding.
 
 **Latent bugs: fixed during the restructure (M5c), not preserved.** Each fix is its own commit that
 deliberately updates its snapshot and gets a README note.
@@ -565,13 +565,13 @@ S ≈ 1–2 tasks, M ≈ 3–4, L ≈ 5+. Each milestone gets its own plan in `d
 | S2 | YAML discovery spike (done, §6.9) | S | none |
 | M5a–c | snapshots → workspace move → core split + lazy resolvers + R1/R2 fixes (§9) | S + S + L | R1/R2 fixed (reviewed snapshot diffs) |
 | M5c-y | gitlab-ci discovery on `core::yaml` (saphyr-parser + fix-ups) | M | R7 fixed (reviewed snapshot diff) |
-| M5d | minimal `pin-toolkit` binary (replaces `pin-ci`); repo config + env + CLI | M | new binary; `pin-ci` gone or a plain alias |
+| M5d | minimal `pin-toolkit` binary (replaces `pin-ci`); repo config + env + CLI; `CI_JOB_TOKEN` → `CI_SERVER_HOST` only | M | new binary; `pin-ci` gone or a plain alias |
 | M5f | docs, license, GitHub publish | S | none |
 | M5e' | global config (HM-written), `[hosts]`, `config show --origin` | M | new config layer |
 | M6 | flake + crane + checks + HM module (M), GitHub Actions + Cachix (S), releases + container (M). Human prerequisites (O3): GitHub repo, Cachix cache + `CACHIX_AUTH_TOKEN`, GHCR push rights | L | none |
-| D1 dogfood | the owner runs pin-toolkit on his real repos (locally via HM, in CI via the container). Each fix from real use is its own commit with reviewed snapshots. (Milestone label by the owner; not decision D1) | open (owner-driven) | yes, from real use |
+| DF1 | dogfood: the owner runs pin-toolkit on his real repos (locally via HM, in CI via the container). Each fix from real use is its own commit with reviewed snapshots | open (owner-driven) | yes, from real use |
 | G1 | gitlab-ci C3b: `include: - component:` + `$CI_SERVER_FQDN` alias | M | yes (new targets) |
-| F3 | `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` + native TLS roots | S | yes, documented |
+| F3 | native TLS roots (§8.4); its `CI_JOB_TOKEN` half moved to M5d (D37) | S | yes, documented |
 | M4b-2 | component/include `--update` (GitLab tags list, `order_by=version`), comment-aware re-pin (`existing_comment`), verify in `--check`, GitLab tag dates for release age | M | yes |
 | M7 | gitlab-ci `helm-oci` (C5): script-line shell tokenizer, OCI chart resolver (`+`→`_`, Accept, helm config mediaType check) | M | new kind |
 | M8a | helm plugin skeleton + values images (H2, H3 digest-key form, O2) on `core::yaml` with template masking (§6.9) | M–L | new plugin |
@@ -580,7 +580,7 @@ S ≈ 1–2 tasks, M ≈ 3–4, L ≈ 5+. Each milestone gets its own plan in `d
 | M9 | github-actions plugin (A1–A3), `GitHubClient` (pin-core feature `github`) | M | new plugin |
 | later | C6 classic `helm … repo/chart`, `sha:` value keys, template scan for `tag-digest`, `--refresh-lock` (shells out to `helm dependency update`), `include:integrity` | — | — |
 
-Order (D34): M4b-1 ✓ → S2 ✓ → M5a → M5b → M5c → M5c-y → M5d → M5f → M5e' → M6 → **D1 dogfood** → G1 → F3 →
+Order (D34): M4b-1 ✓ → S2 ✓ → M5a → M5b → M5c → M5c-y → M5d → M5f → M5e' → M6 → **DF1** → G1 → F3 →
 M4b-2 → M7 → M8a → M8b → M8c → M9. Real use comes before Helm (owner, 2026-11-10): what dogfooding finds
 shapes the core before the helm plugin builds on it. GitLab first (owner); distribution right after
 the minimal binary, so dogfooding uses the real install path. M5f precedes M5e' because M6 needs the
@@ -631,18 +631,19 @@ GitHub repo, and M5e' precedes M6 because the HM module writes the global config
 | D26 | C3b (`include: - component:`) added in G1 (legacy clause dropped) | my call | GitLab's documented component form; today it is not a target |
 | D27 | crane, systems as in §8.1, `homeModules` alias, install-nix-action + cachix-action, SHA-pinned actions, release created once | my call | §8 |
 | D28 | Container on GHCR only, no Entrypoint, busybox + CA certs | my call | GitLab image requirements |
-| D29 | `PIN_CI_LIVE`/`PIN_CI_ORACLE` names kept. No crates.io publish. No `unpin`. **Changed:** oracle kept only while useful, adapted to the new crate API; retiring it is the owner's call | my call; owner (2026-11-10) | scope control |
+| D29 | `PIN_CI_LIVE`/`PIN_CI_ORACLE` names kept. No crates.io publish. No `unpin`. **Changed:** oracle kept until DF1, adapted to the new crate API; the owner decides retirement after dogfooding | my call; owner (2026-11-10) | scope control |
 | D30 | A version **range** (H1 Chart.yaml/requirements, H4 helmfile) on a line that already has a trailing comment → `skipped (existing comment; pinning would lose constraint <c>)`. The constraint is never dropped. `--update` reads a recorded constraint only from a comment that is entirely `# <constraint>` and parses as one; any other comment counts as "no recorded constraint" (→ the image policy of D21). Exact versions and C3/C4 keep today's rule: pin, no second comment | my call (builder check) | never lose author intent; never misread an unrelated comment |
 | D31 | `GITLAB_TOKEN` only to the primary host (`--gitlab-host` > `CI_SERVER_HOST` > gitlab.com); other `gitlab-hosts` anonymous unless bound in global `[hosts]` (§7.3) | my call (builder check) | least privilege; repo config cannot widen it |
-| D32 | YAML discovery via the span-preserving `saphyr-parser` (S2: adopt with caveats); char→byte table, quoted-span re-scan, property skip, `{{ }}` masking (§6.9). Edits stay byte splices. Aliases/merge keys/`!reference` are not targets. Parse error → file error, exit 2, no hand-rolled fallback discoverer (my call within it) | owner (2026-11-10) | robust structure handling (flow, anchors, multi-doc) without giving up byte-exact edits; fixes R7 |
+| D32 | YAML discovery via the span-preserving `saphyr-parser` (S2: adopt with caveats); char→byte table, quoted-span re-scan, property skip, `{{ }}` masking (§6.9). Edits stay byte splices. Aliases/merge keys/`!reference` are not targets. Parse error → file error, exit 2, no `discover.rs` fallback | owner (2026-11-10); parse-error rule my call | robust structure handling (flow, anchors, multi-doc) without giving up byte-exact edits; fixes R7 |
 | D33 | No compatibility layer: no `pin-ci` legacy mode, legacy exit codes or JSON, legacy goldens, A/B script or compat tag. Snapshot tests replace goldens. Byte-exact, idempotent edits stay hard invariants with property tests | owner (2026-11-10) | never used in the real world; no users |
-| D34 | Order: M5a–c → M5c-y → M5d → M5f → M5e' → M6 → D1 dogfood → G1 → F3 → M4b-2 → M7 → M8a–c → M9 (§10) | owner (2026-11-10); M5c-y, M5f/M5e' placement my call | real use before Helm; M6's HM module needs the global layer |
+| D34 | Order: M5a–c → M5c-y → M5d → M5f → M5e' → M6 → DF1 → G1 → F3 → M4b-2 → M7 → M8a–c → M9 (§10) | owner (2026-11-10); M5c-y, M5f/M5e' placement my call | real use before Helm; M6's HM module needs the global layer |
 | D35 | Smaller config first: M5d reads repo `.pin-toolkit.toml` + env + CLI; the global layer, `[hosts]` and `config show --origin` come in M5e'. D18 holds from M5d: a repo file never binds credentials (global-only keys → exit 2) | owner (2026-11-10) | dogfood sooner; no window in which a repo can bind a token |
 | D36 | Resolvers (`oci`, `gitlab`, `helm-repo`, `github`) are pin-core cargo features, each built lazily on first use; plugin crates enable what they need; no extra crates (§6.2) | owner (2026-11-10) | `Ctx` is no god object; trimmed builds compile only the clients they use |
+| D37 | `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` only, in M5d (pulled from F3, which keeps only native TLS roots) | my call | security fix: today it can reach gitlab.com; must hold before DF1 runs in CI |
 
 ## 13. Owner answers
 
-Open for the owner: only when to retire the oracle (D29).
+Open for the owner: retiring the oracle, decided after DF1 (D29).
 
 | # | Question | Owner answer | Affects |
 |---|---|---|---|
