@@ -352,30 +352,62 @@ stay byte splices on those spans (§6.2); the parser never writes. Spike S2 (202
 all 37 `discover()` targets of `tests/fixtures/*.yml` and `ci/.gitlab-ci.yml` at identical bytes,
 given the fix-ups below. Rejected: `yaml-rust2`, `marked-yaml` (start marker only, no end).
 
-`core::yaml` = parser + a ~40-line hand-rolled fix-up layer:
+`core::yaml` = parser + a hand-rolled fix-up layer (built in M5c-y, pin-core feature `yaml`; `saphyr-parser`
+is optional, so pin-core without the feature has no parser dependency):
 
 | Parser fact (S2, saphyr-parser 0.3.3) | `core::yaml` handling |
 |---|---|
 | `Marker::index()` counts **chars**; a BOM counts as char 0; `col()` on line 1 excludes the BOM; `ScanError` says "byte N" but N is a char index | one char→byte table per file (`char_indices` + `len`); use `index()` only, never `col()` |
 | quoted-scalar span end overshoots into trailing spaces and `# comment` (in flow also a space before `]`/`,`). Upstream bug in `scan_flow_scalar`; the start is correct | re-scan from the start to the closing quote (skip `''` and `\x` escapes) |
-| scalar spans include node properties `&anchor `, `!tag ` | skip the properties |
+| scalar spans include node properties `&anchor `, `!tag ` | skip the properties, only when the event carries an anchor or a tag (block content may itself start with `!` or `&`). The skip also crosses line breaks and `#` comments between the property and the token, and every skip stops at the parser's span end |
 | no comments in events; anchor names absent (numeric ids); merge keys `<<:` not expanded | trailing-comment detection stays hand-rolled (`edit::trailing_comment`). Aliases (`Event::Alias`), merge keys and `!reference […]` are **not targets**: the bytes live at the definition |
-| after the first `ScanError` the iterator repeats it (sticky); unquoted `{{ … }}` mis-parses as flow mappings **without** an error | templated files (helm values, `.gotmpl`): mask every `{{…}}` with equal-length spaces before parsing (offsets unchanged); a scalar overlapping a mask is `skipped (templated)` |
-| block scalars (`\|`, `>`) span the content only, header excluded | never spliced: `skipped (block scalar)` at a target path |
+| after the first `ScanError` the iterator repeats it (sticky); unquoted `{{ … }}` mis-parses as flow mappings **without** an error | templated files (helm values, `.gotmpl`): with `ScanOpts { mask_templates: true }` every `{{…}}` (non-greedy, may span lines; an unclosed `{{` is left alone) becomes spaces, **keeping `\n` and `\r`**, before parsing: byte offsets and line numbers (also in error lines) stay exact. `ScalarRef.templated` is set when a non-empty span overlaps a masked range; the consumer decides (helm: `skipped (templated)`, M8a). An unquoted `key: {{ x }}` parses without error as an empty value that is **not** flagged: M8a must report it. gitlab-ci does not mask (GitLab CI is not Go-templated) |
+| block scalars (`\|`, `>`) span the content only, header excluded; with properties the span starts at the properties instead. Either way it runs past the content to after the trailing break and the next line's indentation | the span is the content: with properties the header line and the blanks after it are skipped so it starts at the first content byte (without properties it is never skipped); the end is trimmed to the last non-blank byte, so a block span never reaches into the next line. Never spliced: `skipped (block scalar)` at a target path |
+| a plain scalar with an empty value (`key:`, flow `{k}`): the parser's span is the **next** token (`}`, `, `) | an implicit null is an empty `Plain` scalar with `value == ""` and an **empty span** `s..s` at the start of the parser span: block → the key's `:` (on the key's line); flow → the start of the next token (`}` or `,`); with properties → the start of the properties. Consumers read an empty span as "no value". Without it `{project: p, ref}` would give `ref` the span `}` and a pin would replace the bracket |
+| a node with a tag: `!reference [.base, image]`, `!custom x`, `!!str v` | non-core tag (`Tag::is_yaml_core_schema()` false; saphyr expands `!!` to the handle `tag:yaml.org,2002:`) → one `Node::Tagged`, its subtree is not emitted. Core tags (`!!str`, `!!seq`) are transparent: the node is a normal scalar/collection |
 | CRLF: `\r` is one char, excluded from spans; multi-document spans are file-global | none |
 
-Shape (S2 proposal): `scan(text, ScanOpts { mask_templates }) -> Result<Vec<Node>, YamlError>`,
-`Node::{Scalar(ScalarRef), Alias { path, id, span }, Tagged { path, tag }}`,
-`ScalarRef { path, doc, span /* byte range incl. quotes */, style, value /* decoded */, anchor, templated }`.
-Plugins match path patterns over `Vec<Node>` (`image`, `services[*].name`, `include[*].ref`,
-`dependencies[*].version`, `**.image.{repository,tag,digest}`), so `scan` stays pure.
+Shape as built (`pin_core::yaml`, feature `yaml`):
+`scan(text, ScanOpts { mask_templates }) -> Result<Vec<Node>, ScanError>` with the existing
+`plugin::ScanError { line: Option<usize> /* 1-based */, msg }` (no separate `YamlError`);
+`Node::{Scalar(ScalarRef), Alias { path, id, span, parent }, Tagged { path, tag, parent }}`;
+`ScalarRef { path, doc, line, span, style, value, anchor, parent, in_flow, templated }`:
+`path: Vec<PathSeg>` is the value path from the document root (`PathSeg::{Key, Index, Complex}`; keys are
+not nodes, a non-scalar or alias key is `Complex` and its subtree is skipped); `doc` the 0-based
+document; `line` the 0-based line of `span.start` (`LineIndex::line_of`); `span` the **byte** range of
+the token incl. quotes (properties excluded; block: content only, end trimmed; implicit null: empty
+span, see the table); `style` `Plain|Single|Double|Block`; `value` decoded (from the masked text when
+masking); `anchor` the id when the scalar defines one; `parent` the id of the enclosing collection
+(ids from 1 in event order, 0 = the document is the scalar), which groups the keys of one mapping even
+when a key such as `include:` repeats; `in_flow` whether the enclosing collection is (nested in) a flow
+collection; `templated` as in the table. `Alias` and `Tagged` carry `parent` too. Plugins match path
+patterns over `Vec<Node>` (`image`, `services[*].name`, `include[*].ref`, `dependencies[*].version`,
+`**.image.{repository,tag,digest}`), so `scan` stays pure. Char→byte is one `Vec<usize>` per file, so
+a span from the parser never needs `col()`; an impossible span is an internal `ScanError`, never a
+panic (every marker lookup and scan is bounded; a test runs `scan` on every char-boundary prefix of the
+sample texts, masked and unmasked).
 
-A file that does not parse (after masking) is a per-file error under `plugins.<id>.errors` (exit 2)
-with the line from `YamlError`: no partial targets, no second hand-rolled discoverer (my call;
-revisit in DF1). Hand-rolled code stays only for the fix-ups, template masking, trailing-comment
-detection, `requote` and the C5 shell tokenizer. Behaviour change versus `discover.rs` (a bug it
-fixes, reviewed as a snapshot diff): `image: &img "ubuntu:24.04"` no longer yields a value containing
-`&img`, and `image: *img` is no longer a target.
+A file that does not parse (after masking) is a per-file error: `ScanError { line, msg: "invalid YAML:
+{parser info}" }`, which `run::pin_file` turns into `FileError::Parse` (`<path>:<line>: invalid YAML: …`)
+with nothing written; no partial targets, no second hand-rolled discoverer (my call; revisit in DF1).
+The `pin-ci` driver exits 1 on it and stops at the first such file until M5d, which adds exit 2 under
+`plugins.<id>.errors` and continues with the other files. Hand-rolled code stays only for the
+fix-ups, template masking, trailing-comment detection, `requote` and the C5 shell tokenizer.
+
+gitlab-ci matching (`discover.rs`, built in M5c-y): over the scalars with a non-empty span, paths
+relative to the document root. `image` kind: `image` or `services` at the root or one key down (a job,
+`default`, a hidden template), followed by nothing, `name`, an index, or an index and `name`.
+`component` kind: exactly the root key `component`. `include` kind: a mapping at `include` or
+`include[n]` (root only), grouped by `parent`, with a `project` and a `ref` scalar (first of each, any
+order); the target is the `ref`, with `flow` taken from the scalar. A block scalar at a target path
+is `skipped (block scalar)`. **A quoted or plain scalar whose text spans lines at a target path is
+`skipped (multi-line scalar)`**: splicing it would drop a line break (and, for an include `ref`, lose
+the `# ref` comment). Both are reported through `PinTarget::Unsupported`, whose range is cut at the
+first line break so the row's `old` stays one line. Aliases, merge keys and `!reference` are not
+targets. Behaviour change versus the old `discover.rs` (bugs it fixed, reviewed as snapshot diffs; R7,
+R8, R9 in §9): `image: &img "ubuntu:24.04"` no longer yields a value containing `&img`, `image: *img`
+and `!reference [...]` are no longer targets, `!!str node:20` is pinned in place (the tag stays), block children
+under CRLF and under an anchored key are found, and the first key after a BOM is no longer lost.
 
 ## 7. Configuration
 
@@ -548,7 +580,7 @@ frozen output. Rows are in execution order.
 | M5a | Snapshot tests: a lib-level test runs every e2e fixture and snapshots `render_human()`, `to_json()` and the edited file contents (the builder may pick `insta`); mock-port URLs in reasons are redacted. Add the byte-exact and idempotence property tests over all fixtures. Add fixtures for R1, R2 (CRLF) and anchors/aliases; their first snapshots record today's wrong output. Plain tag `pre-pin-toolkit` (a reference point, not a compatibility baseline) | baseline |
 | M5b | `git mv src tests` → `crates/pin-gitlab-ci/`. The package is still named `pin-ci`. Root workspace manifest, root `Cargo.lock`. Oracle path: `oracle.rs:21` `REPO = env!("CARGO_MANIFEST_DIR")` → `concat!(env!("CARGO_MANIFEST_DIR"), "/../..")` | all tests green, snapshots unchanged |
 | M5c | Split out `pin-core`. First `git mv` image_ref, registry, gitlab, versioning and report verbatim, in move-only commits. Then add `Status`, `Splice`/`Finding`, the lazy feature-gated `Ctx` (§6.2, D36), `decide_image`/`pin_inline_image`, `Plugin` + `run::pin_file`. lib.rs becomes `GitlabCi`; today's `pin_files(paths, &PinOptions, &reg, &gitlab)` may survive as a test helper until M5d, not as API. Rename the package to `pin-gitlab-ci`. `is_sha` dedups into the ungated `git::is_commit_sha` (github shares it in M9). `discover.rs` moves verbatim. Fix R1 (`coalesce_comments`) and R2 (one shared `LineIndex`), one commit each. `main.rs` stays as the crate's `[[bin]] pin-ci` until M5d. Tests: mock_registry, registry_hosts, hub_api, gitlab_client and live_gitlab move to `pin-core`; e2e, e2e_components, live, oracle and fixtures stay in `pin-gitlab-ci`. Relative `.tmp` paths resolve per package and are still covered by the root `.gitignore` | snapshots unchanged except the reviewed R1/R2 diffs; properties green |
-| M5c-y | Own step right after M5c (keeps M5c manageable): `core::yaml` = saphyr-parser + fix-ups (§6.9); gitlab-ci discovery becomes path matching over `Vec<Node>`; the `discover.rs` YAML primitives are deleted. Fixes the anchor/alias bug | discovery-parity test (§11); snapshots unchanged except the reviewed anchor/alias diff |
+| M5c-y | **Done** (branch `m5cy-yaml-discovery`, 11 commits, last 7546e0f). Own step right after M5c (kept M5c manageable): `core::yaml` = saphyr-parser + fix-ups (§6.9); gitlab-ci discovery is path matching over `Vec<Node>`; the `discover.rs` line-scanner primitives are deleted (≈ −800 lines). Fixes R7, R8, R9. Also built: `PinTarget::Unsupported` (`skipped (block scalar)`, `skipped (multi-line scalar)`, §6.9), invalid YAML as a file error, the review carry-overs L1 and L7 (§14.1) | discovery-parity test against a frozen record of the old output plus an exact exception table (§11); exactly 12 snapshots changed (`ci-anchors`, `ci-r2-crlf`, `ci-tags`, `ci-bom` × human/json/file), all reviewed |
 | M5d | Minimal `pin-toolkit` binary, replaces `pin-ci`: walk, routing, `pin-toolkit gitlab-ci` and `pin-<plugin>` aliases (optional `pin-ci` alias, §6.6), `service` kind tag, combined report, exit codes 0/1/2, `--check`, memo. Config: repo `.pin-toolkit.toml` + env + CLI only (§7.1, D35). `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` only (D37). Delete the crate's `[[bin]] pin-ci` | toolkit snapshots (human + JSON) over the M5a fixtures, diffs reviewed; exit-code table tests; repo `[hosts]` → exit 2; wiremock: `CI_JOB_TOKEN` never sent to another host |
 | M5f | Docs: README → toolkit README plus per-plugin sections (fix R5 drift; states the `pin-ci` alias decision), a pointer from the old spec, LICENSE (O4), push to GitHub with full history (O3) | — |
 | M5e' | Global config layer (`~/.config/pin-toolkit/config.toml`, written by the HM module), `[hosts]` bindings (D31), `config show --origin`. Right before M6, whose HM module needs it | precedence table tests; token-binding tests (§7.3) |
@@ -566,8 +598,9 @@ deliberately updates its snapshot and gets a README note.
 | R2 | `comment_insert_offset` computes line starts with `text.lines()` and `len()+1`. `lines()` strips `\r\n`, so offsets drift by one per earlier CRLF line, while `discover` uses `split_inclusive('\n')` | M5c: one shared `LineIndex`, comment inserted before `\r\n` |
 | R3 | (not a bug) partial-write semantics and one semaphore per file shared by registry and GitLab calls | keep in `run` |
 | R6 | new kinds (`helm-oci`, C3b) change output for existing CI files | intended; README note per kind; per-kind toggles (`kinds`) in config. C3b counts as the `component` kind |
-| R7 | `discover()` keeps `&img` in an anchored value and treats the alias `*img` as a target (found by S2) | M5c-y: fixed by parser discovery (§6.9) |
-| R8 | `discover()` misses block children in two cases (found by the M5a fixture run): under CRLF a `key:\r` line counts as a key with a value, so `include:`/`services:` blocks and every job-nested `image:` are not targets; children of an anchored key (`.base: &base`) are never targets | not fixed in M5c (the hand-rolled code is deleted by M5c-y); recorded in the M5a snapshots (`ci-r2-crlf`, `ci-anchors`); M5c-y: fixed by parser discovery, listed with R7 as a documented parity exception |
+| R7 | `discover()` keeps `&img` in an anchored value, treats the alias `*img` as a target, and treats `!reference [...]` and the tag in `!!str node:20` as (unparseable) targets (found by S2; the `ci-tags` fixture added in M5c-y) | M5c-y: **fixed** by parser discovery (§6.9): the definition is pinned once (`&img alpine:3.20@sha256:…`, `!!str node:20@sha256:…`); aliases, merge keys and `!reference` are not targets and have no row |
+| R8 | `discover()` misses block children in two cases (found by the M5a fixture run): under CRLF a `key:\r` line counts as a key with a value, so `include:`/`services:` blocks and every job-nested `image:` are not targets; children of an anchored key (`.base: &base`) are never targets | not fixed in M5c (the hand-rolled code was deleted by M5c-y); recorded in the M5a snapshots (`ci-r2-crlf`, `ci-anchors`). M5c-y: **fixed** by parser discovery (CRLF block `include:`/`services:`/job `image:` and children of `.base: &base` are targets); those snapshots now pin them; listed with R7 and R9 as the documented parity exceptions |
+| R9 | `discover()` misses every child of a first key behind a BOM (`\u{FEFF}default:`): `top_key` rejects the BOM-prefixed key (found while planning M5c-y; the `ci-bom` fixture) | M5c-y: **fixed** by parser discovery (a BOM is char 0 of the char→byte table); third documented parity exception; `ci-bom` gained the row for line 2 |
 
 ## 10. Milestones
 
@@ -578,7 +611,7 @@ S ≈ 1–2 tasks, M ≈ 3–4, L ≈ 5+. Each milestone gets its own plan in `d
 | M4b-1 | done (0e2047b): release-age guard, `Default` for `PinOptions`, oracle + README | M | planned feature |
 | S2 | YAML discovery spike (done, §6.9) | S | none |
 | M5a–c | snapshots → workspace move → core split + lazy resolvers + R1/R2 fixes (§9) | S + S + L | R1/R2 fixed (reviewed snapshot diffs) |
-| M5c-y | gitlab-ci discovery on `core::yaml` (saphyr-parser + fix-ups) | M | R7 fixed (reviewed snapshot diff) |
+| M5c-y | done (7546e0f): gitlab-ci discovery on `core::yaml` (saphyr-parser + fix-ups) | M | R7, R8, R9 fixed (reviewed snapshot diffs); invalid YAML is a file error (exit 1 until M5d) |
 | M5d | minimal `pin-toolkit` binary (replaces `pin-ci`); repo config + env + CLI; `CI_JOB_TOKEN` → `CI_SERVER_HOST` only | M | new binary; `pin-ci` gone or a plain alias |
 | M5f | docs, license, GitHub publish | S | none |
 | M5e' | global config (HM-written), `[hosts]`, `config show --origin` | M | new config layer |
@@ -607,7 +640,7 @@ GitHub repo, and M5e' precedes M6 because the HM module writes the global config
 | Byte-exact (hard invariant) | ∀ fixture f: the bytes outside `⋃ edits` are identical before and after (a property test over all fixtures and plugins): edits touch only the reference bytes |
 | Idempotent (hard invariant) | ∀ f: a second run has 0 edits and every row is `ok`/`skipped` (wiremock) |
 | Snapshot review | Snapshots of the human report, JSON report and edited files (M5a; toolkit output from M5d) fail on any output change. A change is accepted only by deliberately updating the snapshot, and the commit names it as intended. Oracle (`PIN_CI_ORACLE=1`) green while it is kept |
-| Discovery parity (M5c-y) | ∀ fixture: parser discovery yields the `discover.rs` targets except the documented R7 cases, and ∀ target `text[span]` equals the token incl. quotes. Fixtures cover non-ASCII before a target, BOM, CRLF, quoted value + `# comment`, `&anchor`/`!tag`, aliases, `<<:`, multi-document, masked `{{ }}` |
+| Discovery parity (M5c-y) | ∀ fixture: parser discovery yields the old `discover.rs` targets except the documented R7, R8 and R9 cases (exact exception table; the old output is a frozen record, `tests/parity/legacy-discover.txt`, because the code is deleted), and ∀ spliceable target `text[span]` equals the value as written (plain, `'…'` or `"…"`) on its line. Fixtures cover non-ASCII before a target, BOM, CRLF, quoted value + `# comment`, `&anchor`/`!tag`, aliases, `<<:`, multi-document, a realistic pipeline; masked `{{ }}` is covered at unit level (no consumer before M8a) |
 | Lazy resolvers | a run whose files have no target of a kind constructs no client of that kind (construction counter in a test). pin-core builds with no resolver feature and with each one alone (flake checks) |
 | Plugin isolation | `scan` is pure: unit tests with no network. Every single-plugin feature build compiles (flake checks) |
 | Fail loud | Every auth, network, alias or resolver-construction failure yields `unresolved` and exit 1. A YAML parse error or a global-only key in the repo config yields exit 2 (from M5d) |
@@ -648,7 +681,7 @@ GitHub repo, and M5e' precedes M6 because the HM module writes the global config
 | D29 | `PIN_CI_LIVE`/`PIN_CI_ORACLE` names kept. No crates.io publish. No `unpin`. **Changed:** oracle kept until DF1, adapted to the new crate API; the owner decides retirement after dogfooding | my call; owner (2026-11-10) | scope control |
 | D30 | A version **range** (H1 Chart.yaml/requirements, H4 helmfile) on a line that already has a trailing comment → `skipped (existing comment; pinning would lose constraint <c>)`. The constraint is never dropped. `--update` reads a recorded constraint only from a comment that is entirely `# <constraint>` and parses as one; any other comment counts as "no recorded constraint" (→ the image policy of D21). Exact versions and C3/C4 keep today's rule: pin, no second comment | my call (builder check) | never lose author intent; never misread an unrelated comment |
 | D31 | `GITLAB_TOKEN` only to the primary host (`--gitlab-host` > `CI_SERVER_HOST` > gitlab.com); other `gitlab-hosts` anonymous unless bound in global `[hosts]` (§7.3) | my call (builder check) | least privilege; repo config cannot widen it |
-| D32 | YAML discovery via the span-preserving `saphyr-parser` (S2: adopt with caveats); char→byte table, quoted-span re-scan, property skip, `{{ }}` masking (§6.9). Edits stay byte splices. Aliases/merge keys/`!reference` are not targets. Parse error → file error, exit 2, no `discover.rs` fallback | owner (2026-11-10); parse-error rule my call | robust structure handling (flow, anchors, multi-doc) without giving up byte-exact edits; fixes R7 |
+| D32 | YAML discovery via the span-preserving `saphyr-parser` (S2: adopt with caveats); char→byte table, quoted-span re-scan, property skip, `{{ }}` masking (§6.9). Edits stay byte splices. Aliases/merge keys/`!reference` are not targets. Parse error → file error (as built: `ScanError` → `FileError::Parse`; exit 1 until M5d, then exit 2), no `discover.rs` fallback | owner (2026-11-10); parse-error rule my call | robust structure handling (flow, anchors, multi-doc) without giving up byte-exact edits; fixes R7–R9 |
 | D33 | No compatibility layer: no `pin-ci` legacy mode, legacy exit codes or JSON, legacy goldens, A/B script or compat tag. Snapshot tests replace goldens. Byte-exact, idempotent edits stay hard invariants with property tests | owner (2026-11-10) | never used in the real world; no users |
 | D34 | Order: M5a–c → M5c-y → M5d → M5f → M5e' → M6 → DF1 → G1 → F3 → M4b-2 → M7 → M8a–c → M9 (§10) | owner (2026-11-10); M5c-y, M5f/M5e' placement my call | real use before Helm; M6's HM module needs the global layer |
 | D35 | Smaller config first: M5d reads repo `.pin-toolkit.toml` + env + CLI; the global layer, `[hosts]` and `config show --origin` come in M5e'. D18 holds from M5d: a repo file never binds credentials (global-only keys → exit 2) | owner (2026-11-10) | dogfood sooner; no window in which a repo can bind a token |
@@ -689,5 +722,7 @@ Open for the owner: retiring the oracle, decided after DF1 (D29).
 
 - **Before M8 (M1):** `run::pin_file` checks overlap only between findings. Validate each finding's own splices (start ≤ end, no self-overlap) and mark the finding `unresolved` instead of panicking in `edit::apply` or corrupting the file.
 - **In M5d (M3):** enforce D38. The raw `RegistryClient`/`GitLabHosts` and their constructors are still `pub`; make them crate-private (or `#[doc(hidden)]` behind a test-support feature) so plugins cannot bypass the memo and token binding. `RegError: Clone` for the memo (L4).
-- **M5c-y or M5d (low):** R1 combined comment in byte order, not scan order (L1); skip writing edits of non-pinned findings (L2); one `LineIndex` per file in `trailing_comment` (L3); unreachable `.expect` in the resolver construction (L5); `PartialEq<&str>` on `Status` out of the public API (L6); missing tests and the span-based byte-exact check in `tests/common/mod.rs` (L7); single GitLab host set, kind-id constants (L8–L10).
+- **Done in M5c-y:** R1 combined comment in byte order, not scan order (L1, 3a329b1; `run::ordered_splices` orders the splices by `(line, first edit offset)`, rows keep finding order); the missing overlap and lazy-resolver regression tests and the span-based byte-exact check in `tests/common/mod.rs` (L7, d5f4d58 and 3a329b1; `check_spans` ties every replacement to exactly one discovered span and checks the comment in byte order).
+- **Moved to M5d (L3):** one `LineIndex` per file in `trailing_comment`. It needs a per-file context in `Plugin::resolve` or in the target, and M5d reshapes `run`.
+- **M5d (low), still open:** skip writing edits of non-pinned findings (L2); unreachable `.expect` in the resolver construction (L5); `PartialEq<&str>` on `Status` out of the public API (L6); single GitLab host set, kind-id constants (L8–L10).
 - Done before merge (M2): public `Ctx::env()` removed (89f7ffe).
