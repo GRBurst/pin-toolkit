@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use clap::{Args, Parser, Subcommand};
 
 use crate::config::repo::{unknown_kind, unknown_plugin};
-use crate::config::{Fatal, Layer, valid_gitlab_host};
+use crate::config::{Fatal, Layer, id_list, valid_gitlab_host};
 use crate::known::{ALIASES, KNOWN, known};
 
 // No `args_conflicts_with_subcommands` (PR-H1): with it, clap stops
@@ -151,7 +151,8 @@ pub fn parse(args: &[OsString]) -> Result<(Cli, Mode), clap::Error> {
 }
 
 /// The CLI layer: presence flags → `Some(true)`, absent → `None`;
-/// `--kind` and `--gitlab-host` validated. `--config`/`--no-config` select
+/// `--only`/`--skip` per [`id_list`]; `--kind` and `--gitlab-host`
+/// validated. `--config`/`--no-config` select
 /// the repo file and are no layer fields.
 pub fn layer(cli: &Cli) -> Result<Layer, Fatal> {
     let o = &cli.opts;
@@ -169,8 +170,14 @@ pub fn layer(cli: &Cli) -> Result<Layer, Fatal> {
         json: flag(o.json),
         dry_run: flag(o.dry_run),
         check: flag(o.check),
-        only: o.only.clone(),
-        skip: o.skip.clone(),
+        only: o
+            .only
+            .as_ref()
+            .and_then(|v| id_list(v.iter().map(String::as_str))),
+        skip: o
+            .skip
+            .as_ref()
+            .and_then(|v| id_list(v.iter().map(String::as_str))),
         gitlab_host: o.gitlab_host.clone(),
         ..Layer::default()
     };
@@ -298,6 +305,17 @@ mod tests {
                     ..Layer::default()
                 },
             ),
+            // Review-2 N3/L1: items trimmed, empty items dropped, an empty
+            // list is unset (the env rule).
+            (
+                &["--only", "gitlab-ci, helm", "--skip", " helm ,"],
+                Layer {
+                    only: Some(vec!["gitlab-ci".into(), "helm".into()]),
+                    skip: Some(vec!["helm".into()]),
+                    ..Layer::default()
+                },
+            ),
+            (&["--only", ",", "--skip", " "], Layer::default()),
             (
                 &["--gitlab-host", "gitlab.example.com"],
                 Layer {

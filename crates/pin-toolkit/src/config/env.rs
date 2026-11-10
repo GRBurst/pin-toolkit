@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 use pin_core::run::AgePolicy;
 
-use super::{Fatal, Layer, valid_gitlab_host};
+use super::{Fatal, Layer, id_list, valid_gitlab_host};
 
 /// Prefix of the toolkit's variables.
 pub const PREFIX: &str = "PIN_TOOLKIT_";
@@ -80,17 +80,10 @@ fn age(vars: &BTreeMap<String, String>, name: &str) -> Result<Option<AgePolicy>,
     }
 }
 
-/// A comma list; items trimmed, empty items dropped. Ids are checked where
-/// they are used (enablement), so a value that does not apply to a run
-/// cannot fail it.
+/// A comma list per [`id_list`]. Ids are checked where they are used
+/// (enablement), so a value that does not apply to a run cannot fail it.
 fn list(vars: &BTreeMap<String, String>, name: &str) -> Option<Vec<String>> {
-    get(vars, name).map(|v| {
-        v.split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect()
-    })
+    get(vars, name).and_then(|v| id_list(v.split(',')))
 }
 
 /// The env layer from the known variables; every other variable is
@@ -224,6 +217,10 @@ mod tests {
                     ..Layer::default()
                 },
             ),
+            // Review-2 L1: a list empty after trimming is unset (T-D7).
+            (ONLY, ",", Layer::default()),
+            (ONLY, " , ", Layer::default()),
+            (SKIP, " ,, ", Layer::default()),
             (
                 GITLAB_HOST,
                 "gitlab.example.com",

@@ -24,6 +24,19 @@ pub fn valid_gitlab_host(h: &str) -> bool {
     !h.is_empty() && !h.contains('/') && !h.chars().any(char::is_whitespace)
 }
 
+/// A plugin id list (`--only`/`--skip`, `PIN_TOOLKIT_ONLY`/`_SKIP`): items
+/// trimmed, empty items dropped; nothing left = unset (T-D7, review-2 L1,
+/// N3). Ids are checked where they are used (enablement).
+pub fn id_list<'a>(items: impl IntoIterator<Item = &'a str>) -> Option<Vec<String>> {
+    let ids: Vec<String> = items
+        .into_iter()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
 /// One configuration source. `None` (or an empty list/map) = not set here.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Layer {
