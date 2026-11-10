@@ -268,6 +268,8 @@ impl RegistryClient {
     /// a missing `"docker.io"` entry falls back to `https://registry-1.docker.io`.
     /// Panics if the HTTP client cannot be built (test convenience; see
     /// [`RegistryClient::try_new`]).
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn new(creds: Creds, base_urls: HashMap<String, String>) -> Self {
         Self::try_new(creds, base_urls).expect("reqwest client builds")
     }

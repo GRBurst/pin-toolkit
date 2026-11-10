@@ -259,7 +259,10 @@ impl ResolverEnv {
 
     /// [`ResolverEnv::from_vars`] over the process environment (UTF-8
     /// variables only) with `primary` and no other GitLab host: for the
-    /// pin-ci driver and the live/oracle tests.
+    /// pin-ci driver and the live/oracle tests. A process-env reader below
+    /// the binary edge: test helpers only (PR-L9).
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn from_process(primary: &str) -> Self {
         let vars: BTreeMap<String, String> = std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
@@ -391,7 +394,8 @@ impl Ctx {
     }
 
     /// Preset the registry client (or its construction error).
-    #[cfg(feature = "oci")]
+    #[cfg(all(feature = "oci", any(test, feature = "test-support")))]
+    #[doc(hidden)]
     pub fn with_oci(self, c: Result<RegistryClient, String>) -> Self {
         Self {
             oci: OnceCell::from(c),
@@ -434,7 +438,8 @@ impl Ctx {
 
     /// Preset the client of the primary GitLab host (or its construction
     /// error); `primary_host` also becomes `env.gitlab.primary`.
-    #[cfg(feature = "gitlab")]
+    #[cfg(all(feature = "gitlab", any(test, feature = "test-support")))]
+    #[doc(hidden)]
     pub fn with_gitlab(mut self, primary_host: &str, c: Result<GitLabClient, String>) -> Self {
         self.env.gitlab.primary = primary_host.to_string();
         Self {

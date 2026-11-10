@@ -129,6 +129,8 @@ impl GitLabClient {
     /// sent as `JOB-TOKEN` when `job_token` is set, else as
     /// `PRIVATE-TOKEN`; 30s request timeout. Panics if the HTTP client
     /// cannot be built (test convenience; see [`GitLabClient::try_new`]).
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn new(base_url: String, token: Option<String>, job_token: bool) -> Self {
         Self::try_new(base_url, token, job_token).expect("reqwest client builds")
     }

@@ -8,7 +8,8 @@ default = []
 oci = ["dep:reqwest", "dep:sha2"]
 gitlab = ["dep:reqwest"]
 yaml = ["dep:saphyr-parser"]
-# Test hooks (base-URL overrides); enabled only by dev-dependencies (D38).
+# Test hooks (base-URL overrides; raw registry/GitLab clients, preset Ctx
+# resolvers, process-env ResolverEnv); enabled only by dev-dependencies (D38).
 test-support = []
 
 [dependencies]
@@ -25,31 +26,31 @@ wiremock = { workspace = true }
 
 [[test]]
 name = "mock_registry"
-required-features = ["oci"]
+required-features = ["oci", "test-support"]
 
 [[test]]
 name = "registry_hosts"
-required-features = ["oci"]
+required-features = ["oci", "test-support"]
 
 [[test]]
 name = "hub_api"
-required-features = ["oci"]
+required-features = ["oci", "test-support"]
 
 [[test]]
 name = "gitlab_client"
-required-features = ["gitlab"]
+required-features = ["gitlab", "test-support"]
 
 [[test]]
 name = "live_gitlab"
-required-features = ["gitlab"]
+required-features = ["gitlab", "test-support"]
 
 [[test]]
 name = "oci_decide"
-required-features = ["oci"]
+required-features = ["oci", "test-support"]
 
 [[test]]
 name = "memo"
-required-features = ["oci", "gitlab"]
+required-features = ["oci", "gitlab", "test-support"]
 
 [[test]]
 name = "gitlab_hosts"
