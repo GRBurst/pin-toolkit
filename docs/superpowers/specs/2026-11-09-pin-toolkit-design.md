@@ -1,9 +1,11 @@
 # pin-toolkit — pin CI and Helm references to immutable ids
 
-Status: approved by owner 2026-11-10 (owner answers in [§13](#13-owner-answers-2026-11-09)). M4b-1 merged (0e2047b); next: M5a–c plan.
-All sizes, milestones and the decisions table are proposals until the owner approves.
+Status: approved by owner 2026-11-10; revised 2026-11-10 with four owner changes (O5–O8 in [§13](#13-owner-answers)):
+no compatibility layer, parser-based YAML discovery (spike S2 done: adopt with caveats, §6.9), real use
+(D1 dogfood) before Helm with a smaller config first, lazy feature-gated resolvers. M4b-1 merged (0e2047b); next: M5a–c plan.
 Date: 2026-11-09. Supersedes the "Helm chart pinning — separate tool" note in
-`2026-11-01-pin-ci-design.md`. That spec remains the contract for existing `pin-ci` behaviour.
+`2026-11-01-pin-ci-design.md`. That spec describes the `pin-ci` behaviour the restructure starts
+from; pin-toolkit promises no compatibility with it (D33).
 This document is self-contained. The research it is based on is not in git, so every fact that
 matters is restated here, with external sources cited.
 
@@ -37,6 +39,10 @@ GitLab itself recommends pinning components to a commit SHA: https://docs.gitlab
 - **plugins split by file format**: `gitlab-ci` and `helm` now, `github-actions` later;
 - one binary that runs every enabled plugin in **one pass**, with **one report** and **one exit code**.
 
+`pin-ci` has never been used in the real world, so pin-toolkit replaces it outright: no legacy mode,
+no frozen output (D33). What carries over is the product property: edits touch only the reference
+bytes, and a second run makes no edits.
+
 Each plugin also works as a standalone tool. The toolkit is open source on GitHub, its CI pushes
 builds to Cachix, and a Home Manager module installs and configures it.
 
@@ -44,7 +50,7 @@ builds to Cachix, and a Home Manager module installs and configures it.
 
 **Goals**
 - G1. Apply the pin rule (§3) to every target in §4 and report each reference: `pinned`, `ok`, `updated`, `skipped (reason)` or `unresolved (reason)`.
-- G2. Keep pin-ci's existing behaviour: the `pin-ci` legacy mode (§6.6) is byte-identical through the refactor.
+- G2. Keep pin-ci's capabilities (every kind, the pin rule, byte-exact idempotent edits) through the restructure. Output and CLI may change; every change shows up in a reviewed snapshot diff (§11). No compatibility layer (D33).
 - G3. Run in one pass: one file read, one write per file, a resolver cache shared across plugins, one merged report, one exit code.
 - G4. Each plugin works standalone (`pin-toolkit <plugin>`, `pin-<plugin>`) and as a Rust library.
 - G5. Make extension easy: a new file format means a new plugin crate plus one registration line. A new artifact source means a new core resolver.
@@ -72,12 +78,13 @@ builds to Cachix, and a Home Manager module installs and configures it.
 | Constraint | Source | Consequence |
 |---|---|---|
 | Rust for anything beyond thin glue. Edition 2024, one cargo workspace, tokio without `spawn` | owner | only Nix/CI glue outside Rust; no scripts in the run path |
-| Byte-exact, idempotent edits. Hand-rolled line scanners, no YAML parse-and-rewrite | pin-ci contract | core `Splice`/`LineIndex`; a second run makes 0 edits |
-| Existing pin-ci behaviour preserved: CLI, edits, human and JSON output, error texts, exit codes, partial writes, fail-loud auth, min-age default off, pin-only default | pin-ci contract (2026-11-01 spec, README) | `pin-ci` legacy mode (§6.6), M5 goldens, oracle kept |
+| Byte-exact, idempotent edits: byte splices on the original text, never parse-and-rewrite. Discovery may use a span-preserving parser (§6.9) | product property (hard invariant) | core `Splice`/`LineIndex`; a second run makes 0 edits; property tests (§11) |
+| No compatibility layer: the tool has no real-world users. Kept as product semantics: partial writes, fail-loud auth, min-age default off, pin-only default | owner (2026-11-10) | no legacy mode; R1/R2 fixed in M5c; snapshot tests instead of byte-identical goldens |
+| Resolvers are pin-core cargo features, each built lazily on first use; no extra crates | owner (2026-11-10) | `Ctx` is not a god object (§6.2) |
 | GitLab-centric first, easy to extend later | owner | gitlab-ci milestones come before helm; github-actions is designed for, built last |
 | Open source on GitHub; GitHub Actions builds releases and pushes to Cachix | owner | §8.3 |
 | Installable and customisable via a Home Manager module: plugin enable = in the build, settings = runtime | owner | §8.2, O1 |
-| Credentials only from env, docker/helm config files or a global host binding; never in repo files or the Nix store | pin-ci contract + §7.3 | `[hosts]` is global-only |
+| Credentials only from env, docker/helm config files or a global host binding; never in repo files or the Nix store | pin-ci contract + §7.3 | `[hosts]` is global-only; holds from the first config layer (M5d) |
 | Light dependencies: no Node, no runtime tools; static Linux binary | pin-ci contract | musl static build, container without extra tools |
 
 ## 3. The pin rule
@@ -102,7 +109,7 @@ GitLab API ref → commit. **IDX** = classic Helm repo `index.yaml`. **GH** = Gi
 | # | Kind | Location | Resolver | Output (human-readable kept) | Impossible / skipped | Milestone |
 |---|---|---|---|---|---|---|
 | C1 | `image` | top-level, `default:` and job `image:` (string or `name:`) | OCI | `alpine:3.20@sha256:<d>` (inline tag). Tagless `alpine` → `alpine@sha256:<d>` | value that does not parse as an image ref (e.g. `$VAR`) → `skipped (unparseable reference)` | exists (M1–M4b-1) |
-| C2 | `service` | `services:` items (string or `name:`) | OCI | same as C1 | same | exists. Reported as `image` until M5d adds the `service` kind tag in discover (not visible in legacy output) |
+| C2 | `service` | `services:` items (string or `name:`) | OCI | same as C1 | same | exists. Reported as `image` until M5d adds the `service` kind tag |
 | C3 | `component` | top-level `component:` line | GL | `gitlab.com/g/p/name@<sha40>  # 1.0.0` | catalog-managed (`~latest`, `1.0.x`, partial `1`/`1.0`) → skipped. Host ≠ configured host → skipped | exists |
 | C3b | `component` | `include:` items `- component: <host>/<path>@<ver>` (**GitLab's documented form**; pin-ci does **not** discover it today) | GL | same as C3. `$CI_SERVER_FQDN`/`$CI_SERVER_HOST` host maps to the configured GitLab host, and the variable text is kept | as C3 | G1 |
 | C4 | `include` | `include:` `{project, ref[, file]}`, block or flow, any key order | GL | `ref: <sha40>  # v1.2.3`. Flow: `{ …, ref: <sha40> }  # main` | bare `{project}` (default branch): no target. `$` ref → skipped. `local:`/`template:` have no external id | exists |
@@ -122,7 +129,7 @@ same value `helm pull` prints.
 | # | Kind | Location | Resolver | Output | Impossible / skipped | Milestone |
 |---|---|---|---|---|---|---|
 | H1 | `chart-dependency` | `Chart.yaml` (apiVersion v2) `dependencies[].version`, `requirements.yaml` (v1) | IDX for `https://` repos, OCI tag list for `oci://` (chart = `<repo>/<name>`) | `version: 1.2.7  # ~1.2`. An exact version that was written exactly stays unchanged (`ok`) | **no digest field** in Chart.yaml deps (feature request helm/helm#32133; verify its state). Editing makes `Chart.lock` stale: its `digest` is an aggregate hash over requirements, not per chart. Report follow-up `helm dependency update <dir>`. `file://`, empty repository, `git+` → skipped. `@alias`/`alias:` without a mapping → `skipped (unknown alias)`. Unparseable or empty version → skipped | M8b |
-| H2 | `values-image` | key matching `/image$/i` with a string value `repo:tag[@sha256:…]` (any depth, any document) | OCI | `image: "repo:1.2@sha256:<d>"`, same as C1 | value contains `{{` → skipped | M8a |
+| H2 | `values-image` | key matching `/image$/i` with a string value `repo:tag[@sha256:…]` (any depth, any document) | OCI | `image: "repo:1.2@sha256:<d>"`, same as C1 | value overlaps a masked `{{ }}` (§6.9) → `skipped (templated)` | M8a |
 | H3 | `values-image` | map `image: {registry?, repository, tag\|version, digest?}` | OCI | an existing `digest:` key is filled (`digest: sha256:<d>`) and the tag kept. **No `digest:` key → `tag: "1.2.3@sha256:<d>"` by default** (O2, owner); opt-out `plugins.helm.values.tag-digest = false` → `skipped (no digest key)` | empty `tag` (chart uses `appVersion`) → skipped. `sha:`/`imageDigest` variants → skipped (later). Whether the chart's templates honour `digest` cannot be known from values alone | M8a |
 | H4 | `helmfile-release` | `releases[]`/`templates{}` `{chart: repo/name\|oci://…, version}` + `repositories[]` (`oci: true` ⇒ OCI) | IDX / OCI | `version: 1.2.7  # ~1.2`. OCI opt-in (`helmfile.oci-digest`): `version: 1.2.7@sha256:<d>` | local charts, `{{ }}` values → skipped. Writing `helmfile.lock` → no, report follow-up `helmfile deps`. OCI digest needs a helmfile release that contains PR #2398 (merged 2026-02-12) | M8c |
 | H5 | — | `Chart.lock`, `helmfile.lock`, index `digest` of a `.tgz` | — | never written | Helm reads no chart-content digest from Chart.yaml or helmfile | — |
@@ -178,12 +185,13 @@ shares. Trimming saves only KBs.
 
 ```
 Cargo.toml                 [workspace] members = ["crates/*"], resolver = "3"; [workspace.package] version, edition = "2024"
-crates/pin-core/           lib: oci/{image_ref,registry}, gitlab, helmrepo (M8), github (M9), ver/{docker,semver,age},
-                           text (LineIndex), edit, yaml (M8a), report, plugin, run, config, cli (clap Args, feature "cli")
-crates/pin-gitlab-ci/      lib: discover.rs (moved verbatim), policy, `GitlabCi: Plugin`, compat `pin_files(…, &PinOptions, …)`
-crates/pin-helm/           lib (M8)          crates/pin-github-actions/   lib (M9)
+crates/pin-core/           lib: oci/{image_ref, registry [oci]}, gitlab [gitlab], helmrepo [helm-repo] (M8b), github [github] (M9),
+                           ver/{docker,semver,age}, text (LineIndex), edit, yaml (§6.9), report, plugin, run, config,
+                           cli (clap Args, feature "cli").  [x] = resolver cargo feature (D36); default features = none
+crates/pin-gitlab-ci/      lib: discover (on core::yaml from M5c-y), policy, `GitlabCi: Plugin`; pin-core features oci + gitlab
+crates/pin-helm/           lib (M8): oci + helm-repo        crates/pin-github-actions/   lib (M9): oci + github
 crates/pin-toolkit/        bin `pin-toolkit`; features gitlab-ci, helm, github-actions (default = all); argv[0] dispatch
-pin-ci-images.sh extract-docker-pins.py config.js   repo root, unmodified (oracle)
+pin-ci-images.sh extract-docker-pins.py config.js   repo root, unmodified (oracle, kept while useful)
 flake.nix nix/             M6
 ```
 
@@ -197,16 +205,17 @@ shared through `Ctx` anyway.
 
 ```rust
 // pin-core::text / edit — byte-exact edits
-pub struct LineIndex { /* line starts via split_inclusive('\n'); line_end() excludes "\r\n" (F2) */ }
+pub struct LineIndex { /* line starts via split_inclusive('\n'); line_end() excludes "\r\n" (fixes R2) */ }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Splice { pub start: usize, pub end: usize, pub text: String }   // start == end ⇒ insertion
-pub fn apply(text: &str, s: &[Splice]) -> String;  // end-first, stable on equal start (R1 kept until F1)
+pub fn apply(text: &str, s: &[Splice]) -> String;  // end-first; equal-start insertions keep source order
+pub fn coalesce_comments(s: Vec<Splice>) -> Vec<Splice>; // same-offset "  # a" + "  # b" → "  # a, b" (fixes R1)
 pub fn requote(old_token: &str, new_value: &str) -> String;                 // today's splice_replace
 pub fn trailing_comment(text: &str, line: usize, token_end: usize, orig: &str) -> Option<Splice>; // None if '#' already after token
 // later: existing_comment(..) (M4b-2/M9), insert_line_after(..) (only if a digest-key insertion mode is ever added)
 
 // pin-core::plugin
-pub struct KindSpec { pub id: &'static str, pub default_on: bool, pub legacy: bool, pub help: &'static str }
+pub struct KindSpec { pub id: &'static str, pub default_on: bool, pub help: &'static str }
 pub struct Finding {                       // one reference, resolved
     pub line: usize,                       // 0-based; sort key
     pub kind: &'static str,
@@ -228,13 +237,21 @@ impl<P: Plugin> DynPlugin for P { /* scan → bounded join of resolve, as today'
 
 // pin-core::run
 pub struct UpdatePolicy { pub enabled: bool, pub allow_major: bool, pub min_age_days: u32, pub unknown_age: AgePolicy }
-pub struct Ctx { pub registry: RegistryClient, pub gitlab: GitLabHosts, pub helm_repos: HelmRepoClient /*M8*/,
-                 pub github: GitHubClient /*M9*/, pub update: UpdatePolicy, pub now_unix: i64, memo: Memo }
+pub struct Ctx {                           // small: policy + memo + lazily built resolvers (D36)
+    pub update: UpdatePolicy, pub now_unix: i64,
+    env: ResolverEnv,                      // tokens, host bindings, CA files: read once from env (+ global [hosts] from M5e')
+    memo: Memo,
+    #[cfg(feature = "oci")]       oci: OnceCell<Result<RegistryClient, String>>,
+    #[cfg(feature = "gitlab")]    gitlab: OnceCell<Result<GitLabHosts, String>>,
+    #[cfg(feature = "helm-repo")] helm_repos: OnceCell<Result<HelmRepoClient, String>>,   // M8b
+    #[cfg(feature = "github")]    github: OnceCell<Result<GitHubClient, String>>,        // M9
+}
+impl Ctx { #[cfg(feature = "oci")] pub fn oci(&self) -> Result<&RegistryClient, &str>; /* gitlab(), helm_repos(), github() alike */ }
 pub struct RunOptions { pub dry_run: bool, pub check: bool, pub concurrency: usize }
 pub async fn pin_file(p: &dyn DynPlugin, ctx: &Ctx, path: &Path, on: &KindSet, o: &RunOptions) -> Result<Vec<Row>, FileError>;
 pub async fn run(routes: &[Route], ctx: &Ctx, o: &RunOptions) -> Report;
 
-// pin-core::oci — today's resolve_image policy, minus the tokens
+// pin-core::oci [feature oci] — today's resolve_image policy, minus the tokens
 pub enum ImageDecision { Current, Pin { digest: String }, Update { tag: String, digest: String }, Skip(String) }
 pub async fn decide_image(ctx: &Ctx, r: &ImageRef) -> Result<ImageDecision, String>; // Err = today's exact unresolved text
 pub async fn pin_inline_image(ctx: &Ctx, text: &str, line: usize, start: usize, end: usize, value: &str) -> Finding;
@@ -247,13 +264,14 @@ pub struct Row { plugin, kind, file, line /*1-based*/, reference, old, new, stat
 
 Rules:
 - **One file = one plugin.** An explicit subcommand routes the file. Otherwise the file must match exactly one enabled plugin's globs. Zero or several matches on an explicit path is exit 2 with a hint. On a directory walk, files nobody claims are ignored.
-- Within one file, the core rejects overlapping splices: both findings become `unresolved (internal: overlapping edits)`. Same-offset insertions are allowed (R1).
+- Within one file, the core rejects overlapping splices: both findings become `unresolved (internal: overlapping edits)`. Same-offset comment insertions coalesce into one comment (R1 fix).
 - Partial writes stay as today: an `unresolved` row does not block the other splices in the same file.
-- Error texts move byte-identical. Digest errors report the inner message. Tag-list errors read `tag list: {e}`. GitLab errors use `e.to_string()`.
+- Error texts carry over as the starting point: digest errors report the inner message, tag-list errors read `tag list: {e}`, GitLab errors use `e.to_string()`. Any change shows in a snapshot diff.
+- **Lazy, feature-gated resolvers (D36).** Each resolver is a pin-core cargo feature; its HTTP deps are optional behind it. A client is built on first use (`std::cell::OnceCell` suffices: futures are joined, never spawned), so a run without helm targets never builds `HelmRepoClient`. A construction error (e.g. unreadable CA file) is cached and makes every reference that needs it `unresolved (<error>)`, exit 1. Config errors stay eager (exit 2). Plugin crates enable only the features they need; no extra crates.
 
 ### 6.3 One-pass run
 
-1. Load the layered config (§7) and build `Ctx`: clients from env and global host bindings, an empty memo, `now`.
+1. Load the config (§7) and build `Ctx`: env and host bindings, an empty memo, `now`. No resolver client is built yet (§6.2).
 2. Inputs: explicit files and directories, or the git root (falling back to cwd). Walk with `.gitignore` respected (the `ignore` crate), match each enabled plugin's `files` globs, sort paths.
 3. Per file, sequentially as today: read once. Run `plan` (scan → resolve, with at most `--concurrency` in flight). Stable-sort by line. Check for overlaps. Unless `--dry-run`/`--check`, apply the edits and write only if there is at least one splice.
 4. Merge rows, per-plugin summaries, follow-ups and per-file errors into one `Report`. Render it and exit (§6.5).
@@ -262,7 +280,8 @@ A file that fails to read or write is recorded under `plugins.<id>.errors`. The 
 
 ### 6.4 Merged report
 
-Toolkit JSON is **additive** over pin-ci's `{results[], summary}`, and the status strings are unchanged:
+Toolkit JSON keeps pin-ci's `{results[], summary}` shape and status strings and adds fields. That is
+continuity of design, not a compatibility promise (D33); the schema is stable from the first release:
 
 ```json
 { "schema_version": 1,
@@ -276,24 +295,24 @@ Toolkit JSON is **additive** over pin-ci's `{results[], summary}`, and the statu
 Human output: the pin-ci line format (`file:line  status  old -> new  # reference`), with
 `plugin:kind` added after `file:line`, then the pin-ci summary line. When more than one plugin ran,
 one summary line per plugin follows, then `follow-up: …` lines. A disabled kind produces **no row**:
-disabling it was an explicit choice, and `config show` reports it.
+disabling it was an explicit choice, and `config show` (M5e') reports it.
 
 ### 6.5 Exit codes
 
-| Code | `pin-toolkit` | `pin-ci` legacy (unchanged) |
-|---|---|---|
-| 0 | no `unresolved`, no error. With `--check`: also nothing would change | no `unresolved`, no IO error |
-| 1 | any `unresolved`. With `--check`: also any row that would be `pinned`/`updated` | any `unresolved` **or** IO error |
-| 2 | fatal: usage or config error, a global-only key in the repo config, IO error, a plugin that is enabled but not compiled in, an explicit path claimed by 0 or 2+ plugins | (clap usage errors only, as today) |
+| Code | `pin-toolkit` (and every alias) |
+|---|---|
+| 0 | no `unresolved`, no error. With `--check`: also nothing would change |
+| 1 | any `unresolved`. With `--check`: also any row that would be `pinned`/`updated` |
+| 2 | fatal: usage or config error, a global-only key in the repo config, IO or YAML parse error in a file (§6.9), a plugin that is enabled but not compiled in, an explicit path claimed by 0 or 2+ plugins |
 
 `--check` = `--dry-run` plus the exit-1 rule above. Its intended use is a CI gate. From M4b-2 it
 also verifies that a `# <ref>` comment still resolves to the pinned SHA, like pinact's verify.
 
 ### 6.6 Front-ends
 
-- `pin-toolkit [OPTIONS] [PATHS]…` runs all enabled plugins. `pin-toolkit <plugin> …` runs one plugin, as does the argv[0] alias `pin-<plugin>`. Also `pin-toolkit config show [--origin]` and `pin-toolkit plugins` (lists compiled-in plugins, kinds, effective enable state).
+- `pin-toolkit [OPTIONS] [PATHS]…` runs all enabled plugins. `pin-toolkit <plugin> …` runs one plugin, as does the argv[0] alias `pin-<plugin>`. Also `pin-toolkit plugins` (lists compiled-in plugins, kinds, effective enable state) and, from M5e', `pin-toolkit config show [--origin]`.
 - Options: `--dry-run --check --json --update --update-major --min-age-days N --concurrency N --only/--skip <p,…> --kind <p>:<k>=on|off --config FILE --no-config --gitlab-host H`.
-- **`pin-ci` legacy mode** (argv[0] `pin-ci`) keeps the frozen pin-ci CLI: default file `ci/.gitlab-ci.yml`, the same flags, the gitlab-ci kinds where `legacy = true` (image, service, component, include; `helm-oci` off), **no config files read**, legacy human and JSON output without the new fields, legacy exit codes. Its lifetime is the owner's call, like the oracle.
+- **No `pin-ci` legacy mode** (D33). M5d deletes the crate's `[[bin]] pin-ci`. `pin-ci` may remain only as a plain argv[0] alias of `pin-toolkit gitlab-ci` (toolkit flags, config, output and exit codes) if it costs no more than one dispatch entry and one symlink; otherwise it is dropped. The README says which.
 
 ### 6.7 Resolver cache
 
@@ -312,6 +331,39 @@ annotation, GitLab tag dates (M4b-2), GitHub (M9). When the age is unknown, `rel
 "allow"` is the default. That matches today's documented no-op for non-docker.io hosts, and
 `"block"` is the alternative. The default stays 0 (off) and 14 is documented as the recommended value.
 
+### 6.9 YAML discovery (D32)
+
+Discovery (finding targets and their byte spans) uses the span-preserving event parser
+`saphyr-parser` 0.3.x (MIT OR Apache-2.0, MSRV 1.85, +2 crates: saphyr-parser, arraydeque). Edits
+stay byte splices on those spans (§6.2); the parser never writes. Spike S2 (2026-11-10) reproduced
+all 37 `discover()` targets of `tests/fixtures/*.yml` and `ci/.gitlab-ci.yml` at identical bytes,
+given the fix-ups below. Rejected: `yaml-rust2`, `marked-yaml` (start marker only, no end).
+
+`core::yaml` = parser + a ~40-line hand-rolled fix-up layer:
+
+| Parser fact (S2, saphyr-parser 0.3.3) | `core::yaml` handling |
+|---|---|
+| `Marker::index()` counts **chars**; a BOM counts as char 0; `col()` on line 1 excludes the BOM; `ScanError` says "byte N" but N is a char index | one char→byte table per file (`char_indices` + `len`); use `index()` only, never `col()` |
+| quoted-scalar span end overshoots into trailing spaces and `# comment` (in flow also a space before `]`/`,`). Upstream bug in `scan_flow_scalar`; the start is correct | re-scan from the start to the closing quote (skip `''` and `\x` escapes) |
+| scalar spans include node properties `&anchor `, `!tag ` | skip the properties |
+| no comments in events; anchor names absent (numeric ids); merge keys `<<:` not expanded | trailing-comment detection stays hand-rolled (`edit::trailing_comment`). Aliases (`Event::Alias`), merge keys and `!reference […]` are **not targets**: the bytes live at the definition |
+| after the first `ScanError` the iterator repeats it (sticky); unquoted `{{ … }}` mis-parses as flow mappings **without** an error | templated files (helm values, `.gotmpl`): mask every `{{…}}` with equal-length spaces before parsing (offsets unchanged); a scalar overlapping a mask is `skipped (templated)` |
+| block scalars (`\|`, `>`) span the content only, header excluded | never spliced: `skipped (block scalar)` at a target path |
+| CRLF: `\r` is one char, excluded from spans; multi-document spans are file-global | none |
+
+Shape (S2 proposal): `scan(text, ScanOpts { mask_templates }) -> Result<Vec<Node>, YamlError>`,
+`Node::{Scalar(ScalarRef), Alias { path, id, span }, Tagged { path, tag }}`,
+`ScalarRef { path, doc, span /* byte range incl. quotes */, style, value /* decoded */, anchor, templated }`.
+Plugins match path patterns over `Vec<Node>` (`image`, `services[*].name`, `include[*].ref`,
+`dependencies[*].version`, `**.image.{repository,tag,digest}`), so `scan` stays pure.
+
+A file that does not parse (after masking) is a per-file error under `plugins.<id>.errors` (exit 2)
+with the line from `YamlError`: no partial targets, no second hand-rolled discoverer (my call;
+revisit in D1 dogfood). Hand-rolled code stays only for the fix-ups, template masking, trailing-comment
+detection, `requote` and the C5 shell tokenizer. Behaviour change versus `discover.rs` (a bug it
+fixes, reviewed as a snapshot diff): `image: &img "ubuntu:24.04"` no longer yields a value containing
+`&img`, and `image: *img` is no longer a target.
+
 ## 7. Configuration
 
 ### 7.1 Layers and precedence
@@ -321,6 +373,11 @@ annotation, GitLab tag dates (M4b-2), GitHub (M9). When the age is unknown, `rel
 Format is TOML. A `version = 1` key is required. Unknown keys are errors, which catches typos.
 Merge rules: tables deep-merge, scalars take the higher layer, `files` lists are **replaced** by the
 higher layer, `ignore` lists **concatenate**. `--no-config` skips the global and repo files.
+
+Smaller config first (D35): M5d implements `defaults < repo < env < CLI` with the full repo schema
+below; M5e' inserts the global layer, `[hosts]` and `config show --origin`. The security rule (§7.3)
+holds from M5d: a global-only key in a repo file is exit 2, and without a global layer tokens come
+from env only, to the primary host (D31).
 
 ```toml
 version = 1
@@ -387,10 +444,10 @@ ca-file = "/etc/ssl/certs/corp-ca.pem"  # private CA (F3; §8.4)
 
 ### 8.1 Flake (crane)
 
-- Outputs: `packages.<sys>.{default, pin-toolkit}`. On Linux also `pin-toolkit-static` (musl, `+crt-static`) and `container`. Plus `checks` (clippy `-D warnings`, nextest, fmt, cargo-deny, and one build per single-plugin feature set), `overlays.default`, `homeManagerModules.default` with the alias `homeModules.default`, and `devShells.default`.
+- Outputs: `packages.<sys>.{default, pin-toolkit}`. On Linux also `pin-toolkit-static` (musl, `+crt-static`) and `container`. Plus `checks` (clippy `-D warnings`, nextest, fmt, cargo-deny, one build per single-plugin feature set, and pin-core with no and with each single resolver feature), `overlays.default`, `homeManagerModules.default` with the alias `homeModules.default`, and `devShells.default`.
 - Systems: `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`.
 - Use crane, not `buildRustPackage`: `buildDepsOnly` caches dependencies across build, clippy and test, and crane documents a static-musl example. Sources: https://github.com/ipetkov/crane (v0.24.0) and its `examples/cross-musl`.
-- `nix/package.nix` goes through `callPackage` with the argument `plugins ? allPlugins`. `allPlugins` is read from `crates/pin-toolkit/Cargo.toml` `[features]` via `importTOML`, so Cargo is the single source of truth. That gives `--no-default-features --features ${plugins}`, `postInstall` symlinks `pin-<p>` (plus `pin-ci` when `gitlab-ci` is included), `passthru.plugins`, and `meta.mainProgram = "pin-toolkit"`.
+- `nix/package.nix` goes through `callPackage` with the argument `plugins ? allPlugins`. `allPlugins` is read from `crates/pin-toolkit/Cargo.toml` `[features]` via `importTOML`, so Cargo is the single source of truth. That gives `--no-default-features --features ${plugins}`, `postInstall` symlinks `pin-<p>` (plus `pin-ci` when `gitlab-ci` is included and the alias is kept, §6.6), `passthru.plugins`, and `meta.mainProgram = "pin-toolkit"`.
 - Selecting plugins: `pin-toolkit.packages.${system}.default.override { plugins = [ "gitlab-ci" ]; }`. This is a different store path, so Cachix misses and it builds locally.
 - Tests in the sandbox: no network, and live/oracle tests stay env-gated. wiremock binds to loopback, so darwin needs `__darwinAllowLocalNetworking = true`.
 - Consumers must not set `inputs.pin-toolkit.inputs.nixpkgs.follows`, because that changes the store path and loses the Cachix hit. Document this.
@@ -468,31 +525,35 @@ uses bundled roots only and ignores `SSL_CERT_FILE`.
 
 ## 9. Migration of this repo
 
-Order: **finish M4b-1 first**. Its T2 rewrites `resolve_image` and touches all 26 `PinOptions {…}`
-test literals, which is exactly the code the extraction moves. Recommendation for T2: add
-`impl Default for PinOptions` so the literals become `..Default::default()`, which shrinks the M5 churn.
+M4b-1 is merged (0e2047b), including `impl Default for PinOptions`. There is no compatibility layer
+(D33): the safety net is snapshot review plus the byte-exact and idempotence properties (§11), not
+frozen output. Rows are in execution order.
 
 | Step | What | Safety net |
 |---|---|---|
-| M5a | Characterisation goldens: a lib-level test runs every e2e fixture and compares `render_human()` and `to_json()` against committed strings. Use cases whose reasons contain no mock-port URLs; the binary cannot target wiremock. Add tests that **pin today's behaviour of R1 and R2**, marked `KNOWN BUG`. Tag `pin-ci-v0.1-final` | baseline |
-| M5b | `git mv src tests` → `crates/pin-gitlab-ci/`. The package is still named `pin-ci`. Root workspace manifest, root `Cargo.lock`. Oracle path: `oracle.rs:21` `REPO = env!("CARGO_MANIFEST_DIR")` → `concat!(env!("CARGO_MANIFEST_DIR"), "/../..")` | all tests green, unchanged |
-| M5c | Split out `pin-core`. First `git mv` image_ref, registry, gitlab, versioning and report verbatim, in move-only commits. Then add `Status`, `Splice`/`Finding`/`Ctx`, `decide_image`/`pin_inline_image`, `Plugin` + `run::pin_file`. lib.rs becomes `GitlabCi`; the compat `pin_files(paths, &PinOptions, &reg, &gitlab)` stays. Rename the package to `pin-gitlab-ci`. `is_sha` dedups into `gitlab::is_commit_sha`. `discover.rs` moves verbatim (its YAML primitives move to `core::yaml` only in M8a). `main.rs` stays as the crate's `[[bin]] pin-ci`. Tests: mock_registry, registry_hosts, hub_api, gitlab_client and live_gitlab move to `pin-core`; e2e, e2e_components, live, oracle and fixtures stay in `pin-gitlab-ci`. Relative `.tmp` paths resolve per package and are still covered by the root `.gitignore` | goldens, e2e, oracle unchanged except `use` lines |
-| M5d | `pin-toolkit` bin: routing, walk, subcommands, argv[0] aliases incl. `pin-ci` legacy (then delete the crate's `[[bin]] pin-ci`), `service` kind tag, merged report, exit codes, `--check`, memo | legacy-mode goldens = M5a goldens. A/B script: old vs new binary `--dry-run --json` on real CI files (live) |
-| M5e | Config layers, `[hosts]` binding, `config show --origin` | precedence table tests |
-| M5f | Docs: README → toolkit README plus per-plugin sections (fix R5 drift), a pointer from the old spec, LICENSE (O4), push to GitHub with full history (O3) | — |
+| S2 | YAML discovery spike: **done** 2026-11-10, adopt with caveats (§6.9) | — |
+| M5a | Snapshot tests: a lib-level test runs every e2e fixture and snapshots `render_human()`, `to_json()` and the edited file contents (the builder may pick `insta`); mock-port URLs in reasons are redacted. Add the byte-exact and idempotence property tests over all fixtures. Add fixtures for R1, R2 (CRLF) and anchors/aliases; their first snapshots record today's wrong output. Plain tag `pre-pin-toolkit` (a reference point, not a compatibility baseline) | baseline |
+| M5b | `git mv src tests` → `crates/pin-gitlab-ci/`. The package is still named `pin-ci`. Root workspace manifest, root `Cargo.lock`. Oracle path: `oracle.rs:21` `REPO = env!("CARGO_MANIFEST_DIR")` → `concat!(env!("CARGO_MANIFEST_DIR"), "/../..")` | all tests green, snapshots unchanged |
+| M5c | Split out `pin-core`. First `git mv` image_ref, registry, gitlab, versioning and report verbatim, in move-only commits. Then add `Status`, `Splice`/`Finding`, the lazy feature-gated `Ctx` (§6.2, D36), `decide_image`/`pin_inline_image`, `Plugin` + `run::pin_file`. lib.rs becomes `GitlabCi`; today's `pin_files(paths, &PinOptions, &reg, &gitlab)` may survive as a test helper until M5d, not as API. Rename the package to `pin-gitlab-ci`. `is_sha` dedups into `gitlab::is_commit_sha`. `discover.rs` moves verbatim. Fix R1 (`coalesce_comments`) and R2 (one shared `LineIndex`), one commit each. `main.rs` stays as the crate's `[[bin]] pin-ci` until M5d. Tests: mock_registry, registry_hosts, hub_api, gitlab_client and live_gitlab move to `pin-core`; e2e, e2e_components, live, oracle and fixtures stay in `pin-gitlab-ci`. Relative `.tmp` paths resolve per package and are still covered by the root `.gitignore` | snapshots unchanged except the reviewed R1/R2 diffs; properties green |
+| M5c-y | Own step right after M5c (keeps M5c manageable): `core::yaml` = saphyr-parser + fix-ups (§6.9); gitlab-ci discovery becomes path matching over `Vec<Node>`; the `discover.rs` YAML primitives are deleted. Fixes the anchor/alias bug | discovery-parity test (§11); snapshots unchanged except the reviewed anchor/alias diff |
+| M5d | Minimal `pin-toolkit` binary, replaces `pin-ci`: walk, routing, `pin-toolkit gitlab-ci` and `pin-<plugin>` aliases (optional `pin-ci` alias, §6.6), `service` kind tag, combined report, exit codes 0/1/2, `--check`, memo. Config: repo `.pin-toolkit.toml` + env + CLI only (§7.1, D35). Delete the crate's `[[bin]] pin-ci` | toolkit snapshots (human + JSON) over the M5a fixtures, diffs reviewed; exit-code table tests; repo `[hosts]` → exit 2 |
+| M5f | Docs: README → toolkit README plus per-plugin sections (fix R5 drift; states the `pin-ci` alias decision), a pointer from the old spec, LICENSE (O4), push to GitHub with full history (O3) | — |
+| M5e' | Global config layer (`~/.config/pin-toolkit/config.toml`, written by the HM module), `[hosts]` bindings (D31), `config show --origin`. Right before M6, whose HM module needs it | precedence table tests; token-binding tests (§7.3) |
 
-**Kept:** the oracle files at the root, unmodified. `PIN_CI_LIVE` and `PIN_CI_ORACLE` keep their names.
-Commands become `cargo test -p pin-gitlab-ci --test oracle`. Retiring the oracle is still the owner's call.
+**Oracle, while useful:** the root files stay unmodified and `tests/oracle.rs` is adapted to the new
+crate API. `PIN_CI_LIVE` and `PIN_CI_ORACLE` keep their names; the command becomes
+`cargo test -p pin-gitlab-ci --test oracle`. Retiring the oracle is the owner's call.
 
-**Latent bugs: preserve during the refactor, fix separately.** Each fix is its own commit that
-flips its `KNOWN BUG` test and gets a README note.
+**Latent bugs: fixed during the restructure (M5c), not preserved.** Each fix is its own commit that
+deliberately updates its snapshot and gets a README note.
 
 | ID | Issue (found by reading the code, not executed) | Handling |
 |---|---|---|
-| R1 | `apply_splices` sorts by `Reverse(start)` stably, so two insertions at the same offset come out in **reverse** input order. `include: [{project: a, ref: main}, {project: b, ref: dev}]` becomes `…]  # dev  # main`, with two comments and in reverse order | F1: one combined comment per line, refs in source order: `  # main, dev` (my call) |
-| R2 | `comment_insert_offset` computes line starts with `text.lines()` and `len()+1`. `lines()` strips `\r\n`, so offsets drift by one per earlier CRLF line, while `discover` uses `split_inclusive('\n')` | F2: one shared `LineIndex`, comment inserted before `\r\n` |
+| R1 | `apply_splices` sorts by `Reverse(start)` stably, so two insertions at the same offset come out in **reverse** input order. `include: [{project: a, ref: main}, {project: b, ref: dev}]` becomes `…]  # dev  # main`, with two comments and in reverse order | M5c: one combined comment per line, refs in source order: `  # main, dev` |
+| R2 | `comment_insert_offset` computes line starts with `text.lines()` and `len()+1`. `lines()` strips `\r\n`, so offsets drift by one per earlier CRLF line, while `discover` uses `split_inclusive('\n')` | M5c: one shared `LineIndex`, comment inserted before `\r\n` |
 | R3 | (not a bug) partial-write semantics and one semaphore per file shared by registry and GitLab calls | keep in `run` |
-| R6 | new kinds (`helm-oci`, C3b) change output for existing CI files | legacy mode: `helm-oci` off. C3b counts as the `component` kind (it fixes a coverage gap) and applies to legacy mode from G1, with a README note |
+| R6 | new kinds (`helm-oci`, C3b) change output for existing CI files | intended; README note per kind; per-kind toggles (`kinds`) in config. C3b counts as the `component` kind |
+| R7 | `discover()` keeps `&img` in an anchored value and treats the alias `*img` as a target (found by S2) | M5c-y: fixed by parser discovery (§6.9) |
 
 ## 10. Milestones
 
@@ -500,34 +561,43 @@ S ≈ 1–2 tasks, M ≈ 3–4, L ≈ 5+. Each milestone gets its own plan in `d
 
 | # | Milestone | Size | Behaviour change |
 |---|---|---|---|
-| M4b-1 | finish: T1 commit, T2 guard + flag (+ `Default`), T3 oracle + README, merge | M | planned feature |
-| M5a–c | goldens → workspace move → core split (§9) | S + S + L | none (byte-identical) |
-| M5d–e | toolkit binary, config | M + M | new binary only |
+| M4b-1 | done (0e2047b): release-age guard, `Default` for `PinOptions`, oracle + README | M | planned feature |
+| S2 | YAML discovery spike (done, §6.9) | S | none |
+| M5a–c | snapshots → workspace move → core split + lazy resolvers + R1/R2 fixes (§9) | S + S + L | R1/R2 fixed (reviewed snapshot diffs) |
+| M5c-y | gitlab-ci discovery on `core::yaml` (saphyr-parser + fix-ups) | M | R7 fixed (reviewed snapshot diff) |
+| M5d | minimal `pin-toolkit` binary (replaces `pin-ci`); repo config + env + CLI | M | new binary; `pin-ci` gone or a plain alias |
 | M5f | docs, license, GitHub publish | S | none |
-| M6 | flake + crane + checks + HM module (M), GitHub Actions + Cachix (S), releases + container (M) | L | none |
-| F1, F2, F3 | R1 combined comment. R2 CRLF. `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` + native TLS roots | S each | yes, documented |
+| M5e' | global config (HM-written), `[hosts]`, `config show --origin` | M | new config layer |
+| M6 | flake + crane + checks + HM module (M), GitHub Actions + Cachix (S), releases + container (M). Human prerequisites (O3): GitHub repo, Cachix cache + `CACHIX_AUTH_TOKEN`, GHCR push rights | L | none |
+| D1 dogfood | the owner runs pin-toolkit on his real repos (locally via HM, in CI via the container). Each fix from real use is its own commit with reviewed snapshots. (Milestone label by the owner; not decision D1) | open (owner-driven) | yes, from real use |
 | G1 | gitlab-ci C3b: `include: - component:` + `$CI_SERVER_FQDN` alias | M | yes (new targets) |
+| F3 | `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` + native TLS roots | S | yes, documented |
 | M4b-2 | component/include `--update` (GitLab tags list, `order_by=version`), comment-aware re-pin (`existing_comment`), verify in `--check`, GitLab tag dates for release age | M | yes |
 | M7 | gitlab-ci `helm-oci` (C5): script-line shell tokenizer, OCI chart resolver (`+`→`_`, Accept, helm config mediaType check) | M | new kind |
-| M8a | helm plugin skeleton + values images (H2, H3 digest-key form, O2) + `core::yaml` key-path walker (lifts the discover.rs primitives) | M–L | new plugin |
-| M8b | Chart.yaml/requirements deps (H1): `HelmRepoClient` (index.yaml, gzip, per-run cache, relative `urls`), OCI chart tags, `ver::semver` constraints, follow-ups | L | new kind |
-| M8c | helmfile (H4) | M | new kind |
-| M9 | github-actions plugin (A1–A3), `GitHubClient` | M | new plugin |
+| M8a | helm plugin skeleton + values images (H2, H3 digest-key form, O2) on `core::yaml` with template masking (§6.9) | M–L | new plugin |
+| M8b | Chart.yaml/requirements deps (H1): `HelmRepoClient` (pin-core feature `helm-repo`; index.yaml, gzip, per-run cache, relative `urls`), OCI chart tags, `ver::semver` constraints, follow-ups | L | new kind |
+| M8c | helmfile (H4), incl. `.gotmpl` via masking | M | new kind |
+| M9 | github-actions plugin (A1–A3), `GitHubClient` (pin-core feature `github`) | M | new plugin |
 | later | C6 classic `helm … repo/chart`, `sha:` value keys, template scan for `tag-digest`, `--refresh-lock` (shells out to `helm dependency update`), `include:integrity` | — | — |
 
-Order: M4b-1 → M5a…f → M6 → F1–F3 → G1 → M4b-2 → M7 → M8a → M8b → M8c → M9. GitLab comes first
-(owner decision), and distribution follows directly after the refactor.
+Order (D34): M4b-1 ✓ → S2 ✓ → M5a → M5b → M5c → M5c-y → M5d → M5f → M5e' → M6 → **D1 dogfood** → G1 → F3 →
+M4b-2 → M7 → M8a → M8b → M8c → M9. Real use comes before Helm (owner, 2026-11-10): what dogfooding finds
+shapes the core before the helm plugin builds on it. GitLab first (owner); distribution right after
+the minimal binary, so dogfooding uses the real install path. M5f precedes M5e' because M6 needs the
+GitHub repo, and M5e' precedes M6 because the HM module writes the global config.
 
 ## 11. Verification (per milestone gate)
 
 | Property | Check |
 |---|---|
-| Byte-exact | ∀ fixture f: the bytes outside `⋃ edits` are identical before and after (a property test over all fixtures and plugins) |
-| Idempotent | ∀ f: a second run has 0 edits and every row is `ok`/`skipped` (wiremock) |
-| Refactor-neutral | M5 goldens and legacy-mode output unchanged. Oracle (`PIN_CI_ORACLE=1`) green. A/B on real files equal |
+| Byte-exact (hard invariant) | ∀ fixture f: the bytes outside `⋃ edits` are identical before and after (a property test over all fixtures and plugins): edits touch only the reference bytes |
+| Idempotent (hard invariant) | ∀ f: a second run has 0 edits and every row is `ok`/`skipped` (wiremock) |
+| Snapshot review | Snapshots of the human report, JSON report and edited files (M5a; toolkit output from M5d) fail on any output change. A change is accepted only by deliberately updating the snapshot, and the commit names it as intended. Oracle (`PIN_CI_ORACLE=1`) green while it is kept |
+| Discovery parity (M5c-y) | ∀ fixture: parser discovery yields the `discover.rs` targets except the documented R7 cases, and ∀ target `text[span]` equals the token incl. quotes. Fixtures cover non-ASCII before a target, BOM, CRLF, quoted value + `# comment`, `&anchor`/`!tag`, aliases, `<<:`, multi-document, masked `{{ }}` |
+| Lazy resolvers | a run whose files have no target of a kind constructs no client of that kind (construction counter in a test). pin-core builds with no resolver feature and with each one alone (flake checks) |
 | Plugin isolation | `scan` is pure: unit tests with no network. Every single-plugin feature build compiles (flake checks) |
-| Fail loud | Every auth, network or alias failure yields `unresolved` and exit 1. A global-only key in the repo config yields exit 2 |
-| Planted violations | Each new check is first seen red: flip a byte outside a span, break the R1/R2 fixtures, put `[hosts]` in a repo file |
+| Fail loud | Every auth, network, alias or resolver-construction failure yields `unresolved` and exit 1. A YAML parse error or a global-only key in the repo config yields exit 2 (from M5d) |
+| Planted violations | Each new check is first seen red: flip a byte outside a span; revert the R1/R2 fix (its snapshot fails); use `Marker::index()` as a byte offset, or drop the quoted-span re-scan (parity fails); build a resolver eagerly (lazy test fails); put `[hosts]` in a repo file |
 
 ## 12. Decisions
 
@@ -544,10 +614,10 @@ Order: M4b-1 → M5a…f → M6 → F1–F3 → G1 → M4b-2 → M7 → M8a → 
 | D9 | One multi-call binary plus cargo features per plugin (default all) | my call | shared cache and one artifact; features enable the "not installed" override cheaply |
 | D10 | Plugin = pure `scan` + async `resolve` that owns policy. Core owns resolvers, cache, edits, run, report. No core `Reference` enum | my call | policy is format-specific; a pure scan keeps a WASM path open |
 | D11 | One file = one plugin. Overlapping splices → unresolved | my call | no conflict resolution needed |
-| D12 | Crates `pin-core`, `pin-gitlab-ci`, `pin-helm`, `pin-github-actions`, `pin-toolkit`. Aliases `pin-<plugin>`. `pin-ci` legacy mode frozen | my call | short names; continuity |
-| D13 | Exit codes 0/1/2 for the toolkit. Legacy keeps 0/1 | my call | the new binary carries no compatibility debt |
+| D12 | Crates `pin-core`, `pin-gitlab-ci`, `pin-helm`, `pin-github-actions`, `pin-toolkit`. Aliases `pin-<plugin>`. **Changed:** no `pin-ci` legacy mode; `pin-ci` at most a plain alias of `pin-toolkit gitlab-ci` if cheap, else dropped; the README says which | my call; `pin-ci` part owner (2026-11-10) | short names; no users to stay compatible with |
+| D13 | Exit codes 0/1/2 (§6.5). **Changed:** no legacy 0/1 | my call; owner (2026-11-10) | no compatibility layer |
 | D14 | `--check` (dry-run + exit 1 on any change). Verify comment↔SHA from M4b-2 | my call | CI gate (pinact precedent) |
-| D15 | JSON additive: `schema_version`, `plugin`, `kind`, `plugins`, `follow_ups`. Legacy JSON byte-identical | my call | backward compatible |
+| D15 | JSON keeps pin-ci's shape and adds `schema_version`, `plugin`, `kind`, `plugins`, `follow_ups`. **Changed:** no byte-identity with pin-ci's JSON | my call; owner (2026-11-10) | continuity of design; stable from the first release |
 | D16 | Disabled kind → no row | my call | explicit user choice, not a silent skip |
 | D17 | TOML config, layering and merge rules as in §7.1. `version = 1`. Unknown keys are errors | my call | pinact/Renovate precedent |
 | D18 | Host and credential bindings only in global config, env or CLI. Repo config may only reference | my call | prevents token exfiltration |
@@ -556,25 +626,34 @@ Order: M4b-1 → M5a…f → M6 → F1–F3 → G1 → M4b-2 → M7 → M8a → 
 | D21 | Chart deps: pin = highest stable match of the constraint, constraint kept as comment. `--update` = highest within the recorded constraint; with no constraint, the image policy (same major, `--update-major` lifts it) | my call | respects author intent; consistent with images |
 | D22 | Never write Chart.lock/helmfile.lock. Report follow-up commands | my call | aggregate digest is fragile to recompute (Go JSON details) |
 | D23 | `helm-oci` default on in the toolkit (needs Helm ≥ 3.17, released 2025-01). helmfile OCI digest default off | my call | old helm is rare; helmfile support is too new to verify |
-| D24 | Hand-rolled Masterminds constraint subset in `ver::semver`. No YAML parser for discovery or editing (a dev-dependency cross-check is allowed) | my call | Cargo `semver` semantics differ; byte-exactness |
-| D25 | R1/R2 preserved through M5, fixed in F1/F2. R1 → one combined comment | my call | refactor stays provably neutral |
-| D26 | C3b (`include: - component:`) added in G1, also in legacy mode | my call | GitLab's documented component form; today it is not a target |
+| D24 | Hand-rolled Masterminds constraint subset in `ver::semver` (unchanged). **Changed:** the "no YAML parser" clause is replaced by D32 | my call; YAML clause owner (2026-11-10) | Cargo `semver` semantics differ |
+| D25 | **Changed:** R1/R2 fixed during the restructure (M5c), not preserved; F1/F2 are no longer milestones. R1 → one combined comment `  # main, dev` | owner (2026-11-10) | no users to stay compatible with; fixing while the code moves is cheaper |
+| D26 | C3b (`include: - component:`) added in G1 (legacy clause dropped) | my call | GitLab's documented component form; today it is not a target |
 | D27 | crane, systems as in §8.1, `homeModules` alias, install-nix-action + cachix-action, SHA-pinned actions, release created once | my call | §8 |
 | D28 | Container on GHCR only, no Entrypoint, busybox + CA certs | my call | GitLab image requirements |
-| D29 | `PIN_CI_LIVE`/`PIN_CI_ORACLE` names kept. No crates.io publish. No `unpin`. Legacy mode reads no config | my call | scope control |
+| D29 | `PIN_CI_LIVE`/`PIN_CI_ORACLE` names kept. No crates.io publish. No `unpin`. **Changed:** oracle kept only while useful, adapted to the new crate API; retiring it is the owner's call | my call; owner (2026-11-10) | scope control |
 | D30 | A version **range** (H1 Chart.yaml/requirements, H4 helmfile) on a line that already has a trailing comment → `skipped (existing comment; pinning would lose constraint <c>)`. The constraint is never dropped. `--update` reads a recorded constraint only from a comment that is entirely `# <constraint>` and parses as one; any other comment counts as "no recorded constraint" (→ the image policy of D21). Exact versions and C3/C4 keep today's rule: pin, no second comment | my call (builder check) | never lose author intent; never misread an unrelated comment |
 | D31 | `GITLAB_TOKEN` only to the primary host (`--gitlab-host` > `CI_SERVER_HOST` > gitlab.com); other `gitlab-hosts` anonymous unless bound in global `[hosts]` (§7.3) | my call (builder check) | least privilege; repo config cannot widen it |
+| D32 | YAML discovery via the span-preserving `saphyr-parser` (S2: adopt with caveats); char→byte table, quoted-span re-scan, property skip, `{{ }}` masking (§6.9). Edits stay byte splices. Aliases/merge keys/`!reference` are not targets. Parse error → file error, exit 2, no hand-rolled fallback discoverer (my call within it) | owner (2026-11-10) | robust structure handling (flow, anchors, multi-doc) without giving up byte-exact edits; fixes R7 |
+| D33 | No compatibility layer: no `pin-ci` legacy mode, legacy exit codes or JSON, legacy goldens, A/B script or compat tag. Snapshot tests replace goldens. Byte-exact, idempotent edits stay hard invariants with property tests | owner (2026-11-10) | never used in the real world; no users |
+| D34 | Order: M5a–c → M5c-y → M5d → M5f → M5e' → M6 → D1 dogfood → G1 → F3 → M4b-2 → M7 → M8a–c → M9 (§10) | owner (2026-11-10); M5c-y, M5f/M5e' placement my call | real use before Helm; M6's HM module needs the global layer |
+| D35 | Smaller config first: M5d reads repo `.pin-toolkit.toml` + env + CLI; the global layer, `[hosts]` and `config show --origin` come in M5e'. D18 holds from M5d: a repo file never binds credentials (global-only keys → exit 2) | owner (2026-11-10) | dogfood sooner; no window in which a repo can bind a token |
+| D36 | Resolvers (`oci`, `gitlab`, `helm-repo`, `github`) are pin-core cargo features, each built lazily on first use; plugin crates enable what they need; no extra crates (§6.2) | owner (2026-11-10) | `Ctx` is no god object; trimmed builds compile only the clients they use |
 
-## 13. Owner answers (2026-11-09)
+## 13. Owner answers
 
-All former open questions are answered; nothing is open for the owner.
+Open for the owner: only when to retire the oracle (D29).
 
 | # | Question | Owner answer | Affects |
 |---|---|---|---|
-| O1 | What does "plugin disabled in Home Manager" mean? | **Not installed.** Enabling a plugin is a build decision, configuring it is runtime (§8.2). The owner runs with all plugins enabled, i.e. the cached default package; a subset is a local feature-trimmed build. A repo config can still stop a built plugin from running (`run = false`) | M6 (HM module, package override), M5e (`run` key, "not in this build" handling) |
+| O1 | What does "plugin disabled in Home Manager" mean? | **Not installed.** Enabling a plugin is a build decision, configuring it is runtime (§8.2). The owner runs with all plugins enabled, i.e. the cached default package; a subset is a local feature-trimmed build. A repo config can still stop a built plugin from running (`run = false`) | M6 (HM module, package override), M5d (`run` key, "not in this build" handling), M5e' (global config) |
 | O2 | values.yaml map image without a `digest:` key | **Always write `tag: "1.2.3@sha256:<d>"` by default**, opt-out `plugins.helm.values.tag-digest = false` (→ `skipped (no digest key)`). An existing `digest:` key is still filled instead (tag kept). Known risk, accepted: charts that use `.tag` in labels or `semverCompare` | M8a |
 | O3 | Name, owner, Cachix, GitLab repo | Name **`pin-toolkit`**. Repo `github.com/<owner>/pin-toolkit` where `<owner>` is the owner's **personal GitHub user** (exact handle to be filled in at M5f), full history pushed. Cachix cache: not set up yet; use the recommended name **`pin-toolkit`** (`pin-toolkit.cachix.org`). The GitLab repo **stays** (mirror) and additionally **hosts the GitLab test components/projects** used by the live component/include tests. Human prerequisites for M6: create the GitHub repo, the Cachix cache + `CACHIX_AUTH_TOKEN` secret, GHCR push rights | M5f, M6, live GitLab tests |
 | O4 | License | **`MIT OR Apache-2.0`** | M5f |
+| O5 | (2026-11-10) Compatibility with pin-ci? | **None**: the tool has never been used in the real world. No legacy mode; goldens become snapshot tests; R1/R2 fixed in the restructure. Byte-exact edits stay a hard invariant. `pin-ci` only as a cheap plain alias, or dropped | §2, §6.5–6.6, §9, §11, D33 |
+| O6 | (2026-11-10) YAML parser for discovery? | **Yes**, span-preserving, gated by a spike; edits stay splices. S2 result: adopt saphyr-parser with fix-ups | §6.9, D32 |
+| O7 | (2026-11-10) Order and config scope | **Real use before Helm, smaller config first**: minimal binary → distribution → dogfood → G1/F3/M4b-2 → helm. Full layered config only as needed by the HM module | §7.1, §9, §10, D34, D35 |
+| O8 | (2026-11-10) `Ctx` shape | **Lazy, feature-gated resolvers in pin-core**, no extra crates | §6.2, D36 |
 
 ## 14. Left to the builder
 
@@ -583,6 +662,9 @@ All former open questions are answered; nothing is open for the owner.
 - Refining the default globs. Per-kind skip-reason wording (stable once released).
 - Verify before coding: helm/helm#32133 status. The first helmfile release containing PR #2398 (may flip D23). GitLab `include:integrity`. Whether Helm's registry login falls back to `~/.docker/config.json`.
 - Helm repo credential env naming (the global config binds URL → env var names; `repositories.yaml` is matched by URL).
-- The shell tokenizer for C5: quotes, `\` continuations, `&&`, `;`, `|`, `X=1 helm`, `--flag=value`, value-taking vs boolean helm flags.
+- The shell tokenizer for C5: quotes, `\` continuations, `&&`, `;`, `|`, `X=1 helm`, `--flag=value`, value-taking vs boolean helm flags. Tokenizer offsets map back to bytes only where the raw scalar equals its decoded value (plain, or quoted without escapes); otherwise `skipped`.
+- Snapshot tooling (`insta` suggested) and the redaction of mock-port URLs.
+- Whether the `pin-ci` alias is kept (§6.6). The lazy-init primitive (`OnceCell` suffices).
+- Filing the saphyr-parser quoted-span bug upstream; drop the re-scan once a fixed release is pinned.
 - Whether `devShells.default` replaces devenv. Do not remove devenv without asking.
 - Hub API rate-limit handling (backoff or a clear `unresolved`).
