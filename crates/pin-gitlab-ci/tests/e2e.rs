@@ -1,4 +1,5 @@
 use pin_core::oci::RegistryClient;
+use pin_core::report::Status;
 use pin_gitlab_ci::{PinOptions, exit_code, outcome, pin_files};
 use std::path::PathBuf;
 use wiremock::matchers::{method, path, query_param};
@@ -156,7 +157,7 @@ async fn pins_and_reports_all_states() {
         .iter()
         .find(|r| r.reference == "ghcr.io/org/img:v1")
         .expect("ghcr ref present");
-    assert_eq!(ghcr.status, "pinned");
+    assert_eq!(ghcr.status, Status::Pinned);
     assert_eq!(
         ghcr.new.as_deref(),
         Some(format!("ghcr.io/org/img:v1@{D_GHCR}").as_str())
@@ -194,12 +195,9 @@ async fn second_run_is_noop() {
         .await
         .unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), after_first);
-    assert!(
-        report2
-            .results
-            .iter()
-            .all(|r| r.status == "ok" || r.status == "skipped" || r.status == "unresolved")
-    );
+    assert!(report2.results.iter().all(|r| r.status == Status::Ok
+        || r.status == Status::Skipped
+        || r.status == Status::Unresolved));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -446,7 +444,7 @@ async fn update_works_on_nonhub() {
     assert_eq!(report.summary.updated, 1);
     assert_eq!(report.summary.unresolved, 0);
     let row = &report.results[0];
-    assert_eq!(row.status, "updated");
+    assert_eq!(row.status, Status::Updated);
     // Same-major bump 1.0 -> 1.2 (2.0 is a higher major) + digest pin.
     assert_eq!(
         row.new.as_deref(),
@@ -489,7 +487,7 @@ async fn update_no_bump_when_already_highest() {
     assert_eq!(report.summary.pinned, 1);
     assert_eq!(report.summary.updated, 0);
     let row = &report.results[0];
-    assert_eq!(row.status, "pinned");
+    assert_eq!(row.status, Status::Pinned);
     assert_eq!(
         row.new.as_deref(),
         Some(format!("alpine:3.20@{D1}").as_str())
@@ -541,7 +539,7 @@ async fn update_same_major_restriction() {
         .unwrap();
     assert_eq!(report.summary.pinned, 1);
     assert_eq!(report.summary.updated, 0);
-    assert_eq!(report.results[0].status, "pinned");
+    assert_eq!(report.results[0].status, Status::Pinned);
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
         format!("job:\n  image: docker:24@{D4}\n")
@@ -564,7 +562,7 @@ async fn update_same_major_restriction() {
     assert_eq!(report.summary.updated, 1);
     assert_eq!(report.summary.pinned, 0);
     let row = &report.results[0];
-    assert_eq!(row.status, "updated");
+    assert_eq!(row.status, Status::Updated);
     assert_eq!(row.new.as_deref(), Some(format!("docker:29@{D5}").as_str()));
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
@@ -604,7 +602,7 @@ async fn update_pinned_never_bumps() {
         .unwrap();
     assert_eq!(report.summary.ok, 1);
     assert_eq!(report.summary.updated, 0);
-    assert_eq!(report.results[0].status, "ok");
+    assert_eq!(report.results[0].status, Status::Ok);
     // Pinned refs re-verify only; the tag list is never fetched and the
     // file stays byte-identical.
     assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
@@ -646,7 +644,7 @@ async fn update_tag_list_failure_is_unresolved() {
     assert_eq!(report.summary.unresolved, 1);
     assert_eq!(exit_code(&report), 1);
     let row = &report.results[0];
-    assert_eq!(row.status, "unresolved");
+    assert_eq!(row.status, Status::Unresolved);
     assert!(
         row.reason.as_deref().unwrap_or("").starts_with("tag list:"),
         "reason: {:?}",
@@ -789,7 +787,7 @@ async fn update_idempotent_second_run() {
         report2
             .results
             .iter()
-            .all(|r| r.status == "ok" || r.status == "skipped"),
+            .all(|r| r.status == Status::Ok || r.status == Status::Skipped),
         "statuses: {:?}",
         report2
             .results
@@ -1060,7 +1058,7 @@ async fn guard_no_eligible_skip() {
     assert_eq!(report.summary.skipped, 1);
     assert_eq!(report.summary.updated, 0);
     assert_eq!(report.summary.unresolved, 0);
-    assert_eq!(report.results[0].status, "skipped");
+    assert_eq!(report.results[0].status, Status::Skipped);
     assert_eq!(
         report.results[0].reason.as_deref(),
         Some("release age: no candidate ≥ 14d")
@@ -1095,7 +1093,7 @@ async fn guard_missing_timestamp_excluded() {
         .unwrap();
     assert_eq!(report.summary.updated, 1);
     assert_eq!(report.summary.skipped, 0);
-    assert_eq!(report.results[0].status, "updated");
+    assert_eq!(report.results[0].status, Status::Updated);
     assert_eq!(
         report.results[0].new.as_deref(),
         Some(format!("acme/app:1.2@{D2}").as_str())
@@ -1133,7 +1131,7 @@ async fn guard_off_default_m2_unchanged() {
         .await
         .unwrap();
     assert_eq!(report.summary.updated, 1);
-    assert_eq!(report.results[0].status, "updated");
+    assert_eq!(report.results[0].status, Status::Updated);
     assert_eq!(
         report.results[0].new.as_deref(),
         Some(format!("acme/app:1.4@{D4}").as_str())
@@ -1173,7 +1171,7 @@ async fn guard_nonhub_noop() {
     assert_eq!(report.summary.updated, 1);
     assert_eq!(report.summary.skipped, 0);
     assert_eq!(report.summary.unresolved, 0);
-    assert_eq!(report.results[0].status, "updated");
+    assert_eq!(report.results[0].status, Status::Updated);
     assert_eq!(
         report.results[0].new.as_deref(),
         Some(format!("ghcr.io/org/img:1.2@{D2}").as_str())

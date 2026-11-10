@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use pin_core::gitlab::GitLabClient;
 use pin_core::oci::RegistryClient;
+use pin_core::report::Status;
 use pin_gitlab_ci::{PinOptions, exit_code, pin_files};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -207,7 +208,7 @@ async fn unresolved_exit_one() {
     let row = report
         .results
         .iter()
-        .find(|r| r.status == "unresolved")
+        .find(|r| r.status == Status::Unresolved)
         .unwrap();
     assert_eq!(
         row.reason.as_deref(),

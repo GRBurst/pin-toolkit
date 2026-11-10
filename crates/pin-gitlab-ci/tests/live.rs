@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use pin_core::report::Status;
+
 fn client_from_env() -> pin_core::oci::RegistryClient {
     pin_gitlab_ci::client_from_env()
 }
@@ -150,9 +152,9 @@ async fn live_update_docker_hub() {
         let expected_tag = versioning::pick_latest_stable(current, &tags, true)
             .unwrap_or_else(|| current.to_string());
         let want_status = if expected_tag == current {
-            "pinned"
+            Status::Pinned
         } else {
-            "updated"
+            Status::Updated
         };
         let digest = match crane_digest(&format!("{repo}:{expected_tag}")) {
             Ok(d) => d,
@@ -287,7 +289,7 @@ async fn live_guarded_update() {
     );
     assert_eq!(report.results.len(), 1, "{}", report.render_human());
     let r = &report.results[0];
-    assert_eq!(r.status, "updated", "{}", report.render_human());
+    assert_eq!(r.status, Status::Updated, "{}", report.render_human());
     let new = r.new.clone().expect("updated result carries the new token");
 
     // new = "alpine:<tag>@sha256:<64hex>" — relative properties only

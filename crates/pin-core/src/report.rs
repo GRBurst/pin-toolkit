@@ -31,18 +31,6 @@ impl std::fmt::Display for Status {
     }
 }
 
-impl PartialEq<&str> for Status {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<str> for Status {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
-    }
-}
-
 /// One report row: one discovered reference and what happened to it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Row {
@@ -187,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn status_serde_display_and_str_eq() {
+    fn status_serde_and_display() {
         let all = [
             (Status::Pinned, "pinned"),
             (Status::Ok, "ok"),
@@ -202,11 +190,7 @@ mod tests {
             );
             assert_eq!(status.to_string(), name);
             assert_eq!(status.as_str(), name);
-            assert!(status == name);
-            assert!(status == *name);
         }
-        assert!(Status::Ok == "ok");
-        assert!(Status::Ok != "skipped");
         assert_eq!(Status::Updated.as_str(), "updated");
     }
 

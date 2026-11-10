@@ -9,7 +9,7 @@ use pin_core::edit::{Splice, apply, coalesce_comments};
 use pin_core::gitlab::GitLabClient;
 use pin_core::oci::{ImageRef, RegistryClient};
 use pin_core::plugin::{DynPlugin, Finding, KindSet};
-use pin_core::report::{Report, Row};
+use pin_core::report::{Report, Row, Status};
 use pin_core::run::{Ctx, ResolverEnv, UpdatePolicy, now_unix};
 use pin_core::text::LineIndex;
 use pin_gitlab_ci::discover::{PinTarget, discover};
@@ -342,7 +342,9 @@ pub fn check_byte_exact(
         let rows: Vec<&Row> = report
             .results
             .iter()
-            .filter(|r| r.line == i + 1 && (r.status == "pinned" || r.status == "updated"))
+            .filter(|r| {
+                r.line == i + 1 && (r.status == Status::Pinned || r.status == Status::Updated)
+            })
             .collect();
         out.push(line_diff(o_line, e_line, &rows).map_err(|m| format!("line {}: {m}", i + 1))?);
     }
@@ -358,7 +360,7 @@ pub fn check_idempotent(r1: &Report, e1: &str, r2: &Report, e2: &str) -> Result<
     if let Some(r) = r2
         .results
         .iter()
-        .find(|r| r.status == "pinned" || r.status == "updated")
+        .find(|r| r.status == Status::Pinned || r.status == Status::Updated)
     {
         return Err(format!(
             "second run {} line {} {:?}",
@@ -367,7 +369,7 @@ pub fn check_idempotent(r1: &Report, e1: &str, r2: &Report, e2: &str) -> Result<
     }
     let settled = |r: &Row| matches!(r.status.as_str(), "pinned" | "updated" | "ok");
     let before = r1.results.iter().filter(|r| settled(r)).count();
-    let after = r2.results.iter().filter(|r| r.status == "ok").count();
+    let after = r2.results.iter().filter(|r| r.status == Status::Ok).count();
     if before != after {
         return Err(format!(
             "ok rows: {before} after run 1, {after} after run 2"
@@ -411,7 +413,7 @@ pub fn check_comments_present(
     for (i, (o_line, ins)) in o.split_inclusive('\n').zip(ins).enumerate() {
         let needs = report.results.iter().any(|r| {
             r.line == i + 1
-                && r.status == "pinned"
+                && r.status == Status::Pinned
                 && r.new.as_deref().is_some_and(|n| !n.contains("@sha256:"))
         });
         if needs && !o_line.contains('#') && ins.is_none() {
