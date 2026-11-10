@@ -11,9 +11,10 @@
 //! A file that does not parse is a [`ScanError`] (sticky upstream: no
 //! partial result, no fallback — D32).
 
+use std::borrow::Cow;
 use std::ops::Range;
 
-use saphyr_parser::{Event, Parser, ScalarStyle, Span};
+use saphyr_parser::{Event, Parser, ScalarStyle, Span, Tag};
 
 use crate::plugin::ScanError;
 use crate::text::LineIndex;
@@ -126,6 +127,114 @@ impl Frame {
     }
 }
 
+fn is_blank(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\r' | b'\n')
+}
+
+/// Skip spaces, tabs, line breaks and `#` comments from `s`, never past `e`.
+fn skip_blanks(src: &[u8], mut s: usize, e: usize) -> usize {
+    while s < e {
+        match src.get(s) {
+            Some(b' ' | b'\t' | b'\r' | b'\n') => s += 1,
+            Some(b'#') => {
+                while s < e && src.get(s) != Some(&b'\n') {
+                    s += 1;
+                }
+            }
+            _ => break,
+        }
+    }
+    s
+}
+
+/// Skip node properties (`&anchor`, `!tag`) and what follows them (blanks,
+/// breaks, comments) from `s`, never past `e` (the parser's span starts at
+/// the properties).
+fn skip_props(src: &[u8], mut s: usize, e: usize) -> usize {
+    while s < e && matches!(src.get(s), Some(b'&' | b'!')) {
+        while s < e && src.get(s).is_some_and(|b| !is_blank(*b)) {
+            s += 1;
+        }
+        s = skip_blanks(src, s, e);
+    }
+    s
+}
+
+/// The exact token bytes of a scalar whose parser span is `s..e`.
+///
+/// The parser's span starts at the properties, and a quoted scalar's runs
+/// past the closing quote over blanks and a comment, so both are re-derived
+/// from the text. `has_props`: the event carries an anchor or a tag; only
+/// then is anything skipped (block content may itself start with `!`/`&`).
+/// Every scan stops at `e`; `None` = no such token (internal error).
+fn token_span(
+    src: &[u8],
+    s: usize,
+    e: usize,
+    style: Style,
+    has_props: bool,
+) -> Option<Range<usize>> {
+    let mut s = s;
+    if has_props {
+        s = skip_props(src, s, e);
+    }
+    match style {
+        Style::Block => {
+            if has_props {
+                // header line (indicator, chomping, comment, break), then
+                // the indentation and blank lines before the content
+                while s < e && src.get(s) != Some(&b'\n') {
+                    s += 1;
+                }
+                s = (s + 1).min(e);
+                while s < e && src.get(s).is_some_and(|b| is_blank(*b)) {
+                    s += 1;
+                }
+            }
+            let content = src.get(s..e)?;
+            let len = content
+                .iter()
+                .rposition(|b| !is_blank(*b))
+                .map_or(0, |i| i + 1);
+            Some(s..s + len)
+        }
+        Style::Single => {
+            let mut i = s + 1;
+            while i < e {
+                if src.get(i) == Some(&b'\'') {
+                    if src.get(i + 1) == Some(&b'\'') {
+                        i += 2;
+                        continue;
+                    }
+                    return Some(s..i + 1);
+                }
+                i += 1;
+            }
+            None
+        }
+        Style::Double => {
+            let mut i = s + 1;
+            while i < e {
+                match src.get(i) {
+                    Some(b'\\') => i += 2,
+                    Some(b'"') => return Some(s..i + 1),
+                    _ => i += 1,
+                }
+            }
+            None
+        }
+        Style::Plain => Some(s..e),
+    }
+}
+
+/// The tag as written when it is not a YAML core-schema tag (`!reference`,
+/// `!custom`); core tags (`!!str`, `!!seq`) are transparent.
+fn opaque_tag(tag: &Option<Cow<'_, Tag>>) -> Option<String> {
+    tag.as_ref()
+        .filter(|t| !t.is_yaml_core_schema())
+        .map(|t| t.to_string())
+}
+
 struct Walker<'a> {
     /// The original text: its char boundaries bound every span.
     text: &'a str,
@@ -137,6 +246,9 @@ struct Walker<'a> {
     stack: Vec<Frame>,
     next_id: usize,
     docs_seen: usize,
+    /// Inside a subtree that emits nothing: `(open collections, the subtree
+    /// was a mapping key)`.
+    skip: Option<(usize, bool)>,
     nodes: Vec<Node>,
 }
 
@@ -189,8 +301,40 @@ impl Walker<'_> {
         self.stack.last().is_some_and(Frame::flow)
     }
 
-    fn push_collection(&mut self, is_map: bool, span: &Span) -> Result<(), ScanError> {
-        let (s, e) = self.bytes(span)?;
+    /// A non-scalar or alias key: the next value belongs to a key no
+    /// consumer matches.
+    fn complex_key(&mut self) {
+        if let Some(Frame::Map { key, want_key, .. }) = self.stack.last_mut() {
+            *key = Some(PathSeg::Complex);
+            *want_key = false;
+        }
+    }
+
+    fn collection(
+        &mut self,
+        is_map: bool,
+        anchor: usize,
+        tag: &Option<Cow<'_, Tag>>,
+        span: &Span,
+    ) -> Result<(), ScanError> {
+        if self.at_key() {
+            self.complex_key();
+            self.skip = Some((1, true));
+            return Ok(());
+        }
+        if let Some(tag) = opaque_tag(tag) {
+            self.nodes.push(Node::Tagged {
+                path: self.path(),
+                tag,
+                parent: self.parent(),
+            });
+            self.skip = Some((1, false));
+            return Ok(());
+        }
+        let (mut s, e) = self.bytes(span)?;
+        if anchor > 0 || tag.is_some() {
+            s = skip_props(self.src, s, e);
+        }
         let flow = self.in_flow() || (s < e && matches!(self.src.get(s), Some(b'{' | b'[')));
         let id = self.next_id;
         self.next_id += 1;
@@ -207,48 +351,109 @@ impl Walker<'_> {
         Ok(())
     }
 
+    fn scalar(
+        &mut self,
+        value: Cow<'_, str>,
+        style: ScalarStyle,
+        anchor: usize,
+        tag: &Option<Cow<'_, Tag>>,
+        span: &Span,
+    ) -> Result<(), ScanError> {
+        if self.at_key() {
+            if let Some(Frame::Map { key, want_key, .. }) = self.stack.last_mut() {
+                *key = Some(PathSeg::Key(value.into_owned()));
+                *want_key = false;
+            }
+            return Ok(());
+        }
+        if let Some(tag) = opaque_tag(tag) {
+            self.nodes.push(Node::Tagged {
+                path: self.path(),
+                tag,
+                parent: self.parent(),
+            });
+            self.advance();
+            return Ok(());
+        }
+        let (s, e) = self.bytes(span)?;
+        let style = match style {
+            ScalarStyle::Plain => Style::Plain,
+            ScalarStyle::SingleQuoted => Style::Single,
+            ScalarStyle::DoubleQuoted => Style::Double,
+            ScalarStyle::Literal | ScalarStyle::Folded => Style::Block,
+        };
+        let range = if style == Style::Plain && value.is_empty() {
+            s..s
+        } else {
+            let has_props = anchor > 0 || tag.is_some();
+            token_span(self.src, s, e, style, has_props)
+                .filter(|r| {
+                    self.text.is_char_boundary(r.start) && self.text.is_char_boundary(r.end)
+                })
+                .ok_or_else(|| ScanError {
+                    line: Some(span.start.line()),
+                    msg: format!("internal: bad span at byte {}", span.start.index()),
+                })?
+        };
+        self.nodes.push(Node::Scalar(ScalarRef {
+            path: self.path(),
+            doc: self.docs_seen.saturating_sub(1),
+            line: self.lines.line_of(range.start),
+            span: range,
+            style,
+            value: value.into_owned(),
+            anchor: (anchor > 0).then_some(anchor),
+            parent: self.parent(),
+            in_flow: self.in_flow(),
+            templated: false,
+        }));
+        self.advance();
+        Ok(())
+    }
+
     fn event(&mut self, ev: Event<'_>, span: &Span) -> Result<(), ScanError> {
+        if let Some((depth, was_key)) = self.skip {
+            match ev {
+                Event::MappingStart(..) | Event::SequenceStart(..) => {
+                    self.skip = Some((depth + 1, was_key));
+                }
+                Event::MappingEnd | Event::SequenceEnd if depth > 1 => {
+                    self.skip = Some((depth - 1, was_key));
+                }
+                Event::MappingEnd | Event::SequenceEnd => {
+                    self.skip = None;
+                    if !was_key {
+                        self.advance();
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         match ev {
             Event::DocumentStart(_) => {
                 self.docs_seen += 1;
                 self.stack.clear();
             }
-            Event::Scalar(value, style, anchor, _tag) => {
-                if self.at_key() {
-                    if let Some(Frame::Map { key, want_key, .. }) = self.stack.last_mut() {
-                        *key = Some(PathSeg::Key(value.into_owned()));
-                        *want_key = false;
-                    }
-                    return Ok(());
-                }
-                let (s, e) = self.bytes(span)?;
-                let style = match style {
-                    ScalarStyle::Plain => Style::Plain,
-                    ScalarStyle::SingleQuoted => Style::Single,
-                    ScalarStyle::DoubleQuoted => Style::Double,
-                    ScalarStyle::Literal | ScalarStyle::Folded => Style::Block,
-                };
-                let span = if style == Style::Plain && value.is_empty() {
-                    s..s
-                } else {
-                    s..e
-                };
-                self.nodes.push(Node::Scalar(ScalarRef {
-                    path: self.path(),
-                    doc: self.docs_seen.saturating_sub(1),
-                    line: self.lines.line_of(span.start),
-                    span,
-                    style,
-                    value: value.into_owned(),
-                    anchor: (anchor > 0).then_some(anchor),
-                    parent: self.parent(),
-                    in_flow: self.in_flow(),
-                    templated: false,
-                }));
-                self.advance();
+            Event::Scalar(value, style, anchor, tag) => {
+                self.scalar(value, style, anchor, &tag, span)?;
             }
-            Event::MappingStart(..) => self.push_collection(true, span)?,
-            Event::SequenceStart(..) => self.push_collection(false, span)?,
+            Event::Alias(id) => {
+                if self.at_key() {
+                    self.complex_key();
+                } else {
+                    let (s, e) = self.bytes(span)?;
+                    self.nodes.push(Node::Alias {
+                        path: self.path(),
+                        id,
+                        span: s..e,
+                        parent: self.parent(),
+                    });
+                    self.advance();
+                }
+            }
+            Event::MappingStart(anchor, tag) => self.collection(true, anchor, &tag, span)?,
+            Event::SequenceStart(anchor, tag) => self.collection(false, anchor, &tag, span)?,
             Event::MappingEnd | Event::SequenceEnd => {
                 self.stack.pop();
                 self.advance();
@@ -275,6 +480,7 @@ pub fn scan(text: &str, _opts: ScanOpts) -> Result<Vec<Node>, ScanError> {
         stack: Vec::new(),
         next_id: 1,
         docs_seen: 0,
+        skip: None,
         nodes: Vec::new(),
     };
     for item in Parser::new_from_str(text) {
@@ -465,5 +671,159 @@ mod tests {
         let s = scalar_at("a: &x\n", "a");
         assert_eq!((s.value.as_str(), s.span), ("", 3..3));
         assert!(s.anchor.is_some());
+    }
+
+    #[test]
+    fn quoted_spans_end_at_closing_quote() {
+        let t = "a: \"x:1\" # c\nb: 'it''s:1'   # c\nc: [\"d:1\" , 'e:1' ]\nd: \"q\\\"q\"  \n";
+        let got = scalars(t);
+        let tokens: Vec<&str> = got.iter().map(|r| r.2.as_str()).collect();
+        assert_eq!(
+            tokens,
+            ["\"x:1\"", "'it''s:1'", "\"d:1\"", "'e:1'", "\"q\\\"q\""]
+        );
+        let values: Vec<&str> = got.iter().map(|r| r.1.as_str()).collect();
+        assert_eq!(values, ["x:1", "it's:1", "d:1", "e:1", "q\"q"]);
+    }
+
+    #[test]
+    fn properties_are_skipped() {
+        let t = "a: &x v1\nb: !!str v2\nc: &y !!str \"v3\"\nd: !!str\n  v4\n";
+        let tokens: Vec<(String, usize)> = scalars(t).into_iter().map(|r| (r.2, r.3)).collect();
+        assert_eq!(
+            tokens,
+            [
+                ("v1".to_string(), 0),
+                ("v2".to_string(), 1),
+                ("\"v3\"".to_string(), 2),
+                ("v4".to_string(), 4),
+            ]
+        );
+        let anchors: Vec<bool> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|p| scalar_at(t, p).anchor.is_some())
+            .collect();
+        assert_eq!(anchors, [true, false, true, false]);
+    }
+
+    #[test]
+    fn aliases_are_alias_nodes() {
+        let t = "a: &x v\nb: *x\nc:\n  <<: *x\n";
+        let nodes = scan(t, ScanOpts::default()).unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert!(matches!(&nodes[0], Node::Scalar(s) if path_str(&s.path) == "a"));
+        let aliases: Vec<(String, &str, usize)> = nodes[1..]
+            .iter()
+            .map(|n| match n {
+                Node::Alias {
+                    path, span, parent, ..
+                } => (path_str(path), &t[span.clone()], *parent),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            aliases,
+            [("b".to_string(), "*x", 1), ("c.<<".to_string(), "*x", 2),]
+        );
+        // the alias refers to the anchor id of the definition
+        let Node::Scalar(def) = &nodes[0] else {
+            unreachable!()
+        };
+        assert!(matches!(&nodes[1], Node::Alias { id, .. } if Some(*id) == def.anchor));
+    }
+
+    #[test]
+    fn local_tags_are_opaque_core_tags_transparent() {
+        let t = "a: !reference [.b, c]\nd: !!seq [e]\nf: !custom g\n";
+        let nodes = scan(t, ScanOpts::default()).unwrap();
+        assert_eq!(nodes.len(), 3, "{nodes:?}");
+        assert!(matches!(
+            &nodes[0],
+            Node::Tagged { path, tag, parent: 1 }
+                if path_str(path) == "a" && tag == "!reference"
+        ));
+        assert!(matches!(
+            &nodes[1],
+            Node::Scalar(s) if path_str(&s.path) == "d[0]" && s.value == "e" && s.parent == 2
+        ));
+        assert!(matches!(
+            &nodes[2],
+            Node::Tagged { path, tag, parent: 1 }
+                if path_str(path) == "f" && tag == "!custom"
+        ));
+    }
+
+    /// Review M2: a block scalar's span is its content (end trimmed), also
+    /// with properties; the style is kept.
+    #[test]
+    fn block_scalars_keep_style_and_content_span() {
+        let t = "a: |\n  x\nb: >-\n  y\nc: |\n  !x\nd: &k >-\n  z\ne: !!str |\n  w\n  w2\n";
+        let got = scalars(t);
+        assert_eq!(
+            got,
+            [
+                row("a", "x\n", "x", 1),
+                row("b", "y", "y", 3),
+                row("c", "!x\n", "!x", 5),
+                row("d", "z", "z", 7),
+                row("e", "w\nw2\n", "w\n  w2", 9),
+            ]
+        );
+        for p in ["a", "b", "c", "d", "e"] {
+            assert_eq!(scalar_at(t, p).style, Style::Block, "{p}");
+        }
+        assert!(scalar_at(t, "d").anchor.is_some());
+    }
+
+    /// Texts of every test above and below: `scan` returns (no panic) on
+    /// every char-boundary prefix, with and without masking, and `Ok` spans
+    /// are in bounds on char boundaries.
+    const SAMPLES: &[&str] = &[
+        "image: alpine:3.20  # c\njob:\n  services:\n    - redis:7\n    - name: node:20\n",
+        "a: 1\n---\nb: 2\n...\n---\n- c\n",
+        "\u{FEFF}k: x\nä: [y, 🚀z]\nimg: alpine:3.20\n",
+        "a: x\r\nb:\r\n  - y\r\n",
+        "include: {project: a, ref: b}\ninclude:\n  - project: c\n    ref: d\n",
+        "a: 1\nb: c: d\n",
+        "image:\n  digest:\n",
+        "include: {project: p, ref}\n",
+        "include: {ref, project: p}\n",
+        "a: &x\n",
+        "a: \"x:1\" # c\nb: 'it''s:1'   # c\nc: [\"d:1\" , 'e:1' ]\nd: \"q\\\"q\"  \n",
+        "a: &x v1\nb: !!str v2\nc: &y !!str \"v3\"\nd: !!str\n  v4\n",
+        "a: &x v\nb: *x\nc:\n  <<: *x\n",
+        "a: !reference [.b, c]\nd: !!seq [e]\nf: !custom g\n",
+        "a: |\n  x\nb: >-\n  y\nc: |\n  !x\nd: &k >-\n  z\ne: !!str |\n  w\n  w2\n",
+        "? [k, l]\n: v\n? *x\n: w\n",
+        "a: &p # c\n  v\nb: !t\n  [x]\nc: &a !!str\n\n  \"q\"\n",
+        "x: &a\n  - 1\ny: !t &b {k: v}\nz: [&c a, !!str b, *c]\n",
+    ];
+
+    #[test]
+    fn scan_never_panics_on_prefixes() {
+        for sample in SAMPLES {
+            for end in (0..=sample.len()).filter(|&i| sample.is_char_boundary(i)) {
+                let p = &sample[..end];
+                for mask_templates in [false, true] {
+                    let Ok(nodes) = scan(p, ScanOpts { mask_templates }) else {
+                        continue;
+                    };
+                    let spans = nodes.iter().filter_map(|n| match n {
+                        Node::Scalar(s) => Some(&s.span),
+                        Node::Alias { span, .. } => Some(span),
+                        Node::Tagged { .. } => None,
+                    });
+                    for sp in spans {
+                        assert!(
+                            sp.start <= sp.end
+                                && sp.end <= p.len()
+                                && p.is_char_boundary(sp.start)
+                                && p.is_char_boundary(sp.end),
+                            "{p:?}: bad span {sp:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
