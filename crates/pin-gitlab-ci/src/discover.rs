@@ -15,6 +15,9 @@
 //! single mappings, in any key order. String/remote/template/local items
 //! and mappings without both `project` and `ref` yield no target.
 
+use pin_core::plugin::ScanError;
+use pin_core::yaml::{self, Node, PathSeg, ScalarRef, ScanOpts, Style};
+
 /// One discovered reference location in a CI file (M3: image, component or
 /// classic include).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +144,111 @@ impl PinTarget {
             | Self::Unsupported { value, .. } => value,
         }
     }
+}
+
+/// Discovery over `pin_core::yaml` (M5c-y): path rules over the value nodes
+/// of [`yaml::scan`]. Returns targets sorted by `(line, start)`;
+/// `Err` = the file is not valid YAML (§6.9).
+///
+/// A scalar with a non-empty span (an implicit null has an empty one) is a
+/// target when its path, relative to its document root, is
+/// - `image`: `image` / `services` (at the root or one key down: a job),
+///   followed by nothing, `name`, an index, or an index and `name`;
+/// - `component`: exactly `component` (root only).
+///
+/// A block scalar, or a scalar whose text spans lines, is not spliceable: it
+/// becomes [`PinTarget::Unsupported`] (range cut at the first line break).
+/// Aliases, merge keys and `!reference` nodes are not scalars here, so they
+/// are never targets.
+pub fn discover_yaml(text: &str) -> Result<Vec<PinTarget>, ScanError> {
+    let nodes = yaml::scan(
+        text,
+        ScanOpts {
+            mask_templates: false,
+        },
+    )?;
+    let mut out = Vec::new();
+    for node in &nodes {
+        let Node::Scalar(s) = node else { continue };
+        if s.span.is_empty() {
+            continue;
+        }
+        if is_image_path(&s.path) {
+            out.push(yaml_target(text, s, "image"));
+        } else if is_component_path(&s.path) {
+            out.push(yaml_target(text, s, "component"));
+        }
+    }
+    out.sort_by_key(|t| (t.line(), t.start()));
+    Ok(out)
+}
+
+/// The target for `s`: spliceable, or `Unsupported` with a one-line range.
+fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str) -> PinTarget {
+    let token = &text[s.span.clone()];
+    let (start, value) = (s.span.start, s.value.clone());
+    let reason = if s.style == Style::Block {
+        Some("block scalar")
+    } else if token.contains('\n') {
+        Some("multi-line scalar")
+    } else {
+        None
+    };
+    if let Some(reason) = reason {
+        let end = start + token.find(['\r', '\n']).unwrap_or(token.len());
+        return PinTarget::Unsupported {
+            kind,
+            line: s.line,
+            start,
+            end,
+            value,
+            reason,
+        };
+    }
+    let end = s.span.end;
+    if kind == "component" {
+        PinTarget::Component {
+            line: s.line,
+            start,
+            end,
+            parts: parse_component_ref(&value),
+            value,
+        }
+    } else {
+        PinTarget::Image {
+            line: s.line,
+            start,
+            end,
+            value,
+        }
+    }
+}
+
+/// `q` is `image|services` followed by nothing, `name`, an index, or an
+/// index and `name`.
+fn image_tail(q: &[PathSeg]) -> bool {
+    let [PathSeg::Key(head), rest @ ..] = q else {
+        return false;
+    };
+    if head != "image" && head != "services" {
+        return false;
+    }
+    match rest {
+        [] | [PathSeg::Index(_)] => true,
+        [PathSeg::Key(n)] | [PathSeg::Index(_), PathSeg::Key(n)] => n == "name",
+        _ => false,
+    }
+}
+
+/// `image` / `services` at the root, or one key down (a job, `default`, a
+/// hidden template).
+fn is_image_path(p: &[PathSeg]) -> bool {
+    image_tail(p) || (matches!(p.first(), Some(PathSeg::Key(_))) && image_tail(&p[1..]))
+}
+
+/// Exactly the root key `component`.
+fn is_component_path(p: &[PathSeg]) -> bool {
+    matches!(p, [PathSeg::Key(k)] if k == "component")
 }
 
 /// Discover `image:` / `services:` / `component:` / `include:` references
@@ -1388,5 +1496,134 @@ mod tests {
             });
             assert_eq!(got, expected, "parse_component_ref({input})");
         }
+    }
+
+    // ---- M5c-y: discovery over `core::yaml` (`discover_yaml`)
+
+    fn yaml(text: &str) -> Vec<PinTarget> {
+        discover_yaml(text).unwrap()
+    }
+
+    #[test]
+    fn yaml_image_paths() {
+        let text = "image: a:1\nservices: [b:1, {name: c:1}]\ndefault:\n  image: {name: d:1, entrypoint: [\"\"]}\njob:\n  services:\n    - e:1\n    - name: f:1\n      alias: g\n  script: [h:1]\n  deep:\n    image: i:1\nbäckend:\n  image: j:1\n\"quoted\":\n  image: k:1\nflowjob: {image: l:1}\n";
+        let t = yaml(text);
+        let values: Vec<&str> = t.iter().map(PinTarget::value).collect();
+        assert_eq!(
+            values,
+            [
+                "a:1", "b:1", "c:1", "d:1", "e:1", "f:1", "j:1", "k:1", "l:1"
+            ]
+        );
+        assert!(t.iter().all(|x| matches!(x, PinTarget::Image { .. })));
+        assert!(t.iter().all(|x| &text[x.start()..x.end()] == x.value()));
+    }
+
+    #[test]
+    fn yaml_component_root_only() {
+        let text = "component: gitlab.com/g/p/n@1.0.0\njob:\n  component: gitlab.com/g/p/n@2.0.0\n";
+        let t = yaml(text);
+        assert_eq!(t.len(), 1, "{t:?}");
+        let PinTarget::Component { parts, value, .. } = &t[0] else {
+            panic!("{:?}", t[0])
+        };
+        assert_eq!(value, "gitlab.com/g/p/n@1.0.0");
+        let p = parts.as_ref().unwrap();
+        assert_eq!(
+            (&*p.host, &*p.project, &*p.name, &*p.version),
+            ("gitlab.com", "g/p", "n", "1.0.0")
+        );
+    }
+
+    #[test]
+    fn yaml_block_scalar_is_unsupported() {
+        let t = yaml("image: >-\n  alpine:3.20\ncomponent: |\n  gitlab.com/g/p/n@1.0.0\n");
+        let got: Vec<(&str, usize, &str)> = t
+            .iter()
+            .map(|x| match x {
+                PinTarget::Unsupported {
+                    kind, line, reason, ..
+                } => (*kind, *line, *reason),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("image", 1, "block scalar"),
+                ("component", 3, "block scalar")
+            ]
+        );
+
+        // several content lines: the range is the first line only
+        let text = "image: |\n  a:1\n  b:1\nnext: x\n";
+        let t = yaml(text);
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert!(matches!(
+            &t[0],
+            PinTarget::Unsupported {
+                reason: "block scalar",
+                ..
+            }
+        ));
+        assert_eq!(&text[t[0].start()..t[0].end()], "a:1");
+    }
+
+    #[test]
+    fn yaml_aliases_and_references_are_not_targets() {
+        let text = ".x: &x alpine:3.20\na:\n  image: *x\nb:\n  image: !reference [.base, image]\n  services: !reference [.base, services]\n";
+        assert_eq!(discover_yaml(text), Ok(vec![]));
+    }
+
+    /// Review M3: a quoted or plain value continued on the next line is
+    /// never spliced; the range is cut at the first line break.
+    #[test]
+    fn yaml_multiline_scalar_is_unsupported() {
+        let cases: [(&str, &str, &str, &str); 4] = [
+            (
+                "image: \"alpine:\\\n  3.20\"\nnext: x\n",
+                "image",
+                "alpine:3.20",
+                "\"alpine:\\",
+            ),
+            (
+                "image: alpine\n  :3.20\nnext: x\n",
+                "image",
+                "alpine :3.20",
+                "alpine",
+            ),
+            (
+                "image: \"alpine:\\\r\n  3.20\"\r\nnext: x\r\n",
+                "image",
+                "alpine:3.20",
+                "\"alpine:\\",
+            ),
+            (
+                "component: \"gitlab.com/g/p/n\\\n  @1.0\"\n",
+                "component",
+                "gitlab.com/g/p/n@1.0",
+                "\"gitlab.com/g/p/n\\",
+            ),
+        ];
+        for (text, kind, value, old) in cases {
+            let t = yaml(text);
+            assert_eq!(t.len(), 1, "{text:?}: {t:?}");
+            let PinTarget::Unsupported {
+                kind: k,
+                value: v,
+                reason,
+                ..
+            } = &t[0]
+            else {
+                panic!("{text:?}: {:?}", t[0])
+            };
+            assert_eq!(
+                (*k, v.as_str(), *reason),
+                (kind, value, "multi-line scalar")
+            );
+            assert_eq!(&text[t[0].start()..t[0].end()], old, "{text:?}");
+        }
+        let crlf = yaml("image: \"alpine:\\\r\n  3.20\"\r\nnext: x\r\n");
+        assert_eq!((crlf[0].start(), crlf[0].end()), (7, 16));
     }
 }
