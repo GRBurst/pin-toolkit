@@ -3,7 +3,8 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 - Date: 2026-11-10
-- Source of truth: `docs/superpowers/specs/2026-11-09-pin-toolkit-design.md` @ 451609a — §6.1–6.2 (workspace, core interface, D36 lazy `Ctx`), §6.9 (context only), §9 (M5a/M5b/M5c rows, R1/R2), §10–11, §12 (D25, D29, D33, D36)
+- Source of truth: `docs/superpowers/specs/2026-11-09-pin-toolkit-design.md` @ the commit that adds the review fixes — §6.1–6.2 (workspace, core interface, D36 lazy `Ctx`, D38 `Ctx` resolve entry points), §6.9 (context; parse error → per-file error), §9 (M5a/M5b/M5c rows, R1/R2), §10–11, §12 (D25, D29, D33, D36, D38)
+- Review: `.superpowers/sdd/2026-11-10-m5abc/plan-review.md` (approve with fixes), applied 2026-11-10 per main's decisions (P19–P24, end of file).
 - Base: `main` @ the commit that adds this plan (spec 451609a, M4b-1 0e2047b). Branch: `m5-workspace-core`.
 - Out of scope: M5c-y (parser discovery), M5d and later. The M5c core interface below is the contract they build on.
 - Tech stack: Rust 1.95, edition 2024, tokio (joined futures, no spawn), reqwest/rustls, wiremock, insta 1.49.
@@ -28,7 +29,7 @@ builds that net on today's code; M5b and M5c must leave it green, except the two
 |---|---|---|
 | M5a | A1–A3 + tag | tests only: `insta` dev-dep, `tests/common/mod.rs` harness with hash-driven fake registry/GitLab, `tests/fixture_snapshots.rs`, `tests/fixture_properties.rs`, 5 new fixtures, `tests/snapshots/*.snap`. Zero `src/` change |
 | M5b | B1 (2 commits) | `git mv src tests Cargo.toml → crates/pin-gitlab-ci/`; new virtual root `Cargo.toml`; `oracle.rs:21` path fix; one guard test |
-| M5c | C1–C12 | C1 move-only (5 modules + 5 tests → `crates/pin-core`), C2 package rename, C3–C5 refactors, C6–C8 new core API, C9 `GitlabCi`, C10 switch + delete old path, C11 R1 fix, C12 R2 fix |
+| M5c | C1–C12 (C10 = C10a–c) | C1 move-only (5 modules + 5 tests → `crates/pin-core`), C2 package rename, C3–C5 refactors, C6–C8 new core API, C9 `GitlabCi`, C10a `Clone` clients, C10b switch + delete old path (tests byte-identical), C10c re-export/`use`/dep cleanup, C11 R1 fix, C12 R2 fix |
 
 ## Architecture
 
@@ -38,17 +39,18 @@ builds that net on today's code; M5b and M5c must leave it green, except the two
 | `tests/fixture_snapshots.rs` | ∀ fixture × mode: 3 insta snapshots | A1 |
 | `tests/fixture_properties.rs` | byte-exact, idempotence (+R1/R2 properties later) | A2, C11, C12 |
 | root `Cargo.toml` | virtual workspace, `[workspace.package]`, `[workspace.dependencies]` | B1, C1 |
-| `crates/pin-core/src/oci/{image_ref,registry,splice,decide}.rs` | image refs, docker-v2 client `[oci]`, image splices, `decide_image`/`pin_inline_image` `[oci]` | C1, C3, C5, C8 |
-| `crates/pin-core/src/gitlab.rs` `[gitlab]` | `GitLabClient`, `is_commit_sha`, `GitLabHosts` | C1, C3, C7 |
+| `crates/pin-core/src/oci/{image_ref,registry,splice,decide}.rs` | image refs, docker-v2 client `[oci]`, image splices, `decide_image`/`pin_inline_image` `[oci]` | C1, C3, C5, C8, C10a |
+| `crates/pin-core/src/gitlab.rs` `[gitlab]` | `GitLabClient`, `GitLabHosts` (`pub(crate)`) | C1, C3, C7, C10a |
+| `crates/pin-core/src/git.rs` (ungated) | `is_commit_sha` (gitlab now, github M9) | C3 |
 | `crates/pin-core/src/ver/{docker,age}.rs` | today's `versioning`; RFC3339 + `is_old_enough` | C1, C3 |
 | `crates/pin-core/src/report.rs` | `Status`, `Row`, `Report`, `Summary`, renderers | C1, C4 |
 | `crates/pin-core/src/edit.rs` | `Splice`, `apply`, `requote`, `trailing_comment`, `coalesce_comments` | C5, C11, C12 |
 | `crates/pin-core/src/text.rs` | `LineIndex` | C12 |
-| `crates/pin-core/src/plugin.rs` | `KindSpec`, `KindSet`, `Finding`, `Plugin`, `DynPlugin`, `join_all` | C6 |
-| `crates/pin-core/src/run.rs` | `UpdatePolicy`, `ResolverEnv`, `Ctx` (lazy), `RunOptions`, `FileError`, `pin_file`, `now_unix` | C6, C7 |
-| `crates/pin-gitlab-ci/src/lib.rs` | `GitlabCi: Plugin` (scan = `discover` filtered by kind) | C9, C10 |
-| `crates/pin-gitlab-ci/src/policy.rs` | component/include policy, `is_catalog_managed` | C9, C10 |
-| `crates/pin-gitlab-ci/src/driver.rs` (`#[doc(hidden)]`, deleted in M5d) | `PinOptions`, `pin_files`, `exit_code`, `client_from_env`, `gitlab_from_env` for the `pin-ci` bin and tests | C10 |
+| `crates/pin-core/src/plugin.rs` | `KindSpec`, `KindSet`, `Finding`, `ScanError`, `PluginMeta`, `Plugin`, `DynPlugin`, `join_all` | C6 |
+| `crates/pin-core/src/run.rs` | `UpdatePolicy`, `ResolverEnv`, `Ctx` (lazy; resolve entry points, D38), `RunOptions`, `FileError`, `pin_file`, `now_unix`; resolver unit tests | C6, C7 |
+| `crates/pin-gitlab-ci/src/lib.rs` | `GitlabCi: PluginMeta + Plugin` (scan = `Ok(discover` filtered by kind`)`) | C9, C10b, C10c |
+| `crates/pin-gitlab-ci/src/policy.rs` | component/include policy, `is_catalog_managed` | C9, C10b |
+| `crates/pin-gitlab-ci/src/driver.rs` (`#[doc(hidden)]`, deleted in M5d) | `PinOptions`, `pin_files`, `exit_code`, `client_from_env`, `gitlab_from_env` for the `pin-ci` bin and tests | C10b |
 | `crates/pin-gitlab-ci/src/discover.rs` | unchanged (verbatim until M5c-y) | — |
 | `crates/pin-gitlab-ci/src/main.rs` | `[[bin]] pin-ci`, unchanged but for `use` paths | C2 |
 
@@ -82,7 +84,7 @@ for f in "" "--features oci" "--features gitlab"; do
 ```
 
 Baseline (measured 2026-11-10 on main 451609a with this env): `cargo exit 0`, **passed 150 failed 0**, fmt and clippy clean.
-Expected passed after each task (= previous + tests the task adds): A1 153 · A2 156 · A3 156 · B1 157 · C1 157 · C2 157 · C3 158 · C4 159 · C5 160 · C6 169 · C7 172 · C8 180 · C9 184 · C10 184 · C11 186 · C12 190. A lower number is a failure (silently skipped tests) unless the task explains it.
+Expected passed after each task (= previous + tests the task adds): A1 153 · A2 156 · A3 156 · B1 157 · C1 157 · C2 157 · C3 158 · C4 159 · C5 160 · C6 170 · C7 174 · C8 182 · C9 186 · C10a 186 · C10b 186 · C10c 186 · C11 188 · C12 192. A lower number is a failure (silently skipped tests) unless the task explains it.
 
 ## Decisions
 
@@ -93,19 +95,25 @@ Expected passed after each task (= previous + tests the task adds): A1 153 · A2
 | P3 | `visible()` for file snapshots (`\r`→`␍`, missing final `\n` marked) | insta hides CRLF and EOF newline, which R2 changes | snapshot raw bytes (R2 diff invisible) |
 | P4 | Report `file` normalised to the fixture name; `127.0.0.1:<port>` → `127.0.0.1:[PORT]` | scratch paths carry the PID; mock ports are random | insta redactions (need `filters`) |
 | P5 | Byte-exact checked by *reverting* rows on the edited text (line-aligned), not by splice lists | works on today's API and survives M5b/M5c unchanged | reading splices (no public access before C6) |
-| P6 | C1 compiles moved files verbatim via one pin-core root alias + pin-gitlab-ci `pub use` re-exports; cleanup in C3/C10 | true move-only commit, zero gitlab-ci test churn | fixing paths inside moved files in C1 (breaks rename detection review) |
+| P6 | C1 compiles moved files verbatim via one pin-core root alias + pin-gitlab-ci `pub use` re-exports; cleanup in C3/C10c | true move-only commit, zero gitlab-ci test churn | fixing paths inside moved files in C1 (breaks rename detection review) |
 | P7 | `Status` gets `as_str`, `Display`, `PartialEq<&str>`, `PartialEq<str>` | ~25 test comparisons (`r.status == "ok"`) stay verbatim | rewriting tests to `Status::Ok` |
 | P8 | `Row` has `plugin`, `kind` fields (§6.2) marked `#[serde(skip)]`, not rendered, until M5d | M5c snapshots must not change (§9); data exists for M5d | adding them to JSON now (unreviewable churn in M5c) |
 | P9 | No `memo` field, no `run()`/`Route` in M5c | §9 assigns memo, routing, combined report to M5d; a private field added later breaks nothing | placeholder structs |
-| P10 | `Ctx::with_oci`/`with_gitlab(Result<…>)` presets + `Ctx::resolvers_built()` | test injection of mock clients, construction-error coverage, the §11 "construction counter" | `ResolverEnv` base-URL overrides (moves test hooks into prod config) |
-| P11 | `RegistryClient`, `GitLabClient`, `Creds` become `Clone` (caches → `Arc<Mutex<…>>`) | driver's `pin_files(&reg, &gitlab)` clones into `Ctx`; ~40 test call sites stay verbatim; shared caches = today's semantics | changing every e2e call site |
+| P10 | `Ctx::with_oci(Result<RegistryClient, String>)`/`with_gitlab(primary_host, Result<GitLabClient, String>)` presets + `Ctx::resolvers_built()` | test injection of mock clients, construction-error coverage, the §11 "construction counter" | `ResolverEnv` base-URL overrides (moves test hooks into prod config) |
+| P11 | `RegistryClient`, `GitLabClient`, `Creds` become `Clone` (caches → `Arc<Mutex<…>>`), own commit C10a | driver's `pin_files(&reg, &gitlab)` clones into `Ctx`; ~40 test call sites stay verbatim; shared caches = today's semantics | changing every e2e call site |
 | P12 | `pin_files` survives in `#[doc(hidden)] pub mod driver` (re-exported at the crate root) until M5d | the `pin-ci` bin and tests need it; spec: "test helper until M5d, not API" | keep it in lib.rs as API |
-| P13 | `GitLabHosts { primary, clients }`; host gate = `GitlabCi.gitlab_hosts` (plugin config); includes resolve on the primary | §6.2 "plugin owns host gates"; M5d fills both from `gitlab-hosts`/D31 | gate inside core |
+| P13 | `pub(crate) GitLabHosts { primary, clients }` behind `Ctx::gitlab_resolve(host: Option<&str>, ..)` (`None` = primary; includes pass `None`); host gate = `GitlabCi.gitlab_hosts` (plugin config), checked before any `Ctx` call | §6.2 "plugin owns host gates"; M5d fills both from `gitlab-hosts`/D31 behind the entry point (P21) | gate inside core; `pub` `GitLabHosts` in plugin hands |
 | P14 | `UpdatePolicy` has no `unknown_age`/`AgePolicy` in M5c (main, 2026-11-10) | YAGNI: `Block` has no switch before the M5d config; M5d adds field + enum + switch together; behaviour = today's (`allow`) | implementing `Block` now without a switch |
 | P15 | Overlap check pairwise in `pin_file`; today's `BTreeMap` dedup-by-start dropped | §6.2 rule; discover never yields equal starts, so no output change | keep silent dedup |
 | P16 | C5 core `apply`/`trailing_comment` are bug-compatible; C11/C12 change them | keeps each fix its own commit with its own snapshot diff | fixing while moving |
 | P17 | `LineIndex` arrives with R2 (C12); `discover.rs` keeps its own line split | discover is verbatim until M5c-y (§9) | rewiring discover in M5c |
 | P18 | README: test commands fixed in C2; one note each in C11/C12; rest in M5f | spec: README note per fix; full rewrite is M5f | leaving broken commands until M5f |
+| P19 | `Plugin::scan -> Result<Vec<Target>, ScanError>`, `DynPlugin::plan -> LocalBoxFuture<Result<Vec<Finding>, ScanError>>`, `FileError::Parse { path, line, msg }`; `pin_file` returns it before any resolve or write; `GitlabCi::scan` always `Ok` | §6.9: a file that does not parse is a per-file error, no partial targets; M5c-y is the next consumer (review H1). Exit 2 arrives with the toolkit in M5d | infallible `scan` (M5c-y would reshape `Plugin`, `DynPlugin`, `pin_file` and every fake) |
+| P20 | `is_commit_sha` in the ungated `pin_core::git`; no re-export from `gitlab` | M9 github-actions (features oci + github) needs it without the GitLab client (review M2); one canonical path | keep it under `gitlab` (M9 duplicates it or enables `gitlab`) |
+| P21 | D38: plugins and `decide_image` reach resolvers only via `Ctx` entry points `oci_digest`/`oci_tags`/`oci_tag_times` (`Result<_, RegError>`, construction error → `RegError::Unresolved(e)`) and `gitlab_resolve` (`Result<String, String>`); `Ctx::oci()`/`gitlab()` are `pub(crate)` | memo (M5d, §6.7) and token rules (D31/D37) live in `Ctx` only; returning `RegError` keeps today's per-call error texts in `decide_image` verbatim (review M3) | `pub` client accessors (later plugins could bypass memo and token rules) |
+| P22 | `PluginMeta { id, kinds, default_files }` is a supertrait of `Plugin` and `DynPlugin` | one method set, so no E0034 when both traits are in scope (review L1) | UFCS at every call site |
+| P23 | C10 split: C10a P11 `Clone`; C10b switch with the C1 re-exports kept (`crates/*/tests` byte-identical); C10c removes re-exports, updates test `use` lines, drops deps | byte-identical tests are the strongest no-behaviour-change evidence for the riskiest commit (review M1) | one C10 commit |
+| P24 | `pin_inline_image(.., kind: &'static str)` | M5d `service`, M8 `values-image`, M9 `container` reuse it without patching `kind` (review L7) | hard-coded `"image"` |
 
 Recorded, not fixed (main, 2026-11-10: left to M5c-y; spec §9 row R8): **R8** — under CRLF, `discover()` treats `key:\r` as a key with a value, so block children are not discovered (`include:` blocks, `services:` blocks, every job-nested `image:`); and `.base: &base` children are not discovered (anchor counts as a value). A3 snapshots record both.
 
@@ -117,9 +125,9 @@ Recorded, not fixed (main, 2026-11-10: left to M5c-y; spec §9 row R8): **R8** �
 | Idempotent | PASS | A2 `idempotent_over_all_fixtures` |
 | Snapshot review | PASS | A1/A3 baseline; C11/C12 the only diffs |
 | Discovery parity | N/A | M5c-y |
-| Lazy resolvers | PASS | C7 `lazy_resolvers.rs` + C1 feature matrix (`--no-default-features`, `oci`, `gitlab`) |
+| Lazy resolvers | PASS | C7 resolver unit tests in `run.rs` + C1 feature matrix (`--no-default-features`, `oci`, `gitlab`) |
 | Plugin isolation | PASS (part) | C9 `scan_filters_by_kind` (no network); single-plugin builds N/A until M5d/M6 |
-| Fail loud | PASS (part) | C7/C8 construction error → `unresolved`; exit-2 rules N/A (M5d) |
+| Fail loud | PASS (part) | C7/C8 construction error → `unresolved`; parse error → `FileError::Parse`, nothing resolved or written (C6 `scan_error_is_file_error_and_no_write`); exit-2 rules N/A (M5d) |
 | Planted violations | PASS once every box in each task is ticked | per task |
 
 ## Files to read first (implementer step 0)
@@ -131,16 +139,21 @@ Spec §6.1, §6.2, §9, §11. `src/lib.rs` (whole), `src/edit.rs`, `src/report.r
 ## Type-checking strategy
 
 `cargo clippy --workspace --all-targets --all-features -D warnings` after every task, plus the pin-core feature matrix from C1.
-Expected rejections that prove structure: `--no-default-features` rejects any ungated `reqwest`/`RegistryClient`/`GitLabClient`
-use; the `async_fn_in_trait` lint rejects `Plugin` without `#[allow(async_fn_in_trait)]`; dead private `Ctx.env` is avoided by
-the `pub fn env()` accessor; `Row` literals without `plugin`/`kind` fail to compile (C4 catches every construction site).
+Expected rejections that prove structure:
+- `--no-default-features` rejects any ungated `reqwest`/`RegistryClient`/`GitLabClient` use, an unconditional `use std::cell::OnceCell` (unused import) and a plain `let mut v` in `resolvers_built` (`unused_mut`) → cfg'd imports, `#[allow(unused_mut)]`.
+- `async_fn_in_trait` rejects `Plugin` without `#[allow(async_fn_in_trait)]`.
+- dead private `Ctx.env` is avoided by `pub fn env()` (C6); a `pub(crate)` accessor with no non-test caller is dead in the lib build, so the oci entry points land with `oci()` in C7.
+- `Row` literals without `plugin`/`kind` fail to compile (C4 catches every construction site).
+- `ctx.oci()`/`ctx.gitlab()` from a plugin crate → E0624 private method (D38; planted in C9).
+- `id()` with both `Plugin` and `DynPlugin` in scope would be E0034; `PluginMeta` (P22) avoids it.
+- `clippy::len_without_is_empty` → `LineIndex::is_empty`; `clippy::needless_update` → `..Default::default()` only in literals that omit a field.
 
 ## Testing strategy (per layer)
 
 | Layer | Covers | Needs |
 |---|---|---|
-| Unit (in-module) | pure fns: splices, `apply`, `coalesce_comments`, `LineIndex`, `KindSet`, `Status`, age math, `is_commit_sha` | nothing |
-| Core integration (`crates/pin-core/tests/`) | registry/GitLab clients (moved), `pin_file` with a fake plugin, laziness, `decide_image`/`pin_inline_image` | wiremock |
+| Unit (in-module) | pure fns: splices, `apply`, `coalesce_comments`, `LineIndex`, `KindSet`, `Status`, age math, `is_commit_sha`; `Ctx` laziness and entry points (C7, need the `pub(crate)` accessors) | nothing (no request leaves the process) |
+| Core integration (`crates/pin-core/tests/`) | registry/GitLab clients (moved), `pin_file` with a fake plugin, `decide_image`/`pin_inline_image` | wiremock |
 | Plugin integration (`crates/pin-gitlab-ci/tests/plugin.rs`) | `GitlabCi` scan/resolve contract | fake servers |
 | E2E (existing `e2e*.rs`) | full `pin_files` behaviour per milestone | wiremock |
 | Snapshot + property (new) | every fixture: output, byte-exactness, idempotence | fake servers |
@@ -173,19 +186,21 @@ Literals are pinned only where the literal is the criterion: R1's `  # main, dev
 | §6.2 `Status` serialises lowercase | C4 `status_serde_display_and_str_eq` + JSON snapshots |
 | §6.2 `apply` / `requote` / `trailing_comment` | C5 unit tests (moved) |
 | §6.2 `Plugin`/`DynPlugin`, bounded join, sort by line, overlap → unresolved, partial writes, dry-run/check no write | C6 `run_pin_file.rs` |
-| §6.2/D36 lazy feature-gated resolvers, construction error cached → unresolved | C7 `lazy_resolvers.rs`, C8 `inline_construction_error_is_unresolved`, C1 feature matrix |
+| §6.9 parse error → per-file error, no partial targets, nothing written (exit 2: M5d) | C6 `scan_error_is_file_error_and_no_write` |
+| §6.2/D36 lazy feature-gated resolvers, construction error cached → unresolved | C7 `run.rs` resolver unit tests, C8 `inline_construction_error_is_unresolved`, C1 feature matrix |
+| D38 plugins resolve only via `Ctx` entry points | C7 `gitlab_resolve_errors_without_request`, `construction_error_is_cached`; C9 planted E0624 |
 | §6.2 `decide_image`/`pin_inline_image`, error texts | C8 `oci_decide.rs` |
 | §6.2 `GitlabCi`: pure kind-filtered scan, host gate before client | C9 `plugin.rs` |
-| §9 lib.rs → `GitlabCi`, `pin_files` only as helper | C10 (all e2e + snapshots unchanged) |
+| §9 lib.rs → `GitlabCi`, `pin_files` only as helper | C10a–c (C10b: `crates/*/tests` byte-identical; all e2e + snapshots unchanged) |
 | §9 R1 `  # main, dev` | C11 snapshot diff + `one_comment_per_line_over_all_fixtures` + `coalesce_merges_same_offset_comments` |
 | §9 R2 comment before `\r\n` | C12 snapshot diff + `crlf_preserved_over_all_fixtures` + `pinned_ref_comments_present_over_all_fixtures` |
 | §9 oracle command `cargo test -p pin-gitlab-ci --test oracle` | C2 README + close-out compile run |
 
 ## Coverage gap (what a human runs)
 
-1. Live and oracle suites need network/credentials/renovate/crane: at close-out run `PIN_CI_LIVE=1 cargo test -p pin-gitlab-ci --test live`, `PIN_CI_LIVE=1 cargo test -p pin-core --all-features --test live_gitlab`, and (in devenv) `PIN_CI_ORACLE=1 cargo test -p pin-gitlab-ci --test oracle`. Without them, real-registry behaviour after the client `Clone` change (C10) is covered only by wiremock.
+1. Live and oracle suites need network/credentials/renovate/crane: at close-out run `PIN_CI_LIVE=1 cargo test -p pin-gitlab-ci --test live`, `PIN_CI_LIVE=1 cargo test -p pin-core --all-features --test live_gitlab`, and (in devenv) `PIN_CI_ORACLE=1 cargo test -p pin-gitlab-ci --test oracle`. Without them, real-registry behaviour after the client `Clone` change (C10a) and the switch (C10b) is covered only by wiremock.
 2. A write failure mid-run (read-only file) is not tested: root in the sandbox bypasses permissions. Behaviour is today's: `pin_files` aborts at the first `FileError`.
-3. `pin-ci` binary end-to-end (clap → exit code) has unit tests for flags only; run `cargo run -p pin-gitlab-ci --bin pin-ci -- --dry-run tests/fixtures/ci-simple.yml` by hand once after C10 (expect network use or `unresolved`, exit 0/1, no panic).
+3. `pin-ci` binary end-to-end (clap → exit code) has unit tests for flags only; run `cargo run -p pin-gitlab-ci --bin pin-ci -- --dry-run crates/pin-gitlab-ci/tests/fixtures/ci-simple.yml` by hand once after C10b (expect network use or `unresolved`, exit 0/1, no panic).
 4. R8 CRLF/anchor discovery gaps stay (recorded, not fixed).
 
 ## Review Focus
@@ -290,12 +305,15 @@ insta = "1"
 
 ```rust
 // lib.rs
-pub mod edit; pub mod oci; pub mod plugin; pub mod report; pub mod run; pub mod text; pub mod ver;
+pub mod edit; pub mod git; pub mod oci; pub mod plugin; pub mod report; pub mod run; pub mod text; pub mod ver;
 #[cfg(feature = "gitlab")] pub mod gitlab;
+
+// git (C3) — ungated: gitlab policy now, github-actions (M9) later (P20)
+pub fn is_commit_sha(s: &str) -> bool;                     // 40 lowercase hex
 
 // text (C12)
 pub struct LineIndex { starts: Vec<usize>, ends: Vec<usize> }       // ends exclude "\n" and a preceding "\r"
-impl LineIndex { pub fn new(text: &str) -> Self; pub fn len(&self) -> usize;
+impl LineIndex { pub fn new(text: &str) -> Self; pub fn len(&self) -> usize; pub fn is_empty(&self) -> bool;
                  pub fn line_start(&self, line: usize) -> Option<usize>; pub fn line_end(&self, line: usize) -> Option<usize>; }
 
 // edit (C5; coalesce C11)
@@ -316,14 +334,15 @@ pub use splice::{splice_value, splice_update};                                //
 #[cfg(feature = "oci")] pub mod registry; #[cfg(feature = "oci")] pub use registry::RegistryClient;
 #[cfg(feature = "oci")] pub enum ImageDecision { Current, Pin { digest: String }, Update { tag: String, digest: String }, Skip(String) }
 #[cfg(feature = "oci")] pub async fn decide_image(ctx: &Ctx, r: &ImageRef) -> Result<ImageDecision, String>;
-#[cfg(feature = "oci")] pub async fn pin_inline_image(ctx: &Ctx, text: &str, line: usize, start: usize, end: usize, value: &str) -> Finding; // kind "image"
+#[cfg(feature = "oci")] pub async fn pin_inline_image(ctx: &Ctx, text: &str, line: usize, start: usize, end: usize, value: &str,
+                                                     kind: &'static str) -> Finding;   // P24; gitlab-ci passes "image"
+// decide_image calls only ctx.oci_digest / oci_tags / oci_tag_times (D38), never a client
 
-// gitlab [gitlab] (C1/C3/C7)
-pub fn is_commit_sha(s: &str) -> bool;                     // 40 lowercase hex
-pub struct GitLabHosts { primary: String, clients: BTreeMap<String, GitLabClient> }
-impl GitLabHosts { pub fn single(host: &str, client: GitLabClient) -> Self; pub fn primary_host(&self) -> &str;
-                   pub fn primary(&self) -> &GitLabClient; pub fn get(&self, host: &str) -> Option<&GitLabClient>; }
-// GitLabClient::resolve(&self, project, ref) -> Result<String, GitLabError>  (unchanged)
+// gitlab [gitlab] (C1/C7)
+pub(crate) struct GitLabHosts { primary: String, clients: BTreeMap<String, GitLabClient> }   // crate-private (D38)
+impl GitLabHosts { pub(crate) fn single(host: &str, client: GitLabClient) -> Self;
+                   pub(crate) fn primary(&self) -> &GitLabClient; pub(crate) fn get(&self, host: &str) -> Option<&GitLabClient>; }
+// no primary_host(): unused → dead_code. GitLabClient::resolve(&self, project, ref) -> Result<String, GitLabError>  (unchanged)
 
 // report (C1/C4)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)] #[serde(rename_all = "lowercase")]
@@ -345,32 +364,46 @@ impl KindSet { pub fn defaults(kinds: &[KindSpec]) -> Self; pub fn contains(&sel
 pub struct Finding { pub line: usize /*0-based*/, pub kind: &'static str, pub reference: String, pub old: String,
                      pub new: Option<String>, pub status: Status, pub reason: Option<String>,
                      pub edits: Vec<Splice>, pub follow_up: Option<String> }
+#[derive(Debug, Clone, PartialEq, Eq)] pub struct ScanError { pub line: Option<usize> /*1-based*/, pub msg: String }  // file does not parse (P19)
+pub trait PluginMeta { fn id(&self) -> &'static str; fn kinds(&self) -> &'static [KindSpec];
+                       fn default_files(&self) -> &'static [&'static str]; }                 // P22: one method set
 #[allow(async_fn_in_trait)]   // no Send bound by design (§6.2)
-pub trait Plugin { type Target;
-    fn id(&self) -> &'static str; fn kinds(&self) -> &'static [KindSpec]; fn default_files(&self) -> &'static [&'static str];
-    fn scan(&self, path: &Path, text: &str, on: &KindSet) -> Vec<Self::Target>;          // pure; sorted (line, start)
+pub trait Plugin: PluginMeta { type Target;
+    fn scan(&self, path: &Path, text: &str, on: &KindSet) -> Result<Vec<Self::Target>, ScanError>;  // pure; sorted (line, start)
     async fn resolve(&self, ctx: &Ctx, text: &str, t: &Self::Target) -> Finding; }
-pub trait DynPlugin { fn id(&self) -> &'static str; fn kinds(&self) -> &'static [KindSpec]; fn default_files(&self) -> &'static [&'static str];
-    fn plan<'a>(&'a self, ctx: &'a Ctx, path: &'a Path, text: &'a str, on: &'a KindSet, concurrency: usize) -> LocalBoxFuture<'a, Vec<Finding>>; }
-impl<P: Plugin> DynPlugin for P { /* UFCS to Plugin::*; plan = scan → Semaphore(concurrency.max(1)) → join_all(resolve), target order */ }
+pub trait DynPlugin: PluginMeta {
+    fn plan<'a>(&'a self, ctx: &'a Ctx, path: &'a Path, text: &'a str, on: &'a KindSet, concurrency: usize)
+        -> LocalBoxFuture<'a, Result<Vec<Finding>, ScanError>>; }
+impl<P: Plugin> DynPlugin for P { /* plan = scan(..)? (Err → return it, no resolve) → Semaphore(concurrency.max(1)) → join_all(resolve), target order */ }
 
 // run (C6; resolvers C7)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UpdatePolicy { pub enabled: bool, pub allow_major: bool, pub min_age_days: u32 }   // M5d adds `unknown_age: AgePolicy` (P14)
 #[derive(Debug, Clone, Default)] pub struct ResolverEnv { pub home: Option<PathBuf>, pub gitlab_host: String }
 impl ResolverEnv { pub fn from_process(gitlab_host: &str) -> Self }   // home = $HOME
+#[cfg(any(feature = "oci", feature = "gitlab"))] use std::cell::OnceCell;   // unused without features (L2)
 pub struct Ctx { pub update: UpdatePolicy, pub now_unix: i64, env: ResolverEnv,
     #[cfg(feature = "oci")] oci: OnceCell<Result<RegistryClient, String>>,
     #[cfg(feature = "gitlab")] gitlab: OnceCell<Result<GitLabHosts, String>> }
 impl Ctx { pub fn new(update: UpdatePolicy, now_unix: i64, env: ResolverEnv) -> Self;   // builds nothing
-    pub fn env(&self) -> &ResolverEnv; pub fn resolvers_built(&self) -> Vec<&'static str>;   // e.g. ["oci"]
-    #[cfg(feature = "oci")] pub fn oci(&self) -> Result<&RegistryClient, &str>;            // get_or_init(build from env)
+    pub fn env(&self) -> &ResolverEnv;                                                     // C6
+    pub fn resolvers_built(&self) -> Vec<&'static str>;   // e.g. ["oci"]; `#[allow(unused_mut)] let mut v`, cfg'd pushes oci, gitlab
+    #[cfg(feature = "oci")] pub(crate) fn oci(&self) -> Result<&RegistryClient, &str>;     // get_or_init(build from env)
     #[cfg(feature = "oci")] pub fn with_oci(self, c: Result<RegistryClient, String>) -> Self;
-    #[cfg(feature = "gitlab")] pub fn gitlab(&self) -> Result<&GitLabHosts, &str>;
-    #[cfg(feature = "gitlab")] pub fn with_gitlab(self, h: Result<GitLabHosts, String>) -> Self; }
+    #[cfg(feature = "gitlab")] pub(crate) fn gitlab(&self) -> Result<&GitLabHosts, &str>;
+    #[cfg(feature = "gitlab")] pub fn with_gitlab(self, primary_host: &str, c: Result<GitLabClient, String>) -> Self; // GitLabHosts::single
+    // resolve entry points (D38, P21): the only resolver access for plugins and decide_image; memo (M5d) and D31/D37 go here
+    #[cfg(feature = "oci")] pub async fn oci_digest(&self, r: &ImageRef) -> Result<String, RegError>;
+    #[cfg(feature = "oci")] pub async fn oci_tags(&self, r: &ImageRef) -> Result<Vec<String>, RegError>;
+    #[cfg(feature = "oci")] pub async fn oci_tag_times(&self, r: &ImageRef) -> Result<std::collections::BTreeMap<String, i64>, RegError>;
+    //   = self.oci() Err(e) → Err(RegError::Unresolved(e.to_string())); Ok(c) → c.digest / list_tags / tag_timestamps(r).await
+    #[cfg(feature = "gitlab")] pub async fn gitlab_resolve(&self, host: Option<&str>, project: &str, git_ref: &str) -> Result<String, String>; }
+    //   = self.gitlab() Err(e) → Err(e); None → primary(); Some(h) → get(h) or Err("gitlab: no client for {h}"); resolve(..).map_err(to_string)
 pub fn now_unix() -> i64;                                   // moved from gitlab-ci lib.rs:139
 #[derive(Debug, Clone, Copy, PartialEq, Eq)] pub struct RunOptions { pub dry_run: bool, pub check: bool, pub concurrency: usize }
-#[derive(Debug, Clone, PartialEq, Eq)] pub enum FileError { Read { path: String, msg: String }, Write { path: String, msg: String } } // Display "{path}: {msg}"
+#[derive(Debug, Clone, PartialEq, Eq)] pub enum FileError { Read { path: String, msg: String },
+    Parse { path: String, line: Option<usize>, msg: String }, Write { path: String, msg: String } }
+// Display: Read/Write "{path}: {msg}"; Parse "{path}:{line}: {msg}", or "{path}: {msg}" when line is None
 pub async fn pin_file(p: &dyn DynPlugin, ctx: &Ctx, path: &Path, on: &KindSet, o: &RunOptions) -> Result<Vec<Row>, FileError>;
 ```
 
@@ -379,13 +412,13 @@ gitlab = `Ok(GitLabHosts::single(&env.gitlab_host, GitLabClient::from_env(format
 
 `pin_file` algorithm (C6; C11 inserts `coalesce_comments`):
 1. `text = read_to_string(path)` → `FileError::Read { path: path.display().to_string(), msg: e.to_string() }`.
-2. `findings = p.plan(ctx, path, &text, on, o.concurrency).await`; stable sort by `line`.
+2. `findings = p.plan(ctx, path, &text, on, o.concurrency).await` → `Err(ScanError{line, msg})` → `FileError::Parse { path, line, msg }` (no rows, no write); stable sort by `line`.
 3. Overlap: for splices a, b of **different** findings, overlap ⇔ (both replacements ∧ a.start < b.end ∧ b.start < a.end) ∨ (one insertion at q, one replacement [s,e) ∧ s < q < e). Each finding involved → `status Unresolved`, `reason "internal: overlapping edits"`, `new None`, `edits` cleared.
 4. `splices` = all remaining edits in finding order (C11: `coalesce_comments(splices)`).
 5. If `!o.dry_run && !o.check && !splices.is_empty()`: write `apply(&text, &splices)` → `FileError::Write {..}` on error.
 6. Rows: `Row { plugin: p.id(), kind: f.kind, file: path.display().to_string(), line: f.line + 1, .. }` (`follow_up` is dropped; decided: widen the return when M8b needs it).
 
-### pin-gitlab-ci interface (C9/C10)
+### pin-gitlab-ci interface (C9/C10b)
 
 ```rust
 pub mod discover;                                  // verbatim
@@ -398,21 +431,24 @@ pub const KINDS: [KindSpec; 3] = [
     KindSpec { id: "include", default_on: true, help: "include: project/ref mappings (C4)" } ];
 pub const DEFAULT_FILES: [&str; 3] = [".gitlab-ci.yml", "**/*.gitlab-ci.yml", ".gitlab/ci/**/*.yml"];
 #[derive(Debug, Clone)] pub struct GitlabCi { pub gitlab_hosts: Vec<String> }   // Default: ["gitlab.com"]
-impl Plugin for GitlabCi { type Target = PinTarget; /* id "gitlab-ci"; scan = discover(text) ∩ on (Image→"image", Component→"component", IncludeRef→"include") */ }
+impl PluginMeta for GitlabCi { /* id "gitlab-ci", kinds &KINDS, default_files &DEFAULT_FILES */ }
+impl Plugin for GitlabCi { type Target = PinTarget; /* scan = Ok(discover(text) ∩ on) (Image→"image", Component→"component", IncludeRef→"include"); never Err until M5c-y */ }
 // driver
 pub async fn pin_files(paths: &[PathBuf], opts: &PinOptions, reg: &RegistryClient, gitlab: &GitLabClient) -> Result<Report, String>;
 //   ctx = Ctx::new(UpdatePolicy{ enabled: opts.update, allow_major: opts.update_major,
 //                  min_age_days: u32::try_from(opts.min_age_days).unwrap_or(u32::MAX) },
 //                  now_unix(), ResolverEnv::from_process(&opts.gitlab_host))
-//           .with_oci(Ok(reg.clone())).with_gitlab(Ok(GitLabHosts::single(&opts.gitlab_host, gitlab.clone())));
+//           .with_oci(Ok(reg.clone())).with_gitlab(&opts.gitlab_host, Ok(gitlab.clone()));
 //   plugin = GitlabCi { gitlab_hosts: vec![opts.gitlab_host.clone()] }; on = KindSet::defaults(&KINDS);
 //   ∀ path in order: rows.extend(pin_file(&plugin, &ctx, path, &on, &RunOptions{dry_run: opts.dry_run, check: false,
 //                    concurrency: opts.concurrency}).await.map_err(|e| e.to_string())?); Ok(Report::new(rows))
 ```
 
 Policy (behaviour of today's `lib.rs:344-460`, order preserved so no client is built before it is needed):
-- component: `parts None` → Skipped `unparseable reference`; `host ∉ gitlab_hosts` → Skipped `host not enabled: {host}`; `is_commit_sha(version)` → Ok; `is_catalog_managed(version)` → Skipped `catalog-managed version`; `ctx.gitlab()` Err(e) → Unresolved e; `.get(host)` None → Unresolved `gitlab: no client for {host}`; `resolve` Err(e) → Unresolved `e.to_string()`; Ok(sha) → Pinned, edits `[replace(start, end, requote(token, "{host}/{project}/{name}@{sha}"))] ⧺ trailing_comment(text, line, end, version)`.
-- include: `is_commit_sha(value)` → Ok; `value.contains('$')` → Skipped `templated reference`; `ctx.gitlab()?.primary().resolve(project, value)`; Ok(sha) → Pinned, edits `[replace(.., requote(token, sha))] ⧺ trailing_comment(text, line, end, value)`.
+- image: `pin_inline_image(ctx, text, line, start, end, value, "image")` (services too, until M5d's `service` kind).
+- component: `parts None` → Skipped `unparseable reference`; `host ∉ gitlab_hosts` → Skipped `host not enabled: {host}`; `pin_core::git::is_commit_sha(version)` → Ok; `is_catalog_managed(version)` → Skipped `catalog-managed version`; `ctx.gitlab_resolve(Some(host), project, version)` Err(e) → Unresolved e (covers the construction error, `gitlab: no client for {host}` and `e.to_string()`, same texts as today); Ok(sha) → Pinned, edits `[replace(start, end, requote(token, "{host}/{project}/{name}@{sha}"))] ⧺ trailing_comment(text, line, end, version)`.
+- include: `is_commit_sha(value)` → Ok; `value.contains('$')` → Skipped `templated reference`; `ctx.gitlab_resolve(None, project, value)` Err(e) → Unresolved e; Ok(sha) → Pinned, edits `[replace(.., requote(token, sha))] ⧺ trailing_comment(text, line, end, value)`.
+- Policy never calls `ctx.oci()`/`ctx.gitlab()` (`pub(crate)`, D38).
 - `Finding.reference` = `t.value()`, `old` = `text[start..end]`, kinds `"component"` / `"include"`.
 
 ---
@@ -491,7 +527,7 @@ ci-images-edge.yml:      image: alpine / stale: / "  image: alpine:3.20@sha256:"
 - [ ] Step 2: `git mv src crates/pin-gitlab-ci/src && git mv tests crates/pin-gitlab-ci/tests && git mv Cargo.toml crates/pin-gitlab-ci/Cargo.toml`; write the root manifest (B1 part of the snippet); package keeps `name = "pin-ci"`, switches to `version.workspace = true`, `edition.workspace = true`.
 - [ ] RED: gate → `oracle_repo_root_has_script` FAILS (REPO now `crates/pin-gitlab-ci`) ☐ — everything else green.
 - [ ] GREEN: `oracle.rs:21` → `const REPO: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");` (doc comment: "repo root: two levels above the crate").
-- [ ] Gate → passed 157, `git status` shows no `.snap` change and no `.snap.new` (insta resolves `crates/pin-gitlab-ci/tests/snapshots/`; metadata `source:` paths are not compared — verified in scratch). `git show --stat -M` lists the moves as renames; `Cargo.lock` unchanged or path-only diff.
+- [ ] Gate → passed 157, `git status` shows no `.snap` change and no `.snap.new` (insta resolves `crates/pin-gitlab-ci/tests/snapshots/`; metadata `source:` paths are not compared — verified in scratch). `git show --stat -M` lists the `src/`/`tests/` moves as renames; the root `Cargo.toml` shows as *modified* and `crates/pin-gitlab-ci/Cargo.toml` as *new* (a new file sits at the old path — expected, not a failed rename); `Cargo.lock` unchanged or path-only diff.
 - [ ] Commit: `refactor: M5b move pin-ci into a cargo workspace (crates/pin-gitlab-ci)`.
 
 ## M5c — pin-core split
@@ -501,8 +537,8 @@ ci-images-edge.yml:      image: alpine / stale: / "  image: alpine:3.20@sha256:"
 **Files:** `git mv` `crates/pin-gitlab-ci/src/image_ref.rs` → `crates/pin-core/src/oci/image_ref.rs`; `registry.rs` → `crates/pin-core/src/oci/registry.rs`; `gitlab.rs` → `crates/pin-core/src/gitlab.rs`; `versioning.rs` → `crates/pin-core/src/ver/docker.rs`; `report.rs` → `crates/pin-core/src/report.rs`; tests `mock_registry.rs`, `registry_hosts.rs`, `hub_api.rs`, `gitlab_client.rs`, `live_gitlab.rs` → `crates/pin-core/tests/`. Create `crates/pin-core/{Cargo.toml, src/lib.rs, src/oci/mod.rs, src/ver/mod.rs}`. Modify root `Cargo.toml` (`[workspace.dependencies]`), `crates/pin-gitlab-ci/Cargo.toml`, `crates/pin-gitlab-ci/src/lib.rs:1-7`.
 
 - [ ] pin-core `lib.rs`: `pub mod oci; pub mod report; pub mod ver; #[cfg(feature = "gitlab")] pub mod gitlab;` plus `#[cfg(feature = "oci")] pub(crate) use oci::image_ref; // C1 alias: moved registry.rs says crate::image_ref; removed in C3`. `oci/mod.rs`: `pub mod image_ref; #[cfg(feature = "oci")] pub mod registry;`. `ver/mod.rs`: `pub mod docker;`.
-- [ ] Only content edits inside moved files: `registry.rs:852` `pub(crate) fn is_old_enough` → `pub fn` (now used cross-crate). Moved tests: `use` lines only — `pin_ci::registry` → `pin_core::oci::registry`, `pin_ci::image_ref` → `pin_core::oci::image_ref`, `pin_ci::gitlab` → `pin_core::gitlab` (incl. the inline paths in `live_gitlab.rs:101,122,147`).
-- [ ] pin-gitlab-ci `lib.rs:1-7` → `pub mod discover; pub mod edit;` + `pub use pin_core::{gitlab, report}; pub use pin_core::oci::{image_ref, registry}; pub use pin_core::ver::docker as versioning;` (keeps every `crate::…`/`pin_ci::…` path valid; removed in C10). Manifests per snippet; gitlab-ci keeps its other deps for now.
+- [ ] Only content edits inside moved files: `registry.rs:852` `pub(crate) fn is_old_enough` → `pub fn` (now used cross-crate). Moved tests: `use` lines only — `pin_ci::registry` → `pin_core::oci::registry`, `pin_ci::image_ref` → `pin_core::oci::image_ref`, `pin_ci::gitlab` → `pin_core::gitlab` (incl. the inline paths in `live_gitlab.rs:101,122,147` and `hub_api.rs:15`).
+- [ ] pin-gitlab-ci `lib.rs:1-7` → `pub mod discover; pub mod edit;` + `pub use pin_core::{gitlab, report}; pub use pin_core::oci::{image_ref, registry}; pub use pin_core::ver::docker as versioning;` (keeps every `crate::…`/`pin_ci::…` path valid; removed in C10c). Manifests per snippet; gitlab-ci keeps its other deps for now.
 - [ ] Gate + feature matrix → passed 157 (unit tests now split across two crates; same total). Planted: drop `#[cfg(feature = "oci")]` from `pub mod registry` → `--no-default-features` clippy FAILS ☐; restore. Run `cargo test -p pin-core` (no features) once and note the lower count — the reason the gate uses `--workspace --all-features` ☐.
 - [ ] `git show --stat -M HEAD` after commit: 10 renames, similarity ≥ 95 %.
 - [ ] Commit: `refactor: M5c move image_ref, registry, gitlab, versioning, report into pin-core (move-only)`.
@@ -511,18 +547,18 @@ ci-images-edge.yml:      image: alpine / stale: / "  image: alpine:3.20@sha256:"
 
 **Files:** `crates/pin-gitlab-ci/Cargo.toml`, `Cargo.lock`, `crates/pin-gitlab-ci/src/main.rs:4`, `crates/pin-gitlab-ci/tests/*.rs` (`pin_ci::` → `pin_gitlab_ci::`, mechanical), `README.md` (Tests section: `cargo test` → `cargo test --workspace --all-features`; `--test live` → `-p pin-gitlab-ci --test live`; `--test oracle` → `-p pin-gitlab-ci --test oracle`; add `PIN_CI_LIVE=1 cargo test -p pin-core --all-features --test live_gitlab`).
 
-- [ ] RED: add to the gate for this task: `cargo build -p pin-gitlab-ci && test -x target/debug/pin-ci && test ! -e target/debug/pin-gitlab-ci` → FAILS before the rename (`-p pin-gitlab-ci` unknown) ☐.
-- [ ] GREEN: `name = "pin-gitlab-ci"`, `[[bin]] name = "pin-ci", path = "src/main.rs"`; `rm -f target/debug/pin-gitlab-ci` if a stale one exists; sed the crate path.
-- [ ] Planted: remove `[[bin]]` → `target/debug/pin-gitlab-ci` appears, `pin-ci` absent → check FAILS ☐; restore.
+- [ ] RED: add to the gate for this task the bin check `cargo run -q -p pin-gitlab-ci --bin pin-ci -- --help >/dev/null && ! cargo run -q -p pin-gitlab-ci --bin pin-gitlab-ci -- --help >/dev/null 2>&1` → FAILS before the rename (package `pin-gitlab-ci` unknown) ☐. Cargo resolves `--bin` from the manifest, so stale `target/debug/*` files cannot make it pass.
+- [ ] GREEN: `name = "pin-gitlab-ci"`, `[[bin]] name = "pin-ci", path = "src/main.rs"`; sed the crate path.
+- [ ] Planted: remove `[[bin]]` → the bin is named `pin-gitlab-ci`, `--bin pin-ci` errors `no bin target named` → check FAILS ☐; restore → passes again.
 - [ ] Gate → 157. Commit: `refactor: M5c rename package pin-ci → pin-gitlab-ci (bin pin-ci kept until M5d)`.
 
-### Task C3 — pin-core paths, `ver::age`, `gitlab::is_commit_sha`
+### Task C3 — pin-core paths, `ver::age`, `git::is_commit_sha`
 
-**Files:** `crates/pin-core/src/{lib.rs, oci/mod.rs, oci/registry.rs, ver/mod.rs, gitlab.rs}`, create `crates/pin-core/src/ver/age.rs`; `crates/pin-gitlab-ci/src/lib.rs` (lines 18-24, 108-111 and the two `is_sha` calls).
+**Files:** `crates/pin-core/src/{lib.rs, oci/mod.rs, oci/registry.rs, ver/mod.rs, gitlab.rs}`, create `crates/pin-core/src/ver/age.rs`, `crates/pin-core/src/git.rs`; `crates/pin-gitlab-ci/src/lib.rs` (lines 18-24, 108-111 and the two `is_sha` calls).
 
-- [ ] RED: unit `is_commit_sha_table` in `gitlab.rs`: true for `"e3262fdd0914fa823210cdb79a8c421e2cef79d8"`; false for the same uppercased, 39 and 41 chars, a `g` inside, `""` → fails (function missing).
-- [ ] GREEN: `gitlab.rs:335` `fn is_sha` → `pub fn is_commit_sha` (update its call site); delete gitlab-ci `lib.rs:108-111` `is_sha`, call `pin_core::gitlab::is_commit_sha`. Move `days_in_month`, `civil_to_days`, `parse_rfc3339_unix` (now `pub`), `is_old_enough` from `registry.rs:758-855` to `ver/age.rs` with their tests `rfc3339_parse_table`, `is_old_enough_table` (moved verbatim, reason: travel with the function); `registry.rs` imports `crate::ver::age::parse_rfc3339_unix`; gitlab-ci lib.rs imports `pin_core::ver::age::is_old_enough`. Remove the C1 crate-root alias; `registry.rs:21` → `use crate::oci::image_ref::ImageRef;`. `oci/mod.rs`: `pub use image_ref::ImageRef; #[cfg(feature = "oci")] pub use registry::RegistryClient;`.
-- [ ] Gate + matrix → 158. Commit: `refactor: M5c pin-core paths, ver::age, gitlab::is_commit_sha (dedup is_sha)`.
+- [ ] RED: unit `is_commit_sha_table` in `git.rs` (ungated, P20): true for `"e3262fdd0914fa823210cdb79a8c421e2cef79d8"`; false for the same uppercased, 39 and 41 chars, a `g` inside, `""` → fails (function missing).
+- [ ] GREEN: move the body of `gitlab.rs:335` `fn is_sha` to `git.rs` as `pub fn is_commit_sha`; `lib.rs` gets `pub mod git;`; `gitlab.rs:151` calls `crate::git::is_commit_sha` (no re-export from `gitlab`); delete gitlab-ci `lib.rs:108-111` `is_sha`, call `pin_core::git::is_commit_sha`. Move `days_in_month`, `civil_to_days`, `parse_rfc3339_unix` (now `pub`), `is_old_enough` from `registry.rs:758-855` to `ver/age.rs` with their tests `rfc3339_parse_table`, `is_old_enough_table` (moved verbatim, reason: travel with the function); `registry.rs` imports `crate::ver::age::parse_rfc3339_unix`; gitlab-ci lib.rs imports `pin_core::ver::age::is_old_enough`. Remove the C1 crate-root alias; `registry.rs:21` → `use crate::oci::image_ref::ImageRef;`. `oci/mod.rs`: `pub use image_ref::ImageRef; #[cfg(feature = "oci")] pub use registry::RegistryClient;`.
+- [ ] Gate + matrix → 158. Commit: `refactor: M5c pin-core paths, ver::age, git::is_commit_sha (dedup is_sha)`.
 
 ### Task C4 — `Status` enum and `Row` (rename of `RefResult`)
 
@@ -544,47 +580,66 @@ ci-images-edge.yml:      image: alpine / stale: / "  image: alpine:3.20@sha256:"
 
 ### Task C6 — `plugin` + `run::pin_file` (no resolvers yet)
 
-**Files:** create `crates/pin-core/src/plugin.rs`, `crates/pin-core/src/run.rs` (`Ctx` with `update`, `now_unix`, `env` only; `now_unix()` copied from gitlab-ci `lib.rs:139` — gitlab-ci switches to it in C10), `crates/pin-core/tests/run_pin_file.rs`. `join_all` copied verbatim from gitlab-ci `lib.rs:469-500` as `pub(crate)` (gitlab-ci copy deleted in C10).
+**Files:** create `crates/pin-core/src/plugin.rs` (`KindSpec`, `KindSet`, `Finding`, `ScanError`, `PluginMeta`, `Plugin`, `DynPlugin`), `crates/pin-core/src/run.rs` (`Ctx` with `update`, `now_unix`, `env` + `pub fn env()` only — the accessor keeps the private field from `dead_code`; `FileError` incl. `Parse`; `now_unix()` copied from gitlab-ci `lib.rs:139` — gitlab-ci switches to it in C10b), `crates/pin-core/tests/run_pin_file.rs`. `join_all` copied verbatim from gitlab-ci `lib.rs:469-500` as `pub(crate)` (gitlab-ci copy deleted in C10b).
 
-Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flight: Cell<usize>, max_in_flight: Cell<usize> }`, `Target = usize`, `scan` → `0..findings.len()` filtered by `on.contains("x")`, `resolve` → bump in_flight, `tokio::task::yield_now().await` ×3, record max, decrement, return `findings[t].clone()`. Files in `.tmp/run-pin-file-{test}-{pid}/`.
+Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, scan_error: Option<ScanError>, in_flight: Cell<usize>, max_in_flight: Cell<usize> }`; `impl PluginMeta` (id `"fake"`, kinds `[KindSpec { id: "x", default_on: true, help: "" }]`, no files); `Target = usize`, `scan` → `Err(scan_error.clone())` if set, else `Ok(0..findings.len())` filtered by `on.contains("x")`, `resolve` → bump in_flight, `tokio::task::yield_now().await` ×3, record max, decrement, return `findings[t].clone()`. Files in `.tmp/run-pin-file-{test}-{pid}/`.
 
-- [ ] RED (`#[tokio::test]` unless noted): `kindset_defaults_contains_set` (unit, `plugin.rs`): defaults take `default_on`, `set(id, false)` removes, `contains` on unknown id is false · `rows_sorted_one_based_with_plugin_and_kind`: findings at lines 3, 0 → rows lines 1, 4, `plugin "fake"`, `kind "x"` · `writes_only_when_edits`: set the file's mtime to `UNIX_EPOCH + 1000 s` (`File::set_modified`); findings without edits → bytes and mtime unchanged; one replacement → file = `apply` result · `dry_run_and_check_never_write`: `dry_run` or `check` with edits → bytes unchanged, rows still `pinned` · `partial_write_keeps_other_edits`: one `unresolved` finding without edits + one pinned → pinned edit written · `overlapping_edits_mark_both_unresolved`: replacements [5,10) and [8,12) from two findings → both `unresolved`, reason `internal: overlapping edits`, file unchanged; an insertion at 10 next to [5,10) is **not** an overlap · `read_error_is_file_error_with_path`: missing path → `Err(FileError::Read{path, ..})`, `to_string()` starts with the path · `plan_bounds_concurrency`: 5 targets, concurrency 2 → `max_in_flight == 2` · `plan_concurrency_zero_is_one`: concurrency 0 → `max_in_flight == 1`.
+- [ ] RED (`#[tokio::test]` unless noted): `kindset_defaults_contains_set` (unit, `plugin.rs`): defaults take `default_on`, `set(id, false)` removes, `contains` on unknown id is false · `rows_sorted_one_based_with_plugin_and_kind`: findings at lines 3, 0 → rows lines 1, 4, `plugin "fake"`, `kind "x"` · `writes_only_when_edits`: set the file's mtime to `UNIX_EPOCH + 1000 s` (`File::set_modified`); findings without edits → bytes and mtime unchanged; one replacement → file = `apply` result · `dry_run_and_check_never_write`: `dry_run` or `check` with edits → bytes unchanged, rows still `pinned` · `partial_write_keeps_other_edits`: one `unresolved` finding without edits + one pinned → pinned edit written · `overlapping_edits_mark_both_unresolved`: replacements [5,10) and [8,12) from two findings → both `unresolved`, reason `internal: overlapping edits`, file unchanged; an insertion at 10 next to [5,10) is **not** an overlap · `read_error_is_file_error_with_path`: missing path → `Err(FileError::Read{path, ..})`, `to_string()` starts with the path · `plan_bounds_concurrency`: 5 targets, concurrency 2 → `max_in_flight == 2` · `plan_concurrency_zero_is_one`: concurrency 0 → `max_in_flight == 1` · `scan_error_is_file_error_and_no_write` (P19): `scan_error = Some(ScanError { line: Some(3), msg: "bad yaml".into() })` plus one finding with a replacement → `Err(FileError::Parse { path, line: Some(3), msg: "bad yaml".into() })`, `to_string() == format!("{path}:3: bad yaml")`, file bytes unchanged, `max_in_flight == 0` (no resolve ran).
 - [ ] GREEN per the snippets (`pin_file` steps 1–6 without coalesce).
-- [ ] Planted: (a) Semaphore of `usize::MAX >> 3` → `plan_bounds_concurrency` FAILS ☐; (b) delete the overlap step → `overlapping_edits…` FAILS ☐; (c) ignore `o.check` → `dry_run_and_check_never_write` FAILS ☐. Revert each.
-- [ ] Gate + matrix → 169. Commit: `feat: M5c pin-core Plugin/DynPlugin + run::pin_file (bounded join, overlap rule)`.
+- [ ] Planted: (a) Semaphore of `usize::MAX >> 3` → `plan_bounds_concurrency` FAILS ☐; (b) delete the overlap step → `overlapping_edits…` FAILS ☐; (c) ignore `o.check` → `dry_run_and_check_never_write` FAILS ☐; (d) in the blanket `plan`, turn a scan `Err` into `Ok(vec![])` → `scan_error_is_file_error_and_no_write` FAILS ☐. Revert each.
+- [ ] Gate + matrix → 170. Commit: `feat: M5c pin-core Plugin/DynPlugin + run::pin_file (bounded join, overlap rule)`.
 
-### Task C7 — lazy, feature-gated resolvers in `Ctx` (D36)
+### Task C7 — lazy, feature-gated resolvers in `Ctx` (D36) + resolve entry points (D38)
 
-**Files:** `crates/pin-core/src/run.rs`, `crates/pin-core/src/gitlab.rs` (`GitLabHosts`), create `crates/pin-core/tests/lazy_resolvers.rs` (`required-features = ["oci", "gitlab"]`).
+**Files:** `crates/pin-core/src/run.rs` (accessors, presets, entry points; tests in `#[cfg(all(test, feature = "oci", feature = "gitlab"))] mod resolver_tests` — unit tests, because `oci()`/`gitlab()` are `pub(crate)` (P21); local fake as in C6; files under `.tmp/run-resolvers-{test}-{pid}/`), `crates/pin-core/src/gitlab.rs` (`pub(crate) GitLabHosts`).
 
-- [ ] RED: `no_resolver_needed_builds_none`: `Ctx::new(Default::default(), 0, ResolverEnv { home: None, gitlab_host: "gitlab.com".into() })`; run `pin_file` with a fake whose findings never touch `ctx` → `resolvers_built() == Vec::<&str>::new()` · `oci_target_builds_only_oci`: a fake whose `resolve` calls `ctx.oci()` once → `["oci"]` · `construction_error_is_cached`: `ctx.with_oci(Err("ca: unreadable".into()))` → `ctx.oci() == Err("ca: unreadable")` twice, `resolvers_built() == ["oci"]`.
-- [ ] GREEN per the interface snippet: `OnceCell::get_or_init` with the builders; `resolvers_built` lists initialised cells in the order oci, gitlab; `pub fn env()`.
-- [ ] Planted: initialise both cells in `Ctx::new` → `no_resolver_needed_builds_none` FAILS ☐; revert.
-- [ ] Gate + matrix (the `--features oci` / `--features gitlab` legs now compile the cfg'd fields separately) → 172. Commit: `feat: M5c lazy feature-gated resolvers in Ctx (D36)`.
+- [ ] RED (`#[tokio::test]`): `no_resolver_needed_builds_none`: `Ctx::new(Default::default(), 0, ResolverEnv { gitlab_host: "gitlab.com".into(), ..Default::default() })` (L9: tests never list every `ResolverEnv` field, so M5d/M5e' fields stay defaulted); run `pin_file` with a fake whose `resolve` never touches `ctx` → `resolvers_built() == Vec::<&str>::new()` · `oci_target_builds_only_oci`: a fake whose `resolve` calls `ctx.oci()` once → `["oci"]` (building sends no request) · `construction_error_is_cached`: `ctx = Ctx::new(..).with_oci(Err("ca: unreadable".into()))` → `ctx.oci().err() == Some("ca: unreadable")` twice; `matches!(ctx.oci_digest(&ImageRef::parse("alpine:3.20").unwrap()).await, Err(RegError::Unresolved(m)) if m == "ca: unreadable")`; `resolvers_built() == ["oci"]` · `gitlab_resolve_errors_without_request`: `Ctx::new(..).with_gitlab("gitlab.com", Ok(GitLabClient::new("http://127.0.0.1:9".into(), None, false)))` → `gitlab_resolve(Some("example.org"), "g/p", "main").await == Err("gitlab: no client for example.org".into())`; `Ctx::new(..).with_gitlab("gitlab.com", Err("ca: x".into()))` → `gitlab_resolve(None, "g/p", "main").await == Err("ca: x".into())`.
+- [ ] GREEN per the interface snippet: `OnceCell::get_or_init` with the builders; `resolvers_built` lists initialised cells in the order oci, gitlab; the four entry points (the oci ones land here: a `pub(crate) oci()` without a lib caller is `dead_code` under `-D warnings`).
+- [ ] Planted: (a) initialise both cells in `Ctx::new` → `no_resolver_needed_builds_none` FAILS ☐; (b) `gitlab_resolve` ignores `host` (always `primary()`) → `gitlab_resolve_errors_without_request` FAILS ☐. Revert each.
+- [ ] Gate + matrix (the `--features oci` / `--features gitlab` legs now compile the cfg'd fields separately; `--no-default-features` rejects an unconditional `OnceCell` import or a plain `let mut v`) → 174. Commit: `feat: M5c lazy feature-gated resolvers in Ctx (D36) + resolve entry points (D38)`.
 
 ### Task C8 — `oci::decide_image` + `pin_inline_image`
 
 **Files:** create `crates/pin-core/src/oci/decide.rs`, `crates/pin-core/tests/oci_decide.rs` (`required-features = ["oci"]`; wiremock as in `tests/e2e.rs:15-106`, client via `Ctx::new(..).with_oci(Ok(RegistryClient::new(Default::default(), {docker.io, ghcr.io → mock})))`).
 
-`decide_image` = today's `resolve_image` (`lib.rs:165-341`) from the `digest` call on, with `ctx.oci()` (Err → `Err(e.to_string())`), `ctx.update` for `opts.update`/`update_major`/`min_age_days` (`u64::from`), `ctx.now_unix` for `now_unix()`; guard condition unchanged (`min_age_days > 0 ∧ r.is_docker_hub()`). `pin_inline_image`: parse first (Err → Skipped `unparseable reference`, no client), then map `ImageDecision` → `Finding` (`Pin` → `splice_value`, `Update` → `splice_update`, one `Splice::replace(start, end, token)`; `Current` → Ok; `Skip(r)` → Skipped r; `Err(m)` → Unresolved m). The old `resolve_image` stays in gitlab-ci until C10 (one-commit duplication, deleted there).
+`decide_image` = today's `resolve_image` (`lib.rs:165-341`) from the `digest` call on, with `client.digest`/`list_tags`/`tag_timestamps` → `ctx.oci_digest`/`oci_tags`/`oci_tag_times` (D38; same `RegError` matches, so every error text is today's; a construction error arrives as `RegError::Unresolved(e)` → reason `e`), `ctx.update` for `opts.update`/`update_major`/`min_age_days` (`u64::from`), `ctx.now_unix` for `now_unix()`; guard condition unchanged (`min_age_days > 0 ∧ r.is_docker_hub()`). `pin_inline_image(.., value, kind)` (P24; `Finding.kind = kind`): parse first (Err → Skipped `unparseable reference`, no client), then map `ImageDecision` → `Finding` (`Pin` → `splice_value`, `Update` → `splice_update`, one `Splice::replace(start, end, token)`; `Current` → Ok; `Skip(r)` → Skipped r; `Err(m)` → Unresolved m). The old `resolve_image` stays in gitlab-ci until C10b (deleted there).
 
-- [ ] RED: `decide_pin_unpinned` (alpine:3.20 → `Pin{D1}`) · `decide_current_when_digest_matches` · `decide_update_bumps_to_latest_stable` (tags 3.16/3.20/3.24, enabled → `Update{"3.24", D2}`) · `decide_tag_list_error_is_prefixed` (tags/list 500 → `Err` starting `tag list: `) · `decide_digest_error_is_inner_message` (`mystery:1.0` 404 → `Err("library/mystery:1.0 not found")`) · `inline_unparseable_builds_no_client` (value `${X}:${Y}` on a ctx without presets → Skipped, `resolvers_built()` empty) · `inline_pin_single_splice_keeps_quotes` (text `image: "alpine:3.20"\n`, span 7..20 → `edits == [Splice::replace(7, 20, "\"alpine:3.20@{D1}\"")]`, `new` same) · `inline_construction_error_is_unresolved` (`with_oci(Err("ca: x"))` → Unresolved, reason `ca: x`).
+- [ ] RED: `decide_pin_unpinned` (alpine:3.20 → `Pin{D1}`) · `decide_current_when_digest_matches` · `decide_update_bumps_to_latest_stable` (tags 3.16/3.20/3.24, enabled → `Update{"3.24", D2}`) · `decide_tag_list_error_is_prefixed` (tags/list 500 → `Err` starting `tag list: `) · `decide_digest_error_is_inner_message` (`mystery:1.0` 404 → `Err("library/mystery:1.0 not found")`) · `inline_unparseable_builds_no_client` (value `${X}:${Y}` on a ctx without presets → Skipped, `resolvers_built()` empty) · `inline_pin_single_splice_keeps_quotes` (text `image: "alpine:3.20"\n`, span 7..20, kind `"service"` → `edits == [Splice::replace(7, 20, "\"alpine:3.20@{D1}\"")]`, `new` same, `kind == "service"`) · `inline_construction_error_is_unresolved` (`with_oci(Err("ca: x"))` → Unresolved, reason `ca: x`).
 - [ ] GREEN as above.
 - [ ] Planted: drop the `tag list: ` prefix → its test FAILS ☐; revert.
-- [ ] Gate + matrix → 180. Commit: `feat: M5c oci::decide_image + pin_inline_image (image policy in core)`.
+- [ ] Gate + matrix → 182. Commit: `feat: M5c oci::decide_image + pin_inline_image (image policy in core)`.
 
 ### Task C9 — `GitlabCi: Plugin` + `policy.rs`
 
-**Files:** `crates/pin-gitlab-ci/src/lib.rs` (add `KINDS`, `DEFAULT_FILES`, `GitlabCi`, `impl Plugin`), create `crates/pin-gitlab-ci/src/policy.rs` (new `&Ctx`-based `resolve_component`, `resolve_include`; `is_catalog_managed` moves here with its test in C10), create `crates/pin-gitlab-ci/tests/plugin.rs` (uses `tests/common`).
+**Files:** `crates/pin-gitlab-ci/src/lib.rs` (add `KINDS`, `DEFAULT_FILES`, `GitlabCi`, `impl PluginMeta`, `impl Plugin`), create `crates/pin-gitlab-ci/src/policy.rs` (new `&Ctx`-based `resolve_component`, `resolve_include` via `ctx.gitlab_resolve` only; `is_catalog_managed` moves here with its test in C10b), create `crates/pin-gitlab-ci/tests/plugin.rs` (uses `tests/common`).
 
-- [ ] RED: `scan_filters_by_kind` (pure): `ci-rich.yml` with `on = defaults` → 7 targets; with `include` off → 6, none `IncludeRef`; with `image` off → 1 · `ids_kinds_and_files`: `id() == "gitlab-ci"`, kind ids `["image", "component", "include"]` all `default_on`, `default_files() == DEFAULT_FILES` · `component_other_host_builds_no_client`: `component: example.org/g/p/c@1.0.0` → Skipped `host not enabled: example.org`, `resolvers_built()` empty · `include_pin_has_replacement_and_comment`: fakes + `include:\n  project: g/p\n  ref: main\n` → Pinned, `edits == [replace(span, sha), insert(line_end, "  # main")]`.
+- [ ] RED: `scan_filters_by_kind` (pure; `scan(..).unwrap()`, never `Err` before M5c-y): `ci-rich.yml` with `on = defaults` → 7 targets; with `include` off → 6, none `IncludeRef`; with `image` off → 1 · `ids_kinds_and_files` (imports `Plugin`, `DynPlugin` and `PluginMeta`; plain method calls compile, P22): `id() == "gitlab-ci"`, kind ids `["image", "component", "include"]` all `default_on`, `default_files() == DEFAULT_FILES` · `component_other_host_builds_no_client`: `component: example.org/g/p/c@1.0.0` → Skipped `host not enabled: example.org`, `resolvers_built()` empty · `include_pin_has_replacement_and_comment`: fakes, `Ctx::new(..).with_gitlab("gitlab.com", Ok(gitlab_client(&fakes)))`, `include:\n  project: g/p\n  ref: main\n` → Pinned, `edits == [replace(span, sha), insert(line_end, "  # main")]`.
 - [ ] GREEN per the gitlab-ci snippet and policy list.
-- [ ] Planted: make `scan` ignore `on` → `scan_filters_by_kind` FAILS ☐; revert.
-- [ ] Gate + matrix → 184. Commit: `feat: M5c GitlabCi plugin (pure scan, policy on Ctx)`.
+- [ ] Planted: (a) make `scan` ignore `on` → `scan_filters_by_kind` FAILS ☐; (b) in `policy.rs` replace `ctx.gitlab_resolve(None, ..)` by `ctx.gitlab()` → compile error E0624 (private method, D38) ☐. Revert each.
+- [ ] Gate + matrix → 186. Commit: `feat: M5c GitlabCi plugin (pure scan, policy on Ctx)`.
 
-### Task C10 — switch to `pin_file` + driver; delete the old path (refactor)
+C10 is three refactor commits (P23). Each carries before/after evidence instead of a planted violation: save `INSTA_UPDATE=no cargo test --workspace --all-features` as `.tmp/c10{a,b,c}-before.log` / `-after.log`; passed count 186 before and after; no `*.snap`/property change.
 
-**Files:** create `crates/pin-gitlab-ci/src/driver.rs`; rewrite `crates/pin-gitlab-ci/src/lib.rs` (delete `PinOptions`…`exit_code` and the old resolve path `:26-575`; `is_catalog_managed_table` → `policy.rs`); `crates/pin-core/src/oci/registry.rs` + `gitlab.rs` (P11: `#[derive(Clone)]`, `tokens`/`tag_lists`/`cache` → `Arc<Mutex<…>>`, `Creds: Clone`); gitlab-ci `Cargo.toml` (drop deps no longer used: reqwest, sha2, serde; serde_json → dev-dep if unused in src); tests' `use` lines (table below); `main.rs` unchanged.
+### Task C10a — `Clone` clients with shared caches (P11; refactor)
+
+**Files:** `crates/pin-core/src/oci/registry.rs`, `crates/pin-core/src/gitlab.rs` (`#[derive(Clone)]` on `RegistryClient`, `GitLabClient`, `Creds` (+ `HostCreds` if needed); `tokens`/`tag_lists`/`cache` → `Arc<tokio::sync::Mutex<…>>`, so clones share one cache).
+
+- [ ] Evidence before → change → evidence after: `diff <(grep '^test ' .tmp/c10a-before.log | sort) <(grep '^test ' .tmp/c10a-after.log | sort)` empty; `git diff --stat` touches only the two files.
+- [ ] Gate + matrix → 186. Commit: `refactor: M5c RegistryClient/GitLabClient Clone with Arc-shared caches (P11)`.
+
+### Task C10b — switch to `pin_file` + driver; delete the old path; tests byte-identical (refactor)
+
+**Files:** create `crates/pin-gitlab-ci/src/driver.rs`; rewrite `crates/pin-gitlab-ci/src/lib.rs` (delete `PinOptions`…`exit_code` and the old resolve path `:26-575`; `is_catalog_managed_table` → `policy.rs`; **keep** the C1 re-exports and the crate-root `pub use …::{ImageRef, RegistryClient}`, now from `pin_core`). Nothing under `crates/*/tests`, no manifest change.
+
+- [ ] Evidence before.
+- [ ] Do the switch per the driver snippet.
+- [ ] Evidence after: `git diff --stat HEAD -- crates/pin-gitlab-ci/tests crates/pin-core/tests` **empty** (tests byte-identical); test-name diff lists only `is_catalog_managed_table`'s module path (`lib` → `policy`); `git diff --stat` shows lib.rs shrinking by ≥ 400 lines.
+- [ ] By hand (coverage gap 3): `cargo run -p pin-gitlab-ci --bin pin-ci -- --dry-run --json crates/pin-gitlab-ci/tests/fixtures/ci-simple.yml` → JSON report, no panic.
+- [ ] Gate + matrix → 186. Commit: `refactor: M5c pin-gitlab-ci runs through pin_core::run::pin_file; pin_files kept as doc-hidden driver until M5d`, body: "`now_unix` is read once per run (`Ctx`) instead of per image; unseen in snapshots (e2e stamps 2020/2999)."
+
+### Task C10c — drop the re-exports; tests import `pin_core`; drop unused deps (refactor)
+
+**Files:** `crates/pin-gitlab-ci/src/lib.rs` (remove the C1 re-exports and crate-root `ImageRef`/`RegistryClient`); tests' `use` lines (table below); `main.rs` unchanged (uses only driver re-exports); gitlab-ci `Cargo.toml` (drop deps no longer used: reqwest, sha2, serde; serde_json → dev-dep if unused in src).
 
 | Old path (tests, main) | New path |
 |---|---|
@@ -595,11 +650,9 @@ Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flig
 | `pin_gitlab_ci::report::…` | `pin_core::report::…` |
 | `pin_gitlab_ci::{PinOptions, pin_files, exit_code, client_from_env, gitlab_from_env}` | unchanged (driver re-export) |
 
-- [ ] Evidence before: `INSTA_UPDATE=no cargo test --workspace --all-features` log saved as `.tmp/c10-before.log`.
-- [ ] Do the switch per the driver snippet; remove the C1 re-exports from lib.rs.
-- [ ] Evidence after: same passed count (184), zero snapshot/property change, `diff <(grep '^test ' .tmp/c10-before.log | sort) <(grep '^test ' .tmp/c10-after.log | sort)` lists only renamed module paths of moved unit tests. `git diff --stat` shows lib.rs shrinking by ≥ 400 lines.
-- [ ] By hand (coverage gap 3): `cargo run -p pin-gitlab-ci --bin pin-ci -- --dry-run --json crates/pin-gitlab-ci/tests/fixtures/ci-simple.yml` → JSON report, no panic.
-- [ ] Gate + matrix → 184. Commit: `refactor: M5c pin-gitlab-ci runs through pin_core::run::pin_file; pin_files kept as doc-hidden driver until M5d`.
+- [ ] Evidence before → remove the re-exports; `cargo check --workspace --all-targets --all-features` lists every stale path; fix per the table; drop each dep and re-check.
+- [ ] Evidence after: test-name diff empty; every changed test line is a path change: `git diff -U0 -- crates/pin-gitlab-ci/tests | grep -E '^[-+]' | grep -vE '^(\+\+\+|---)' | grep -vE 'pin_(gitlab_ci|core)::'` → empty, or only continuation lines of a multi-line `use` (check those by eye).
+- [ ] Gate + matrix → 186. Commit: `refactor: M5c drop pin-gitlab-ci re-exports; tests import pin_core directly; drop unused deps`.
 
 ### Task C11 — fix R1: one combined trailing comment per line, source order
 
@@ -610,32 +663,32 @@ Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flig
 - [ ] Snapshot: `INSTA_UPDATE=always cargo test --test fixture_snapshots`; `git diff` must touch **only** `ci-r1-flow-include__pin__file.snap`, line becomes `…, ref: <sha> }]  # main, dev`.
 - [ ] README (Components & includes): "Several refs pinned on one line (e.g. a flow `include:` sequence) get **one** trailing comment with the originals in source order: `include: [{…, ref: <sha>}, {…, ref: <sha>}]  # main, dev` (fixed in M5c, R1; before: one comment per ref in reverse order)."
 - [ ] Planted (spec §11): revert the `coalesce_comments` call → snapshot + `one_comment_per_line…` FAIL ☐; restore.
-- [ ] Gate + matrix → 186. Commit: `fix: R1 one combined trailing comment per line in source order (snapshot updated)`.
+- [ ] Gate + matrix → 188. Commit: `fix: R1 one combined trailing comment per line in source order (snapshot updated)`.
 
 ### Task C12 — fix R2: `LineIndex`, comment before `\r\n`
 
 **Files:** create `crates/pin-core/src/text.rs`; `crates/pin-core/src/edit.rs` (`trailing_comment`); `crates/pin-gitlab-ci/tests/common/mod.rs` + `fixture_properties.rs`; snapshot `ci-r2-crlf__pin__file.snap` (rows do not change, so human/json stay); `README.md`.
 
-- [ ] RED: `line_index_lf_crlf_and_eof` (unit): text `"a\r\nbb\nc"` → `len 3`, starts `[0, 3, 6]`, ends `[1, 5, 7]`; `line_start(3) == None` · `trailing_comment_before_crlf` (unit): `trailing_comment("x: a\r\ny: b\r\n", 1, 10, "b") == Some(Splice::insert(10, "  # b"))` and line 0 → `insert(4, …)` · `crlf_preserved_over_all_fixtures` (P-crlf) and `pinned_ref_comments_present_over_all_fixtures` (P-comment-present) → both FAIL on `ci-r2-crlf` ☐.
+- [ ] RED: `line_index_lf_crlf_and_eof` (unit): text `"a\r\nbb\nc"` → `len 3`, `!is_empty()`, starts `[0, 3, 6]`, ends `[1, 5, 7]`; `line_start(3) == None`; `LineIndex::new("").is_empty()` · `trailing_comment_before_crlf` (unit): `trailing_comment("x: a\r\ny: b\r\n", 1, 10, "b") == Some(Splice::insert(10, "  # b"))` and line 0 → `insert(4, …)` · `crlf_preserved_over_all_fixtures` (P-crlf) and `pinned_ref_comments_present_over_all_fixtures` (P-comment-present) → both FAIL on `ci-r2-crlf` ☐.
 - [ ] GREEN: `LineIndex::new` via `split_inclusive('\n')`, `ends` strip `"\n"` then one `"\r"`; `trailing_comment` uses `LineIndex` (`line_end(line)?`; same `#`-after-token rule on `text[token_end..line_end]`). Doc on `LineIndex`: "shared line model for edits and (M5c-y) `core::yaml`; `discover.rs` keeps its own split until M5c-y".
 - [ ] Snapshot: accept; `git diff` touches only `ci-r2-crlf__pin__file.snap`: line 1 `component: …@<sha>  # 1.0.0␍`, line 3 `include: { project: g/p, ref: <sha> }  # main␍`.
 - [ ] README: "CRLF files: the trailing comment goes before `\r\n` on every line (fixed in M5c, R2; before: inside `\r\n` on line 1, dropped on later lines). Known gap until M5c-y: block children in CRLF files are not discovered."
 - [ ] Planted (spec §11): restore the `lines()` offset in `trailing_comment` → snapshot + both properties FAIL ☐; revert.
-- [ ] Gate + matrix → 190. Commit: `fix: R2 CRLF-safe trailing comments via shared LineIndex (snapshot updated)`.
+- [ ] Gate + matrix → 192. Commit: `fix: R2 CRLF-safe trailing comments via shared LineIndex (snapshot updated)`.
 
 ## Close-out (controller, before merge)
 
-- [ ] Full gate + matrix green; `git log --oneline main..` = 17 commits in plan order; `git tag --points-at` A3 commit = `pre-pin-toolkit`.
+- [ ] Full gate + matrix green; `git log --oneline main..` = 19 commits in plan order (A1–A3, B1 × 2, C1–C9, C10a–c, C11, C12); `git tag --points-at` A3 commit = `pre-pin-toolkit`.
 - [ ] `cargo build --release -p pin-gitlab-ci` → `target/release/pin-ci`.
 - [ ] Coverage gap 1: live + oracle runs if network/devenv are available; otherwise record "not run" in the ledger.
 - [ ] Merge decision belongs to main/owner (unsigned merge, as M4a/M4b-1).
 
 ## Self-review
 
-- **Spec coverage:** §9 M5a (snapshots A1/A3, redaction A1, properties A2, R1/R2/anchor fixtures A3, tag A3); M5b (B1 move, root manifest/lock, `oracle.rs:21`); M5c (move-only C1, `is_sha` dedup C3, `Status`/`Row` C4, `Splice`/edit C5, `Plugin`/`pin_file` C6, lazy `Ctx` C7, `decide_image`/`pin_inline_image` C8, `GitlabCi` C9, `pin_files` as helper C10, rename + `[[bin]] pin-ci` C2, discover verbatim, test split C1, R1 C11, R2 C12, README notes C11/C12). §11 rows mapped in the Gate table.
-- **Smallest calls where spec and code differ (noted, not escalated):** (a) `UpdatePolicy.min_age_days` is `u32` (spec) while `--min-age-days` stays `u64` until M5d — driver converts with saturation; (b) `RegistryClient::new` cannot fail today, so the `Result` in the `OnceCell` is exercised only through `with_oci(Err(..))` until F3 adds CA files; (c) spec §6.2 lists `memo` in `Ctx` and `run(routes, ..)` — both belong to M5d per §9, omitted (P9); (d) `Row.plugin`/`kind` exist but are not serialised, because §9 requires unchanged M5c snapshots (P8); (e) `GitLabHosts` and `ResolverEnv` are not specified field-by-field in the spec — shapes chosen to carry exactly today's single-host semantics (P13); (f) `Status` gains `PartialEq<&str>` beyond §6.2 to keep existing tests verbatim (P7); (g) `UpdatePolicy` omits §6.2's `unknown_age` until M5d (main's call, P14).
-- **Type consistency:** `Row` (not `RefResult`) from C4 on; `Splice::{replace, insert}` used identically in C5/C8/C9/C11/C12; `GitLabHosts::{single, primary, get}` in C7/C9/C10; `KindSet::defaults(&KINDS)` in C9/C10; `pin_file(p, ctx, path, on, o)` in C6/C7/C10.
-- **Planted violations:** every new check has a box; C10 is a pure refactor and carries before/after evidence instead.
+- **Spec coverage:** §9 M5a (snapshots A1/A3, redaction A1, properties A2, R1/R2/anchor fixtures A3, tag A3); M5b (B1 move, root manifest/lock, `oracle.rs:21`); M5c (move-only C1, `is_sha` dedup C3 into `git::is_commit_sha`, `Status`/`Row` C4, `Splice`/edit C5, `Plugin`/`pin_file` + parse error as `FileError::Parse` C6, lazy `Ctx` + resolve entry points C7, `decide_image`/`pin_inline_image` C8, `GitlabCi` C9, `pin_files` as helper C10a–c, rename + `[[bin]] pin-ci` C2, discover verbatim, test split C1, R1 C11, R2 C12, README notes C11/C12). §11 rows mapped in the Gate table.
+- **Smallest calls where spec and code differ (noted, not escalated):** (a) `UpdatePolicy.min_age_days` is `u32` (spec) while `--min-age-days` stays `u64` until M5d — driver converts with saturation; (b) `RegistryClient::new` cannot fail today, so the `Result` in the `OnceCell` is exercised only through `with_oci(Err(..))` until F3 adds CA files; (c) spec §6.2 lists `memo` in `Ctx` and `run(routes, ..)` — both belong to M5d per §9, omitted (P9); (d) `Row.plugin`/`kind` exist but are not serialised, because §9 requires unchanged M5c snapshots (P8); (e) `GitLabHosts` and `ResolverEnv` are not specified field-by-field in the spec — shapes chosen to carry exactly today's single-host semantics (P13); `GitLabHosts` is crate-private behind `gitlab_resolve` (D38); (f) `Status` gains `PartialEq<&str>` beyond §6.2 to keep existing tests verbatim (P7); (g) `UpdatePolicy` omits §6.2's `unknown_age` until M5d (main's call, P14).
+- **Type consistency:** `Row` (not `RefResult`) from C4 on; `Splice::{replace, insert}` used identically in C5/C8/C9/C11/C12; `GitLabHosts::{single, primary, get}` only inside pin-core (C7); `with_gitlab(primary_host, Result<GitLabClient, String>)` in C7/C9/C10b; `gitlab_resolve(Option<&str>, project, ref)` in C7/C9; `oci_digest`/`oci_tags`/`oci_tag_times` in C7/C8; `pin_inline_image(.., kind)` in C8/C9; `scan -> Result<_, ScanError>` in C6/C9; `PluginMeta` in C6/C9; `KindSet::defaults(&KINDS)` in C9/C10b; `pin_file(p, ctx, path, on, o)` in C6/C7/C10b.
+- **Planted violations:** every new check has a box; C10a–c are pure refactors and carry before/after evidence instead (C10b: tests byte-identical).
 - **Proportion:** bodies appear only for the fake-server rules, `line_diff`, `pin_file`, the overlap rule and `apply`'s forward build — algorithms the signatures and tests do not determine.
 
 ## Decisions by main (2026-11-10; formerly open questions)
@@ -644,6 +697,7 @@ Test fake (in `run_pin_file.rs`): `struct Fake { findings: Vec<Finding>, in_flig
 2. **`Finding.follow_up`:** `pin_file -> Result<Vec<Row>, FileError>` stays as specified; widen the return when M8b needs follow-ups.
 3. **`Row.plugin`/`kind` in output:** M5d.
 4. **`AgePolicy::Block`:** dropped from M5c (P14); arrives with the config switch.
+5. **Plan review** (`.superpowers/sdd/2026-11-10-m5abc/plan-review.md`): H1 fixed now (P19; exit 2 in M5d); M1 split C10 (P23); M2 ungated `git::is_commit_sha` (P20); M3 `Ctx` resolve entry points, spec D38 (P21); L1 `PluginMeta` (P22); L2 cfg'd import + `#[allow(unused_mut)]`; L3 `env()` in C6; L4 `is_empty`; L5 `.err() == Some(..)`; L6 `cargo run --bin` check; L7 `kind` param (P24); L8 kept (decision 2); L9 `..Default::default()`. Nits: B1 rename note, `hub_api.rs:15`, `now_unix` in the C10b commit body, `discover.rs` doc links (handoff below).
 
 ## Handoff note for M5c-y (discovery parity)
 
@@ -655,3 +709,7 @@ The parity test (spec §11) compares parser discovery with `discover.rs`. These 
 | R7 | `ci-anchors.yml` lines 6, 10 | aliases `*img`, `*redis` are targets → skipped | aliases are not targets (no row) |
 | R8 | `ci-anchors.yml` line 3 | `image: ubuntu:24.04` under `.base: &base` not discovered | discovered → pinned |
 | R8 | `ci-r2-crlf.yml` lines 5–10 | `include:\r` block (`ref: dev`), `services:\r` block (`redis:7`), job-nested `image: "node:20"` not discovered | discovered → pinned (comments before `\r\n`, per C12) |
+
+Also for M5c-y:
+- `GitlabCi::scan` maps the parser's `YamlError` to `Err(ScanError { line, msg })` (P19); no trait or `pin_file` change is needed.
+- After C10c, the intra-doc links to `crate::image_ref` in `discover.rs:143,434` are broken (`cargo doc` warns; the gate does not run it). `discover.rs` stays verbatim in M5c; fix or delete them with it.

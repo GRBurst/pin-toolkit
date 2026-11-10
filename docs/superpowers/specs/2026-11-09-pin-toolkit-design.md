@@ -186,7 +186,7 @@ shares. Trimming saves only KBs.
 ```
 Cargo.toml                 [workspace] members = ["crates/*"], resolver = "3"; [workspace.package] version, edition = "2024"
 crates/pin-core/           lib: oci/{image_ref, registry [oci]}, gitlab [gitlab], helmrepo [helm-repo] (M8b), github [github] (M9),
-                           ver/{docker,semver,age}, text (LineIndex), edit, yaml (§6.9), report, plugin, run, config,
+                           ver/{docker,semver,age}, git (is_commit_sha), text (LineIndex), edit, yaml (§6.9), report, plugin, run, config,
                            cli (clap Args, feature "cli").  [x] = resolver cargo feature (D36); default features = none
 crates/pin-gitlab-ci/      lib: discover (on core::yaml from M5c-y), policy, `GitlabCi: Plugin`; pin-core features oci + gitlab
 crates/pin-helm/           lib (M8): oci + helm-repo        crates/pin-github-actions/   lib (M9): oci + github
@@ -224,16 +224,19 @@ pub struct Finding {                       // one reference, resolved
     pub edits: Vec<Splice>,                // empty unless pinned/updated
     pub follow_up: Option<String>,         // e.g. "helm dependency update charts/app"
 }
-pub trait Plugin {                         // no Send bound: futures are joined, never spawned (as today)
-    type Target;
+pub struct ScanError { pub line: Option<usize> /* 1-based */, pub msg: String }  // the file does not parse (§6.9)
+pub trait PluginMeta {                     // shared by Plugin and DynPlugin: one method set, no ambiguity
     fn id(&self) -> &'static str;                         // "gitlab-ci": config key, subcommand, report field
     fn kinds(&self) -> &'static [KindSpec];
     fn default_files(&self) -> &'static [&'static str];   // globs
-    fn scan(&self, path: &Path, text: &str, on: &KindSet) -> Vec<Self::Target>;  // PURE; sorted (line, start)
+}
+pub trait Plugin: PluginMeta {             // no Send bound: futures are joined, never spawned (as today)
+    type Target;
+    fn scan(&self, path: &Path, text: &str, on: &KindSet) -> Result<Vec<Self::Target>, ScanError>; // PURE; sorted (line, start); Err = no partial targets
     async fn resolve(&self, ctx: &Ctx, text: &str, t: &Self::Target) -> Finding;
 }
-pub trait DynPlugin { /* id, kinds, default_files, plan(ctx, path, text, on, concurrency) -> LocalBoxFuture<Vec<Finding>> */ }
-impl<P: Plugin> DynPlugin for P { /* scan → bounded join of resolve, as today's join_all + semaphore */ }
+pub trait DynPlugin: PluginMeta { /* plan(ctx, path, text, on, concurrency) -> LocalBoxFuture<Result<Vec<Finding>, ScanError>> */ }
+impl<P: Plugin> DynPlugin for P { /* scan (Err → returned, nothing resolved) → bounded join of resolve, as today's join_all + semaphore */ }
 
 // pin-core::run
 pub struct UpdatePolicy { pub enabled: bool, pub allow_major: bool, pub min_age_days: u32, pub unknown_age: AgePolicy }
@@ -246,16 +249,24 @@ pub struct Ctx {                           // small: policy + memo + lazily buil
     #[cfg(feature = "helm-repo")] helm_repos: OnceCell<Result<HelmRepoClient, String>>,   // M8b
     #[cfg(feature = "github")]    github: OnceCell<Result<GitHubClient, String>>,        // M9
 }
-impl Ctx { #[cfg(feature = "oci")] pub fn oci(&self) -> Result<&RegistryClient, &str>; /* gitlab(), helm_repos(), github() alike */ }
+impl Ctx {                                 // resolve entry points (D38): the only resolver access for plugins and core policy
+    #[cfg(feature = "oci")] pub async fn oci_digest(&self, r: &ImageRef) -> Result<String, RegError>;
+    #[cfg(feature = "oci")] pub async fn oci_tags(&self, r: &ImageRef) -> Result<Vec<String>, RegError>;
+    #[cfg(feature = "oci")] pub async fn oci_tag_times(&self, r: &ImageRef) -> Result<BTreeMap<String, i64>, RegError>;
+    #[cfg(feature = "gitlab")] pub async fn gitlab_resolve(&self, host: Option<&str>, project: &str, git_ref: &str) -> Result<String, String>; // None = primary
+    /* helm-repo (M8b) and github (M9) entry points alike. The lazily built clients (oci(), gitlab(), …) and GitLabHosts are crate-private */
+}
 pub struct RunOptions { pub dry_run: bool, pub check: bool, pub concurrency: usize }
+pub enum FileError { Read { path: String, msg: String }, Parse { path: String, line: Option<usize>, msg: String }, Write { path: String, msg: String } }
 pub async fn pin_file(p: &dyn DynPlugin, ctx: &Ctx, path: &Path, on: &KindSet, o: &RunOptions) -> Result<Vec<Row>, FileError>;
 pub async fn run(routes: &[Route], ctx: &Ctx, o: &RunOptions) -> Report;
 
 // pin-core::oci [feature oci] — today's resolve_image policy, minus the tokens
 pub enum ImageDecision { Current, Pin { digest: String }, Update { tag: String, digest: String }, Skip(String) }
 pub async fn decide_image(ctx: &Ctx, r: &ImageRef) -> Result<ImageDecision, String>; // Err = today's exact unresolved text
-pub async fn pin_inline_image(ctx: &Ctx, text: &str, line: usize, start: usize, end: usize, value: &str) -> Finding;
-// pin-core::gitlab: GitLabClient::resolve(project, ref) -> Result<Sha, GitLabError>; tags() (M4b-2); is_commit_sha()
+pub async fn pin_inline_image(ctx: &Ctx, text: &str, line: usize, start: usize, end: usize, value: &str, kind: &'static str) -> Finding;
+// pin-core::gitlab: GitLabClient::resolve(project, ref) -> Result<Sha, GitLabError>; tags() (M4b-2)
+// pin-core::git (no feature): is_commit_sha() — shared by gitlab (C3/C4) and github (M9)
 // pin-core::ver: docker::{parse, compare, pick_latest_stable}; age::{parse_rfc3339_unix, is_old_enough}; semver::{Version, Constraint} (M8b)
 // pin-core::report
 #[derive(Serialize)] #[serde(rename_all = "lowercase")] pub enum Status { Pinned, Ok, Updated, Skipped, Unresolved }
@@ -266,6 +277,8 @@ Rules:
 - **One file = one plugin.** An explicit subcommand routes the file. Otherwise the file must match exactly one enabled plugin's globs. Zero or several matches on an explicit path is exit 2 with a hint. On a directory walk, files nobody claims are ignored.
 - Within one file, the core rejects overlapping splices: both findings become `unresolved (internal: overlapping edits)`. Same-offset comment insertions coalesce into one comment (R1 fix).
 - Partial writes stay as today: an `unresolved` row does not block the other splices in the same file.
+- A `ScanError` makes `pin_file` return `FileError::Parse`: no rows, nothing resolved or written. The run records it under `plugins.<id>.errors`, exit 2 (§6.5, §6.9; from M5d).
+- **Plugins resolve only through the `Ctx` entry points (D38)**, and so does core policy such as `decide_image`. The memo (§6.7) and the host/token binding (D31, D37) live behind them, in one place. The plugin still checks its host gate before calling.
 - Error texts carry over as the starting point: digest errors report the inner message, tag-list errors read `tag list: {e}`, GitLab errors use `e.to_string()`. Any change shows in a snapshot diff.
 - **Lazy, feature-gated resolvers (D36).** Each resolver is a pin-core cargo feature; its HTTP deps are optional behind it. A client is built on first use (`std::cell::OnceCell` suffices: futures are joined, never spawned), so a run without helm targets never builds `HelmRepoClient`. A construction error (e.g. unreadable CA file) is cached and makes every reference that needs it `unresolved (<error>)`, exit 1. Config errors stay eager (exit 2). Plugin crates enable only the features they need; no extra crates.
 
@@ -276,7 +289,7 @@ Rules:
 3. Per file, sequentially as today: read once. Run `plan` (scan → resolve, with at most `--concurrency` in flight). Stable-sort by line. Check for overlaps. Unless `--dry-run`/`--check`, apply the edits and write only if there is at least one splice.
 4. Merge rows, per-plugin summaries, follow-ups and per-file errors into one `Report`. Render it and exit (§6.5).
 
-A file that fails to read or write is recorded under `plugins.<id>.errors`. The other files and plugins continue, and the exit code is 2.
+A file that fails to read, parse (§6.9) or write is recorded under `plugins.<id>.errors`. The other files and plugins continue, and the exit code is 2.
 
 ### 6.4 Merged report
 
@@ -534,7 +547,7 @@ frozen output. Rows are in execution order.
 | S2 | YAML discovery spike: **done** 2026-11-10, adopt with caveats (§6.9) | — |
 | M5a | Snapshot tests: a lib-level test runs every e2e fixture and snapshots `render_human()`, `to_json()` and the edited file contents (the builder may pick `insta`); mock-port URLs in reasons are redacted. Add the byte-exact and idempotence property tests over all fixtures. Add fixtures for R1, R2 (CRLF) and anchors/aliases; their first snapshots record today's wrong output. Plain tag `pre-pin-toolkit` (a reference point, not a compatibility baseline) | baseline |
 | M5b | `git mv src tests` → `crates/pin-gitlab-ci/`. The package is still named `pin-ci`. Root workspace manifest, root `Cargo.lock`. Oracle path: `oracle.rs:21` `REPO = env!("CARGO_MANIFEST_DIR")` → `concat!(env!("CARGO_MANIFEST_DIR"), "/../..")` | all tests green, snapshots unchanged |
-| M5c | Split out `pin-core`. First `git mv` image_ref, registry, gitlab, versioning and report verbatim, in move-only commits. Then add `Status`, `Splice`/`Finding`, the lazy feature-gated `Ctx` (§6.2, D36), `decide_image`/`pin_inline_image`, `Plugin` + `run::pin_file`. lib.rs becomes `GitlabCi`; today's `pin_files(paths, &PinOptions, &reg, &gitlab)` may survive as a test helper until M5d, not as API. Rename the package to `pin-gitlab-ci`. `is_sha` dedups into `gitlab::is_commit_sha`. `discover.rs` moves verbatim. Fix R1 (`coalesce_comments`) and R2 (one shared `LineIndex`), one commit each. `main.rs` stays as the crate's `[[bin]] pin-ci` until M5d. Tests: mock_registry, registry_hosts, hub_api, gitlab_client and live_gitlab move to `pin-core`; e2e, e2e_components, live, oracle and fixtures stay in `pin-gitlab-ci`. Relative `.tmp` paths resolve per package and are still covered by the root `.gitignore` | snapshots unchanged except the reviewed R1/R2 diffs; properties green |
+| M5c | Split out `pin-core`. First `git mv` image_ref, registry, gitlab, versioning and report verbatim, in move-only commits. Then add `Status`, `Splice`/`Finding`, the lazy feature-gated `Ctx` (§6.2, D36), `decide_image`/`pin_inline_image`, `Plugin` + `run::pin_file`. lib.rs becomes `GitlabCi`; today's `pin_files(paths, &PinOptions, &reg, &gitlab)` may survive as a test helper until M5d, not as API. Rename the package to `pin-gitlab-ci`. `is_sha` dedups into the ungated `git::is_commit_sha` (github shares it in M9). `discover.rs` moves verbatim. Fix R1 (`coalesce_comments`) and R2 (one shared `LineIndex`), one commit each. `main.rs` stays as the crate's `[[bin]] pin-ci` until M5d. Tests: mock_registry, registry_hosts, hub_api, gitlab_client and live_gitlab move to `pin-core`; e2e, e2e_components, live, oracle and fixtures stay in `pin-gitlab-ci`. Relative `.tmp` paths resolve per package and are still covered by the root `.gitignore` | snapshots unchanged except the reviewed R1/R2 diffs; properties green |
 | M5c-y | Own step right after M5c (keeps M5c manageable): `core::yaml` = saphyr-parser + fix-ups (§6.9); gitlab-ci discovery becomes path matching over `Vec<Node>`; the `discover.rs` YAML primitives are deleted. Fixes the anchor/alias bug | discovery-parity test (§11); snapshots unchanged except the reviewed anchor/alias diff |
 | M5d | Minimal `pin-toolkit` binary, replaces `pin-ci`: walk, routing, `pin-toolkit gitlab-ci` and `pin-<plugin>` aliases (optional `pin-ci` alias, §6.6), `service` kind tag, combined report, exit codes 0/1/2, `--check`, memo. Config: repo `.pin-toolkit.toml` + env + CLI only (§7.1, D35). `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` only (D37). Delete the crate's `[[bin]] pin-ci` | toolkit snapshots (human + JSON) over the M5a fixtures, diffs reviewed; exit-code table tests; repo `[hosts]` → exit 2; wiremock: `CI_JOB_TOKEN` never sent to another host |
 | M5f | Docs: README → toolkit README plus per-plugin sections (fix R5 drift; states the `pin-ci` alias decision), a pointer from the old spec, LICENSE (O4), push to GitHub with full history (O3) | — |
@@ -641,6 +654,7 @@ GitHub repo, and M5e' precedes M6 because the HM module writes the global config
 | D35 | Smaller config first: M5d reads repo `.pin-toolkit.toml` + env + CLI; the global layer, `[hosts]` and `config show --origin` come in M5e'. D18 holds from M5d: a repo file never binds credentials (global-only keys → exit 2) | owner (2026-11-10) | dogfood sooner; no window in which a repo can bind a token |
 | D36 | Resolvers (`oci`, `gitlab`, `helm-repo`, `github`) are pin-core cargo features, each built lazily on first use; plugin crates enable what they need; no extra crates (§6.2) | owner (2026-11-10) | `Ctx` is no god object; trimmed builds compile only the clients they use |
 | D37 | `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` only, in M5d (pulled from F3, which keeps only native TLS roots) | my call | security fix: today it can reach gitlab.com; must hold before DF1 runs in CI |
+| D38 | Plugins resolve only via `Ctx` entry points (`oci_digest`, `oci_tags`, `oci_tag_times`, `gitlab_resolve`; helm-repo/github alike), never via a raw client; the clients are crate-private (§6.2) | my call (2026-11-10, M5a–c plan review) | memo (§6.7) and token binding (D31, D37) in one place; no plugin can bypass them |
 
 ## 13. Owner answers
 
