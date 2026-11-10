@@ -1,6 +1,6 @@
 ---
-source: tests/fixture_snapshots.rs
-expression: redact(&r.render_human())
+source: crates/pin-toolkit/tests/fixture_snapshots.rs
+expression: redact(&stdout)
 ---
 ci-include.yml:1  pinned  main -> 98bf6109a195042a737dbbcc9b2b88c57400a08d  # main
 ci-include.yml:4  pinned  v1.2.3 -> 1d63c2f1d8572a80d6ac33944f3e479b550d739d  # v1.2.3

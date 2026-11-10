@@ -1,6 +1,6 @@
 ---
-source: tests/fixture_snapshots.rs
-expression: redact(&r.render_human())
+source: crates/pin-toolkit/tests/fixture_snapshots.rs
+expression: redact(&stdout)
 ---
 ci-update-clean.yml:2  updated  alpine:3.20 -> alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba  # alpine:3.20
 ci-update-clean.yml:4  pinned  docker:24 -> docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632  # docker:24

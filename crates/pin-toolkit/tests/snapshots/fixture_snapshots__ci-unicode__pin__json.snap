@@ -1,6 +1,6 @@
 ---
-source: crates/pin-gitlab-ci/tests/fixture_snapshots.rs
-expression: redact(&r.to_json())
+source: crates/pin-toolkit/tests/fixture_snapshots.rs
+expression: redact(&stdout)
 ---
 {
   "results": [

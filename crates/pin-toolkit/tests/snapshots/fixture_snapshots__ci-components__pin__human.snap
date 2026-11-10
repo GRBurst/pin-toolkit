@@ -1,6 +1,6 @@
 ---
-source: tests/fixture_snapshots.rs
-expression: redact(&r.render_human())
+source: crates/pin-toolkit/tests/fixture_snapshots.rs
+expression: redact(&stdout)
 ---
 ci-components.yml:1  pinned  gitlab.com/g/p/name@1.0.0 -> gitlab.com/g/p/name@6daf17a74fa888c76d61a72274f7013ca6f4cdd0  # gitlab.com/g/p/name@1.0.0
 ci-components.yml:4  pinned  main -> 5b0d6dd77c40c7fdb58e102ab44cb15acd1af5b5  # main

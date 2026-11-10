@@ -1,6 +1,6 @@
 ---
-source: tests/fixture_snapshots.rs
-expression: redact(&r.render_human())
+source: crates/pin-toolkit/tests/fixture_snapshots.rs
+expression: redact(&stdout)
 ---
 ci-anchors.yml:1  pinned  alpine:3.20 -> alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313  # alpine:3.20
 ci-anchors.yml:3  pinned  ubuntu:24.04 -> ubuntu:24.04@sha256:ca8beb9b4f1c0bdf19aee0c1099d4f61387e12cf4ea93953da4884b58e1394db  # ubuntu:24.04

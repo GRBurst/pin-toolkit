@@ -1,6 +1,6 @@
 ---
-source: tests/fixture_snapshots.rs
-expression: redact(&r.render_human())
+source: crates/pin-toolkit/tests/fixture_snapshots.rs
+expression: redact(&stdout)
 ---
 ci-images-edge.yml:1  pinned  alpine -> alpine@sha256:ad64e3823df30f61db46f16ddc2c99dd4ddc3fc343ecad26304007c4bfb9d0f9  # alpine
 ci-images-edge.yml:3  pinned  alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000 -> alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313  # alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
