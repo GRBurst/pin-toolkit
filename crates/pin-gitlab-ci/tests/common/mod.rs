@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use pin_gitlab_ci::discover::{PinTarget, discover};
 use pin_gitlab_ci::gitlab::GitLabClient;
-use pin_gitlab_ci::report::{RefResult, Report};
+use pin_gitlab_ci::report::{Report, Row};
 use pin_gitlab_ci::{ImageRef, PinOptions, RegistryClient, pin_files};
 use wiremock::matchers::path_regex;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -286,11 +286,7 @@ pub struct Insertion {
 /// must equal the original or the original plus ONE inserted trailing
 /// comment (`"  # …"`, no newline) — which needs a row on the line.
 /// `Err` describes the mismatch.
-pub fn line_diff(
-    o_line: &str,
-    e_line: &str,
-    rows: &[&RefResult],
-) -> Result<Option<Insertion>, String> {
+pub fn line_diff(o_line: &str, e_line: &str, rows: &[&Row]) -> Result<Option<Insertion>, String> {
     let mut l = e_line.to_string();
     for r in rows {
         let new = r.new.as_deref().ok_or("row without `new`")?;
@@ -338,7 +334,7 @@ pub fn check_byte_exact(
     }
     let mut out = Vec::with_capacity(ol.len());
     for (i, (o_line, e_line)) in ol.iter().zip(&el).enumerate() {
-        let rows: Vec<&RefResult> = report
+        let rows: Vec<&Row> = report
             .results
             .iter()
             .filter(|r| r.line == i + 1 && (r.status == "pinned" || r.status == "updated"))
@@ -364,7 +360,7 @@ pub fn check_idempotent(r1: &Report, e1: &str, r2: &Report, e2: &str) -> Result<
             r.status, r.line, r.old
         ));
     }
-    let settled = |r: &RefResult| matches!(r.status.as_str(), "pinned" | "updated" | "ok");
+    let settled = |r: &Row| matches!(r.status.as_str(), "pinned" | "updated" | "ok");
     let before = r1.results.iter().filter(|r| settled(r)).count();
     let after = r2.results.iter().filter(|r| r.status == "ok").count();
     if before != after {

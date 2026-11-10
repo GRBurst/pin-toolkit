@@ -6,17 +6,19 @@
 mod common;
 
 use common::*;
-use pin_gitlab_ci::report::{RefResult, Report};
+use pin_gitlab_ci::report::{Report, Row, Status};
 
 /// A pinned row on `line` (1-based) turning `old` into `new`.
-fn row(line: usize, old: &str, new: &str) -> RefResult {
-    RefResult {
+fn row(line: usize, old: &str, new: &str) -> Row {
+    Row {
+        plugin: "gitlab-ci",
+        kind: "image",
         file: "t.yml".into(),
         line,
         reference: old.into(),
         old: old.into(),
         new: Some(new.into()),
-        status: "pinned".into(),
+        status: Status::Pinned,
         reason: None,
     }
 }

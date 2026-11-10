@@ -16,7 +16,7 @@ use tokio::sync::Semaphore;
 use crate::discover::{PinTarget, discover};
 use crate::gitlab::GitLabClient;
 use crate::registry::{Creds, RegError};
-use crate::report::{RefResult, Report};
+use crate::report::{Report, Row, Status};
 use pin_core::ver::age::is_old_enough;
 
 pub use pin_core::oci::{ImageRef, RegistryClient};
@@ -80,7 +80,7 @@ pub fn gitlab_from_env(host: &str) -> GitLabClient {
 /// One resolved target: the report row plus the splices that should
 /// change the file.
 struct Resolved {
-    result: RefResult,
+    result: Row,
     /// `(start, end, new_token)` replacement when the file should change.
     replacement: Option<(usize, usize, String)>,
     /// Trailing-comment splice `(pos, "  # orig")` for pinned component/
@@ -90,14 +90,22 @@ struct Resolved {
 
 /// The base report row for a target. `reference` is the discovered value:
 /// the image ref, the FULL component value, or the include's ref value.
-fn base_result(text: &str, t: &PinTarget, file: &str) -> RefResult {
-    RefResult {
+fn base_result(text: &str, t: &PinTarget, file: &str) -> Row {
+    let kind = match t {
+        PinTarget::Image { .. } => "image",
+        PinTarget::Component { .. } => "component",
+        PinTarget::IncludeRef { .. } => "include",
+    };
+    Row {
+        plugin: "gitlab-ci",
+        kind,
         file: file.to_string(),
         line: t.line() + 1,
         reference: t.value().to_string(),
         old: text[t.start()..t.end()].to_string(),
         new: None,
-        status: String::new(),
+        // Placeholder: every resolve path sets the real status.
+        status: Status::Unresolved,
         reason: None,
     }
 }
@@ -167,7 +175,7 @@ async fn resolve_image(
     let r = match ImageRef::parse(t.value()) {
         Ok(r) => r,
         Err(_) => {
-            result.status = "skipped".to_string();
+            result.status = Status::Skipped;
             result.reason = Some("unparseable reference".to_string());
             return Resolved {
                 result,
@@ -182,7 +190,7 @@ async fn resolve_image(
             let msg = match e {
                 RegError::Unresolved(m) | RegError::Network(m) => m,
             };
-            result.status = "unresolved".to_string();
+            result.status = Status::Unresolved;
             result.reason = Some(msg);
             return Resolved {
                 result,
@@ -192,7 +200,7 @@ async fn resolve_image(
         }
     };
     if r.digest.as_deref() == Some(digest.as_str()) {
-        result.status = "ok".to_string();
+        result.status = Status::Ok;
         return Resolved {
             result,
             replacement: None,
@@ -210,7 +218,7 @@ async fn resolve_image(
             let tags = match client.list_tags(&r).await {
                 Ok(tags) => tags,
                 Err(e) => {
-                    result.status = "unresolved".to_string();
+                    result.status = Status::Unresolved;
                     result.reason = Some(format!("tag list: {e}"));
                     return Resolved {
                         result,
@@ -235,7 +243,7 @@ async fn resolve_image(
                         // tag_timestamps already prefixes its own errors
                         // with "hub api:"; the bare network message gets
                         // the prefix here (plan constraint 5).
-                        result.status = "unresolved".to_string();
+                        result.status = Status::Unresolved;
                         result.reason = Some(if msg.starts_with("hub api:") {
                             msg
                         } else {
@@ -265,7 +273,7 @@ async fn resolve_image(
                     // R5: unfiltered candidates existed but none is old
                     // enough → skip; the ref stays byte-identical, exit 0.
                     (Some(c), None) if c != tag => {
-                        result.status = "skipped".to_string();
+                        result.status = Status::Skipped;
                         result.reason = Some(format!("release age: no candidate ≥ {days}d"));
                         return Resolved {
                             result,
@@ -274,7 +282,7 @@ async fn resolve_image(
                         };
                     }
                     (Some(c), Some(s)) if c != tag && s == tag => {
-                        result.status = "skipped".to_string();
+                        result.status = Status::Skipped;
                         result.reason = Some(format!("release age: no candidate ≥ {days}d"));
                         return Resolved {
                             result,
@@ -303,7 +311,7 @@ async fn resolve_image(
                         let msg = match e {
                             RegError::Unresolved(m) | RegError::Network(m) => m,
                         };
-                        result.status = "unresolved".to_string();
+                        result.status = Status::Unresolved;
                         result.reason = Some(msg);
                         return Resolved {
                             result,
@@ -313,7 +321,7 @@ async fn resolve_image(
                     }
                 };
                 let new_token = edit::splice_update(token, &new_tag, &new_digest);
-                result.status = "updated".to_string();
+                result.status = Status::Updated;
                 result.new = Some(new_token.clone());
                 return Resolved {
                     result,
@@ -324,7 +332,7 @@ async fn resolve_image(
         }
     }
     let new_token = edit::splice_value(token, &r, &digest);
-    result.status = "pinned".to_string();
+    result.status = Status::Pinned;
     result.new = Some(new_token.clone());
     Resolved {
         result,
@@ -348,7 +356,7 @@ async fn resolve_component(
     let parts = match parts {
         Some(p) => p,
         None => {
-            result.status = "skipped".to_string();
+            result.status = Status::Skipped;
             result.reason = Some("unparseable reference".to_string());
             return Resolved {
                 result,
@@ -358,7 +366,7 @@ async fn resolve_component(
         }
     };
     if parts.host != opts.gitlab_host {
-        result.status = "skipped".to_string();
+        result.status = Status::Skipped;
         result.reason = Some(format!("host not enabled: {}", parts.host));
         return Resolved {
             result,
@@ -367,7 +375,7 @@ async fn resolve_component(
         };
     }
     if pin_core::git::is_commit_sha(&parts.version) {
-        result.status = "ok".to_string();
+        result.status = Status::Ok;
         return Resolved {
             result,
             replacement: None,
@@ -375,7 +383,7 @@ async fn resolve_component(
         };
     }
     if is_catalog_managed(&parts.version) {
-        result.status = "skipped".to_string();
+        result.status = Status::Skipped;
         result.reason = Some("catalog-managed version".to_string());
         return Resolved {
             result,
@@ -386,7 +394,7 @@ async fn resolve_component(
     let sha = match gitlab.resolve(&parts.project, &parts.version).await {
         Ok(sha) => sha,
         Err(e) => {
-            result.status = "unresolved".to_string();
+            result.status = Status::Unresolved;
             result.reason = Some(e.to_string());
             return Resolved {
                 result,
@@ -398,7 +406,7 @@ async fn resolve_component(
     let token = &text[t.start()..t.end()];
     let new_value = format!("{}/{}/{}@{}", parts.host, parts.project, parts.name, sha);
     let new_token = edit::splice_replace(token, &new_value);
-    result.status = "pinned".to_string();
+    result.status = Status::Pinned;
     result.new = Some(new_token.clone());
     Resolved {
         result,
@@ -415,7 +423,7 @@ async fn resolve_include(gitlab: &GitLabClient, text: &str, t: &PinTarget, file:
     };
     let mut result = base_result(text, t, file);
     if pin_core::git::is_commit_sha(value) {
-        result.status = "ok".to_string();
+        result.status = Status::Ok;
         return Resolved {
             result,
             replacement: None,
@@ -423,7 +431,7 @@ async fn resolve_include(gitlab: &GitLabClient, text: &str, t: &PinTarget, file:
         };
     }
     if value.contains('$') {
-        result.status = "skipped".to_string();
+        result.status = Status::Skipped;
         result.reason = Some("templated reference".to_string());
         return Resolved {
             result,
@@ -434,7 +442,7 @@ async fn resolve_include(gitlab: &GitLabClient, text: &str, t: &PinTarget, file:
     let sha = match gitlab.resolve(project, value).await {
         Ok(sha) => sha,
         Err(e) => {
-            result.status = "unresolved".to_string();
+            result.status = Status::Unresolved;
             result.reason = Some(e.to_string());
             return Resolved {
                 result,
@@ -445,7 +453,7 @@ async fn resolve_include(gitlab: &GitLabClient, text: &str, t: &PinTarget, file:
     };
     let token = &text[t.start()..t.end()];
     let new_token = edit::splice_replace(token, &sha);
-    result.status = "pinned".to_string();
+    result.status = Status::Pinned;
     result.new = Some(new_token.clone());
     Resolved {
         result,
@@ -501,7 +509,7 @@ pub async fn pin_file(
     opts: &PinOptions,
     reg: &RegistryClient,
     gitlab: &GitLabClient,
-) -> Result<Vec<RefResult>, String> {
+) -> Result<Vec<Row>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let targets = discover(&text);
     let file = path.display().to_string();
