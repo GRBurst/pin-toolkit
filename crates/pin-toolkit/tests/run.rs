@@ -66,6 +66,56 @@ async fn explicit_dir_outside_the_git_root() {
     );
 }
 
+/// Review-2 L3: an unreadable directory is a per-file error (exit 2, the
+/// other files still run) under the first enabled plugin; an invalid
+/// `.gitignore` line only warns (exit unaffected).
+#[cfg(unix)]
+#[tokio::test]
+async fn walk_errors_exit_2_ignore_file_lines_warn() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = start_fakes().await;
+    let root = repo("run-walk-errors");
+    write(&root, ".gitlab-ci.yml", "image: alpine:3.20\n");
+    write(&root, ".gitignore", "[z-a]\n");
+    let warning = "pin-toolkit: warning: .gitignore:1: error parsing glob '[z-a]': invalid range; 'z' > 'a'\n";
+    let out = run_tuned(&root, &["pin-toolkit", "--dry-run"], &[], tune(&f)).await;
+    assert_eq!(
+        (out.code, out.stderr.as_str()),
+        (0, warning),
+        "{}",
+        out.stdout
+    );
+
+    write(&root, "locked/x.gitlab-ci.yml", "image: alpine:3.20\n");
+    let locked = root.join("locked");
+    let mode = |m: u32| std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(m));
+    mode(0o000).unwrap();
+    if std::fs::read_dir(&locked).is_ok() {
+        mode(0o755).unwrap();
+        return; // permissions do not apply (e.g. running as root)
+    }
+    for argv in [
+        &["pin-toolkit", "--dry-run"][..],
+        &["pin-toolkit", "gitlab-ci", "--dry-run"],
+    ] {
+        let out = run_tuned(&root, argv, &[], tune(&f)).await;
+        assert_eq!(
+            (out.code, out.stderr.clone()),
+            (
+                2,
+                format!("{warning}pin-toolkit: locked: Permission denied (os error 13)\n")
+            ),
+            "{argv:?}"
+        );
+        assert!(
+            out.stdout.starts_with(".gitlab-ci.yml:1  ") && out.stdout.contains("  pinned  "),
+            "{argv:?}: the readable file still ran: {}",
+            out.stdout
+        );
+    }
+    mode(0o755).unwrap();
+}
+
 #[tokio::test]
 async fn same_image_in_two_files_is_one_lookup() {
     let f = start_fakes().await;

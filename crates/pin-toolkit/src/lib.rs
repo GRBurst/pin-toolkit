@@ -108,7 +108,11 @@ async fn run_mode(
         Mode::Plugin(id) => Some(id),
         Mode::All | Mode::Plugins => None,
     };
-    let routed = walk::route(walk::inputs(&p.cwd, &root, cli.paths()), &claims, forced)?;
+    let found = walk::inputs(&p.cwd, &root, cli.paths());
+    for w in &found.warnings {
+        out.stderr.push_str(&format!("pin-toolkit: warning: {w}\n"));
+    }
+    let routed = walk::route(found.files, &claims, forced)?;
     let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(&eff));
     tune(&mut renv);
     let ctx = Ctx::new(eff.update.clone(), now_unix(), renv);
@@ -131,7 +135,15 @@ async fn run_mode(
         concurrency: eff.concurrency,
     };
     let mut report = run(&routes, &ctx, options).await;
-    record_conflicts(&mut report, routed.conflicts);
+    record_file_errors(&mut report, routed.conflicts);
+    // Walk errors have no claimant: the first enabled plugin takes them
+    // (review-2 L3); without one, nothing could have been routed.
+    if let Some(first) = plan.ids().first() {
+        record_file_errors(
+            &mut report,
+            found.errors.into_iter().map(|e| (*first, e)).collect(),
+        );
+    }
     out.stdout = if eff.json {
         report.to_json() + "\n"
     } else {
@@ -142,10 +154,11 @@ async fn run_mode(
     Ok(())
 }
 
-/// Walked files claimed by 2+ plugins become per-file errors under their
-/// first claimant (PR-L11): exit 2, the other files ran.
-fn record_conflicts(report: &mut Report, conflicts: Vec<(&'static str, ErrorEntry)>) {
-    for (id, e) in conflicts {
+/// Per-file errors found before the run: walked files claimed by 2+
+/// plugins (under their first claimant, PR-L11) and walk errors (review-2
+/// L3). Exit 2; the other files ran.
+fn record_file_errors(report: &mut Report, errors: Vec<(&'static str, ErrorEntry)>) {
+    for (id, e) in errors {
         report
             .plugins
             .entry(id.to_string())
@@ -269,7 +282,7 @@ mod tests {
         let mut report = Report::new(vec![]);
         assert_eq!(report.exit_code(false), 0);
         let msg = "x.yml is claimed by p1 and p2 (narrow their `files` globs, or choose one: pin-toolkit <plugin> x.yml)";
-        record_conflicts(&mut report, vec![("p1", entry("x.yml", None, msg))]);
+        record_file_errors(&mut report, vec![("p1", entry("x.yml", None, msg))]);
         assert_eq!(report.exit_code(false), 2, "PR-L11: exit 2");
         assert_eq!(report.plugins["p1"].errors, [entry("x.yml", None, msg)]);
         assert_eq!(error_lines(&report), format!("pin-toolkit: x.yml: {msg}\n"));
