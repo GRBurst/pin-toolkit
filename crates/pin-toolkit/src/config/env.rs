@@ -229,6 +229,14 @@ mod tests {
                     ..Layer::default()
                 },
             ),
+            (
+                GITLAB_HOST,
+                "gitlab.example.com:8443",
+                Layer {
+                    gitlab_host: Some("gitlab.example.com:8443".into()),
+                    ..Layer::default()
+                },
+            ),
             (CONFIG, "x.toml", Layer::default()),
         ];
         for (name, v, want) in rows {
@@ -292,6 +300,22 @@ mod tests {
                 GITLAB_HOST,
                 "a b",
                 format!("{GITLAB_HOST}: invalid GitLab host `a b`"),
+            ),
+            // Review-2 L6: `^[A-Za-z0-9.-]+(:[0-9]+)?$`.
+            (
+                GITLAB_HOST,
+                "gitlab.com@evil.example",
+                format!("{GITLAB_HOST}: invalid GitLab host `gitlab.com@evil.example`"),
+            ),
+            (
+                GITLAB_HOST,
+                "h:x",
+                format!("{GITLAB_HOST}: invalid GitLab host `h:x`"),
+            ),
+            (
+                GITLAB_HOST,
+                "h?x",
+                format!("{GITLAB_HOST}: invalid GitLab host `h?x`"),
             ),
         ];
         for (name, v, want) in rows {

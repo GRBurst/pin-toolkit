@@ -350,12 +350,27 @@ mod tests {
             "meta options are no fields"
         );
 
-        let (cli, _) = parsed(&["--gitlab-host", "https://gitlab.example.com"]);
+        for h in [
+            "https://gitlab.example.com",
+            // Review-2 L6: `^[A-Za-z0-9.-]+(:[0-9]+)?$`.
+            "gitlab.com@evil.example",
+            "gitlab.com\\x",
+            "h#x",
+            "h:",
+            ":443",
+            "h:1:2",
+        ] {
+            let (cli, _) = parsed(&["--gitlab-host", h]);
+            assert_eq!(
+                layer(&cli),
+                Err(Fatal(format!("--gitlab-host: invalid GitLab host `{h}`"))),
+                "{h}"
+            );
+        }
+        let (cli, _) = parsed(&["--gitlab-host", "gitlab.example.com:8443"]);
         assert_eq!(
-            layer(&cli),
-            Err(Fatal(
-                "--gitlab-host: invalid GitLab host `https://gitlab.example.com`".into()
-            ))
+            layer(&cli).unwrap().gitlab_host.as_deref(),
+            Some("gitlab.example.com:8443")
         );
     }
 

@@ -390,6 +390,15 @@ aliases = { stable = "https://charts.helm.sh/stable" }"#,
                 "version = 1\n[plugins.gitlab-ci]\ngitlab-hosts = [\"a b\"]\n",
                 Exact("invalid GitLab host `a b` in plugins.gitlab-ci.gitlab-hosts"),
             ),
+            // Review-2 L6: `^[A-Za-z0-9.-]+(:[0-9]+)?$`.
+            (
+                "version = 1\n[plugins.gitlab-ci]\ngitlab-hosts = [\"ok.example\", \"a@b\"]\n",
+                Exact("invalid GitLab host `a@b` in plugins.gitlab-ci.gitlab-hosts"),
+            ),
+            (
+                "version = 1\n[plugins.gitlab-ci]\ngitlab-hosts = [\"h:x\"]\n",
+                Exact("invalid GitLab host `h:x` in plugins.gitlab-ci.gitlab-hosts"),
+            ),
             (
                 "version = 1\ngitlab-host = \"evil.example\"\n",
                 Contains("unknown field `gitlab-host`"),
