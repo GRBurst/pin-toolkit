@@ -51,6 +51,8 @@ impl ResolverEnv {
 pub struct Ctx {
     pub update: UpdatePolicy,
     pub now_unix: i64,
+    // Read only by the resolver builders; never exposed to plugins (D37/D38).
+    #[cfg_attr(not(any(feature = "oci", feature = "gitlab")), allow(dead_code))]
     env: ResolverEnv,
     #[cfg(feature = "oci")]
     oci: OnceCell<Result<RegistryClient, String>>,
@@ -70,10 +72,6 @@ impl Ctx {
             #[cfg(feature = "gitlab")]
             gitlab: OnceCell::new(),
         }
-    }
-
-    pub fn env(&self) -> &ResolverEnv {
-        &self.env
     }
 
     /// The resolvers built so far (attempted, including construction
