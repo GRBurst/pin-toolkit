@@ -79,6 +79,16 @@ fn pinned_pairs(text: &str) -> BTreeMap<String, String> {
     out
 }
 
+/// Not env-gated: the oracle runs `{REPO}/pin-ci-images.sh`, so REPO must
+/// stay the repository root (it moved once, in the M5b workspace split).
+#[test]
+fn oracle_repo_root_has_script() {
+    assert!(
+        Path::new(REPO).join("pin-ci-images.sh").is_file(),
+        "REPO={REPO}"
+    );
+}
+
 #[tokio::test]
 async fn oracle_matches_old_pipeline() {
     // 1. Gate: env + required binaries; else print + return.
