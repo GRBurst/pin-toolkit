@@ -99,9 +99,8 @@ fn legacy_record_matches_discover() {
     assert_eq!(recorded, expected);
 }
 
-/// Kinds compared by [`yaml_discovery_matches_legacy_except_documented`];
-/// `include` joins in Y9.
-const PARITY_KINDS: &[&str] = &["image", "component"];
+/// Kinds compared by [`yaml_discovery_matches_legacy_except_documented`].
+const PARITY_KINDS: &[&str] = &["image", "component", "include"];
 
 /// `(fixture, 1-based line, kind, raw token)`: matched on the record's
 /// `name:line`, `kind` and `{token:?}` columns.

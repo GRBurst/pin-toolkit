@@ -15,6 +15,8 @@
 //! single mappings, in any key order. String/remote/template/local items
 //! and mappings without both `project` and `ref` yield no target.
 
+use std::collections::BTreeMap;
+
 use pin_core::plugin::ScanError;
 use pin_core::yaml::{self, Node, PathSeg, ScalarRef, ScanOpts, Style};
 
@@ -154,7 +156,10 @@ impl PinTarget {
 /// target when its path, relative to its document root, is
 /// - `image`: `image` / `services` (at the root or one key down: a job),
 ///   followed by nothing, `name`, an index, or an index and `name`;
-/// - `component`: exactly `component` (root only).
+/// - `component`: exactly `component` (root only);
+/// - `include`: a mapping at `include` or `include[n]` (root only) that has
+///   a `project` and a `ref` scalar (first of each, any order, grouped by
+///   mapping): the target is the `ref`.
 ///
 /// A block scalar, or a scalar whose text spans lines, is not spliceable: it
 /// becomes [`PinTarget::Unsupported`] (range cut at the first line break).
@@ -168,6 +173,8 @@ pub fn discover_yaml(text: &str) -> Result<Vec<PinTarget>, ScanError> {
         },
     )?;
     let mut out = Vec::new();
+    // include mappings by their collection id: (first `project`, first `ref`)
+    let mut includes: BTreeMap<usize, (Option<&ScalarRef>, Option<&ScalarRef>)> = BTreeMap::new();
     for node in &nodes {
         let Node::Scalar(s) = node else { continue };
         if s.span.is_empty() {
@@ -177,38 +184,66 @@ pub fn discover_yaml(text: &str) -> Result<Vec<PinTarget>, ScanError> {
             out.push(yaml_target(text, s, "image"));
         } else if is_component_path(&s.path) {
             out.push(yaml_target(text, s, "component"));
+        } else if let [m @ .., PathSeg::Key(k)] = &s.path[..]
+            && is_include_mapping(m)
+        {
+            let entry = includes.entry(s.parent).or_default();
+            match k.as_str() {
+                "project" => entry.0 = entry.0.or(Some(s)),
+                "ref" => entry.1 = entry.1.or(Some(s)),
+                _ => {}
+            }
         }
+    }
+    for (project, git_ref) in includes.into_values() {
+        let (Some(project), Some(git_ref)) = (project, git_ref) else {
+            continue;
+        };
+        out.push(
+            unsupported(text, git_ref, "include").unwrap_or_else(|| PinTarget::IncludeRef {
+                line: git_ref.line,
+                start: git_ref.span.start,
+                end: git_ref.span.end,
+                value: git_ref.value.clone(),
+                project: project.value.clone(),
+                flow: git_ref.in_flow,
+            }),
+        );
     }
     out.sort_by_key(|t| (t.line(), t.start()));
     Ok(out)
 }
 
-/// The target for `s`: spliceable, or `Unsupported` with a one-line range.
-fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str) -> PinTarget {
+/// `Unsupported` when `s` cannot be spliced (a block scalar, or text that
+/// spans lines); its range is cut at the first line break.
+fn unsupported(text: &str, s: &ScalarRef, kind: &'static str) -> Option<PinTarget> {
     let token = &text[s.span.clone()];
-    let (start, value) = (s.span.start, s.value.clone());
     let reason = if s.style == Style::Block {
-        Some("block scalar")
+        "block scalar"
     } else if token.contains('\n') {
-        Some("multi-line scalar")
+        "multi-line scalar"
     } else {
-        None
+        return None;
     };
-    if let Some(reason) = reason {
-        let end = start + token.find(['\r', '\n']).unwrap_or(token.len());
-        return PinTarget::Unsupported {
-            kind,
-            line: s.line,
-            start,
-            end,
-            value,
-            reason,
-        };
+    Some(PinTarget::Unsupported {
+        kind,
+        line: s.line,
+        start: s.span.start,
+        end: s.span.start + token.find(['\r', '\n']).unwrap_or(token.len()),
+        value: s.value.clone(),
+        reason,
+    })
+}
+
+/// The `image` or `component` target for `s`.
+fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str) -> PinTarget {
+    if let Some(u) = unsupported(text, s, kind) {
+        return u;
     }
-    let end = s.span.end;
+    let (line, start, end, value) = (s.line, s.span.start, s.span.end, s.value.clone());
     if kind == "component" {
         PinTarget::Component {
-            line: s.line,
+            line,
             start,
             end,
             parts: parse_component_ref(&value),
@@ -216,7 +251,7 @@ fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str) -> PinTarget {
         }
     } else {
         PinTarget::Image {
-            line: s.line,
+            line,
             start,
             end,
             value,
@@ -244,6 +279,15 @@ fn image_tail(q: &[PathSeg]) -> bool {
 /// hidden template).
 fn is_image_path(p: &[PathSeg]) -> bool {
     image_tail(p) || (matches!(p.first(), Some(PathSeg::Key(_))) && image_tail(&p[1..]))
+}
+
+/// The mapping of a classic include: the root key `include` itself, or one
+/// item of its sequence.
+fn is_include_mapping(p: &[PathSeg]) -> bool {
+    match p {
+        [PathSeg::Key(k)] | [PathSeg::Key(k), PathSeg::Index(_)] => k == "include",
+        _ => false,
+    }
 }
 
 /// Exactly the root key `component`.
@@ -1625,5 +1669,92 @@ mod tests {
         }
         let crlf = yaml("image: \"alpine:\\\r\n  3.20\"\r\nnext: x\r\n");
         assert_eq!((crlf[0].start(), crlf[0].end()), (7, 16));
+    }
+
+    /// Include mappings (`project` + `ref`) in every written form.
+    #[test]
+    fn yaml_include_forms() {
+        // (line, value, project, flow)
+        type Hit = (usize, &'static str, &'static str, bool);
+        let cases: [(&str, Vec<Hit>); 12] = [
+            (
+                "include: { project: g/p, ref: main }\n",
+                vec![(0, "main", "g/p", true)],
+            ),
+            (
+                "include: [ {project: g/p, ref: main}, \"x.yml\", {project: g/q} ]\n",
+                vec![(0, "main", "g/p", true)],
+            ),
+            (
+                "include:\n  - project: g/p\n    ref: main\n    file: a.yml\n    inputs:\n      a: 1\n",
+                vec![(2, "main", "g/p", false)],
+            ),
+            (
+                "include:\n  ref: main\n  project: g/p\n",
+                vec![(1, "main", "g/p", false)],
+            ),
+            (
+                "include: { project: g/a, ref: x }\ninclude: { project: g/b, ref: y }\n",
+                vec![(0, "x", "g/a", true), (1, "y", "g/b", true)],
+            ),
+            ("include:\n  project: g/p\n  ref:\n", vec![]),
+            ("include: {project: p, ref}\n", vec![]),
+            ("include: {ref, project: p}\n", vec![]),
+            ("job:\n  include: {project: g/p, ref: main}\n", vec![]),
+            ("include:\n  - component: gitlab.com/g/p/c@1.0\n", vec![]),
+            (
+                "include: [{project: g/p, ref: main, inputs: {a: 1}}]\n",
+                vec![(0, "main", "g/p", true)],
+            ),
+            (
+                "include:\n  project: \"g/p\"\n  ref: 'main'\n",
+                vec![(2, "main", "g/p", false)],
+            ),
+        ];
+        for (text, want) in cases {
+            let found = yaml(text);
+            let got: Vec<(usize, &str, &str, bool)> = found
+                .iter()
+                .map(|t| match t {
+                    PinTarget::IncludeRef {
+                        line,
+                        value,
+                        project,
+                        flow,
+                        ..
+                    } => (*line, value.as_str(), project.as_str(), *flow),
+                    other => panic!("{text:?}: {other:?}"),
+                })
+                .collect();
+            assert_eq!(got, want, "{text:?}");
+        }
+        // the span of a quoted ref is the quoted token
+        let text = "include:\n  project: \"g/p\"\n  ref: 'main'\n";
+        let t = yaml(text);
+        assert_eq!(&text[t[0].start()..t[0].end()], "'main'");
+
+        // a multi-line quoted ref and a block ref are not spliceable
+        let text = "include: { project: g/p, ref: \"ma\\\n  in\" }\n";
+        let t = yaml(text);
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert!(matches!(
+            &t[0],
+            PinTarget::Unsupported {
+                kind: "include",
+                reason: "multi-line scalar",
+                ..
+            }
+        ));
+        assert_eq!(&text[t[0].start()..t[0].end()], "\"ma\\");
+        let t = yaml("include:\n  project: g/p\n  ref: >-\n    main\n");
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert!(matches!(
+            &t[0],
+            PinTarget::Unsupported {
+                kind: "include",
+                reason: "block scalar",
+                ..
+            }
+        ));
     }
 }
