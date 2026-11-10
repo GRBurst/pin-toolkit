@@ -44,3 +44,7 @@ required-features = ["gitlab"]
 [[test]]
 name = "oci_decide"
 required-features = ["oci"]
+
+[[test]]
+name = "memo"
+required-features = ["oci", "gitlab"]

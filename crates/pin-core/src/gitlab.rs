@@ -351,8 +351,9 @@ impl GitLabHosts {
         }
     }
 
-    pub(crate) fn primary(&self) -> &GitLabClient {
-        &self.clients[&self.primary]
+    /// The primary host's name (`None` callers of `Ctx::gitlab_resolve`).
+    pub(crate) fn primary_host(&self) -> &str {
+        &self.primary
     }
 
     pub(crate) fn get(&self, host: &str) -> Option<&GitLabClient> {

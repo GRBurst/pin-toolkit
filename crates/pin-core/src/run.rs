@@ -2,11 +2,17 @@
 //! resolve), overlap check, write, rows. `Ctx` carries the run's policy.
 
 #[cfg(any(feature = "oci", feature = "gitlab"))]
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 #[cfg(feature = "oci")]
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+#[cfg(any(feature = "oci", feature = "gitlab"))]
+use std::collections::HashMap;
 use std::fmt;
+#[cfg(any(feature = "oci", feature = "gitlab"))]
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
+#[cfg(any(feature = "oci", feature = "gitlab"))]
+use std::rc::Rc;
 
 use crate::edit::{Splice, apply, coalesce_comments};
 #[cfg(feature = "gitlab")]
@@ -46,14 +52,61 @@ impl ResolverEnv {
     }
 }
 
-/// Per-run context: policy, clock and lazily built, feature-gated resolvers
-/// (D36). Plugins resolve only through its entry points (D38).
+/// One resolver entry point's results for one run (§6.7, D19), keyed by
+/// lookup. Values include errors, so one key cannot get two outcomes; the
+/// `OnceCell` coalesces concurrent lookups of the same key. `Ctx` is
+/// single-threaded (futures are joined, never spawned): `RefCell` + `Rc`.
+#[cfg(any(feature = "oci", feature = "gitlab"))]
+struct Memo<K, V>(RefCell<HashMap<K, Rc<tokio::sync::OnceCell<V>>>>);
+
+#[cfg(any(feature = "oci", feature = "gitlab"))]
+impl<K, V> Default for Memo<K, V> {
+    fn default() -> Self {
+        Self(RefCell::new(HashMap::new()))
+    }
+}
+
+#[cfg(any(feature = "oci", feature = "gitlab"))]
+impl<K: Eq + Hash, V: Clone> Memo<K, V> {
+    /// The result for `k`: computed by `f` on the first call, shared by
+    /// every concurrent and later call.
+    async fn get<F: Future<Output = V>>(&self, k: K, f: impl FnOnce() -> F) -> V {
+        // The borrow ends before the await.
+        let cell = Rc::clone(self.0.borrow_mut().entry(k).or_default());
+        cell.get_or_init(f).await.clone()
+    }
+}
+
+/// The memos of the `Ctx` entry points (§6.7 keys).
+#[cfg(any(feature = "oci", feature = "gitlab"))]
+#[derive(Default)]
+struct Memos {
+    /// `(host, api_repo, effective_tag)` → manifest digest.
+    #[cfg(feature = "oci")]
+    digest: Memo<(String, String, String), Result<String, RegError>>,
+    /// `(host, api_repo)` → tag list.
+    #[cfg(feature = "oci")]
+    tags: Memo<(String, String), Result<Vec<String>, RegError>>,
+    /// `(host, api_repo)` → tag push times.
+    #[cfg(feature = "oci")]
+    times: Memo<(String, String), Result<BTreeMap<String, i64>, RegError>>,
+    /// `(host, project, ref)` → commit SHA (`host` = the primary when the
+    /// caller passes `None`).
+    #[cfg(feature = "gitlab")]
+    gitlab: Memo<(String, String, String), Result<String, String>>,
+}
+
+/// Per-run context: policy, clock, the per-run memo and lazily built,
+/// feature-gated resolvers (D36). Plugins resolve only through its entry
+/// points (D38).
 pub struct Ctx {
     pub update: UpdatePolicy,
     pub now_unix: i64,
     // Read only by the resolver builders; never exposed to plugins (D37/D38).
     #[cfg_attr(not(any(feature = "oci", feature = "gitlab")), allow(dead_code))]
     env: ResolverEnv,
+    #[cfg(any(feature = "oci", feature = "gitlab"))]
+    memo: Memos,
     #[cfg(feature = "oci")]
     oci: OnceCell<Result<RegistryClient, String>>,
     #[cfg(feature = "gitlab")]
@@ -67,6 +120,8 @@ impl Ctx {
             update,
             now_unix,
             env,
+            #[cfg(any(feature = "oci", feature = "gitlab"))]
+            memo: Memos::default(),
             #[cfg(feature = "oci")]
             oci: OnceCell::new(),
             #[cfg(feature = "gitlab")]
@@ -136,35 +191,60 @@ impl Ctx {
     }
 
     /// Manifest digest of `r`; a construction error is `RegError::Unresolved`.
+    /// Memoised per `(host, api_repo, effective_tag)` (§6.7).
     #[cfg(feature = "oci")]
     pub async fn oci_digest(&self, r: &ImageRef) -> Result<String, RegError> {
-        self.oci()
-            .map_err(|e| RegError::Unresolved(e.to_string()))?
-            .digest(r)
+        let key = (
+            r.host_str().to_string(),
+            r.api_repo(),
+            r.effective_tag().to_string(),
+        );
+        self.memo
+            .digest
+            .get(key, || async {
+                self.oci()
+                    .map_err(|e| RegError::Unresolved(e.to_string()))?
+                    .digest(r)
+                    .await
+            })
             .await
     }
 
-    /// Tag list of `r`'s repository.
+    /// Tag list of `r`'s repository. Memoised per `(host, api_repo)`.
     #[cfg(feature = "oci")]
     pub async fn oci_tags(&self, r: &ImageRef) -> Result<Vec<String>, RegError> {
-        self.oci()
-            .map_err(|e| RegError::Unresolved(e.to_string()))?
-            .list_tags(r)
+        let key = (r.host_str().to_string(), r.api_repo());
+        self.memo
+            .tags
+            .get(key, || async {
+                self.oci()
+                    .map_err(|e| RegError::Unresolved(e.to_string()))?
+                    .list_tags(r)
+                    .await
+            })
             .await
     }
 
     /// Tag push times (unix seconds) of `r`'s repository (Docker Hub API).
+    /// Memoised per `(host, api_repo)`.
     #[cfg(feature = "oci")]
     pub async fn oci_tag_times(&self, r: &ImageRef) -> Result<BTreeMap<String, i64>, RegError> {
-        self.oci()
-            .map_err(|e| RegError::Unresolved(e.to_string()))?
-            .tag_timestamps(r)
+        let key = (r.host_str().to_string(), r.api_repo());
+        self.memo
+            .times
+            .get(key, || async {
+                self.oci()
+                    .map_err(|e| RegError::Unresolved(e.to_string()))?
+                    .tag_timestamps(r)
+                    .await
+            })
             .await
     }
 
     /// Resolve `git_ref` in `project` on GitLab `host` (`None` = the primary
     /// host) to a commit SHA. Errors are the client's texts, the cached
-    /// construction error, or `gitlab: no client for {host}`.
+    /// construction error, or `gitlab: no client for {host}`. Memoised per
+    /// `(host, project, ref)` with `None` keyed as the primary host (§6.7).
     #[cfg(feature = "gitlab")]
     pub async fn gitlab_resolve(
         &self,
@@ -173,16 +253,20 @@ impl Ctx {
         git_ref: &str,
     ) -> Result<String, String> {
         let hosts = self.gitlab().map_err(str::to_string)?;
-        let client = match host {
-            None => hosts.primary(),
-            Some(h) => hosts
-                .get(h)
-                .ok_or_else(|| format!("gitlab: no client for {h}"))?,
-        };
-        client
-            .resolve(project, git_ref)
+        let host = host.unwrap_or(hosts.primary_host());
+        let key = (host.to_string(), project.to_string(), git_ref.to_string());
+        self.memo
+            .gitlab
+            .get(key, || async {
+                let client = hosts
+                    .get(host)
+                    .ok_or_else(|| format!("gitlab: no client for {host}"))?;
+                client
+                    .resolve(project, git_ref)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
             .await
-            .map_err(|e| e.to_string())
     }
 }
 
