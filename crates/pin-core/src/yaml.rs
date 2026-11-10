@@ -58,7 +58,7 @@ pub struct ScalarRef {
     /// next token (`}` / `,`); with properties → start of the properties.
     pub span: Range<usize>,
     pub style: Style,
-    /// The decoded value.
+    /// The decoded value (from the masked text when masking).
     pub value: String,
     /// The anchor id when this scalar defines one.
     pub anchor: Option<usize>,
@@ -235,6 +235,37 @@ fn opaque_tag(tag: &Option<Cow<'_, Tag>>) -> Option<String> {
         .map(|t| t.to_string())
 }
 
+/// Blank every `{{…}}` (non-greedy, may span lines; an unclosed `{{` is
+/// left alone) so Go-templated files parse: byte offsets and line numbers
+/// stay exact because every byte becomes a space except `\n` and `\r`. Also
+/// returns the masked ranges.
+fn mask_templates(text: &str) -> (String, Vec<Range<usize>>) {
+    let mut ranges = Vec::new();
+    let mut from = 0;
+    while let Some(open) = text[from..].find("{{").map(|i| from + i) {
+        let Some(close) = text[open + 2..].find("}}").map(|i| open + 2 + i) else {
+            break;
+        };
+        ranges.push(open..close + 2);
+        from = close + 2;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for r in &ranges {
+        out.push_str(&text[last..r.start]);
+        for c in text[r.clone()].chars() {
+            if matches!(c, '\n' | '\r') {
+                out.push(c);
+            } else {
+                out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+            }
+        }
+        last = r.end;
+    }
+    out.push_str(&text[last..]);
+    (out, ranges)
+}
+
 struct Walker<'a> {
     /// The original text: its char boundaries bound every span.
     text: &'a str,
@@ -243,6 +274,8 @@ struct Walker<'a> {
     /// Parser char index → byte offset in `src`.
     c2b: Vec<usize>,
     lines: LineIndex,
+    /// Masked `{{…}}` byte ranges (empty unless masking).
+    mask: Vec<Range<usize>>,
     stack: Vec<Frame>,
     next_id: usize,
     docs_seen: usize,
@@ -395,6 +428,11 @@ impl Walker<'_> {
                     msg: format!("internal: bad span at byte {}", span.start.index()),
                 })?
         };
+        let templated = !range.is_empty()
+            && self
+                .mask
+                .iter()
+                .any(|m| m.start < range.end && range.start < m.end);
         self.nodes.push(Node::Scalar(ScalarRef {
             path: self.path(),
             doc: self.docs_seen.saturating_sub(1),
@@ -405,7 +443,7 @@ impl Walker<'_> {
             anchor: (anchor > 0).then_some(anchor),
             parent: self.parent(),
             in_flow: self.in_flow(),
-            templated: false,
+            templated,
         }));
         self.advance();
         Ok(())
@@ -469,21 +507,34 @@ impl Walker<'_> {
 /// `Err` on the first parser error (sticky upstream): no partial result.
 /// The message is `invalid YAML: {parser info}`, `line` the 1-based line of
 /// the error.
-pub fn scan(text: &str, _opts: ScanOpts) -> Result<Vec<Node>, ScanError> {
-    let mut c2b: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
-    c2b.push(text.len());
+///
+/// With `opts.mask_templates` the parser sees the text with every `{{…}}`
+/// blanked (see `mask_templates`): `value`s come from the masked text,
+/// `span`s are byte ranges of the original, and a scalar whose non-empty
+/// span overlaps a masked range is `templated`.
+pub fn scan(text: &str, opts: ScanOpts) -> Result<Vec<Node>, ScanError> {
+    let (src, mask) = if opts.mask_templates {
+        let (masked, mask) = mask_templates(text);
+        (Cow::Owned(masked), mask)
+    } else {
+        (Cow::Borrowed(text), Vec::new())
+    };
+    // the parser counts the chars of the text it sees
+    let mut c2b: Vec<usize> = src.char_indices().map(|(b, _)| b).collect();
+    c2b.push(src.len());
     let mut walker = Walker {
         text,
-        src: text.as_bytes(),
+        src: src.as_bytes(),
         c2b,
         lines: LineIndex::new(text),
+        mask,
         stack: Vec::new(),
         next_id: 1,
         docs_seen: 0,
         skip: None,
         nodes: Vec::new(),
     };
-    for item in Parser::new_from_str(text) {
+    for item in Parser::new_from_str(&src) {
         let (ev, span) = item.map_err(|e| ScanError {
             line: Some(e.marker().line()),
             msg: format!("invalid YAML: {}", e.info()),
@@ -775,6 +826,92 @@ mod tests {
         assert!(scalar_at(t, "d").anchor.is_some());
     }
 
+    /// P-mask: same length, line breaks kept, bytes outside the ranges kept,
+    /// every other byte inside a range blanked.
+    fn check_mask(t: &str, masked: &str, ranges: &[Range<usize>]) {
+        assert_eq!(masked.len(), t.len());
+        for (i, (a, b)) in t.bytes().zip(masked.bytes()).enumerate() {
+            let inside = ranges.iter().any(|r| r.contains(&i));
+            let want = if a == b'\n' || a == b'\r' || !inside {
+                a
+            } else {
+                b' '
+            };
+            assert_eq!(b, want, "byte {i} of {t:?}");
+        }
+    }
+
+    #[test]
+    fn mask_keeps_offsets_and_line_breaks() {
+        let t = "a: {{ .x }}\n{{- if y\n }}\nb: \"r:{{ ü }}\"\nc: {{ open\n";
+        let (masked, ranges) = mask_templates(t);
+        let span = |needle: &str| {
+            let at = t.find(needle).unwrap();
+            at..at + needle.len()
+        };
+        assert_eq!(
+            ranges,
+            [span("{{ .x }}"), span("{{- if y\n }}"), span("{{ ü }}")]
+        );
+        check_mask(t, &masked, &ranges);
+        assert!(masked.ends_with("c: {{ open\n"), "{masked:?}");
+        assert_eq!(masked.lines().count(), t.lines().count());
+    }
+
+    #[test]
+    fn masked_scalars_are_templated() {
+        let t = "img: \"r:{{ .t }}\"\nplain: r:1\n{{- if .x }}\nother: v\n{{- end }}\n";
+        let nodes = scan(
+            t,
+            ScanOpts {
+                mask_templates: true,
+            },
+        )
+        .unwrap();
+        let find = |p: &str| {
+            nodes
+                .iter()
+                .find_map(|n| match n {
+                    Node::Scalar(s) if path_str(&s.path) == p => Some(s),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no scalar at {p}"))
+        };
+        let img = find("img");
+        assert!(img.templated);
+        assert_eq!(&t[img.span.clone()], "\"r:{{ .t }}\"");
+        assert!(!find("plain").templated);
+        assert!(!find("other").templated);
+        assert_eq!(find("other").line, 3);
+    }
+
+    /// Characterisation (M8a decides what to report): an unquoted
+    /// `{{ … }}` value parses as nested flow mappings without error and
+    /// yields no value at the key; masked, it is an implicit null.
+    #[test]
+    fn unmasked_template_is_not_an_error() {
+        let t = "image: {{ .x }}\n";
+        let plain = scan(t, ScanOpts::default()).unwrap();
+        assert!(!plain.iter().any(|n| matches!(
+            n,
+            Node::Scalar(s) if path_str(&s.path) == "image" && !s.value.is_empty()
+        )));
+        let masked = scan(
+            t,
+            ScanOpts {
+                mask_templates: true,
+            },
+        )
+        .unwrap();
+        let [Node::Scalar(s)] = &masked[..] else {
+            panic!("{masked:?}")
+        };
+        assert_eq!(path_str(&s.path), "image");
+        assert_eq!(s.value, "");
+        assert!(s.span.is_empty());
+        assert!(!s.templated);
+    }
+
     /// Texts of every test above and below: `scan` returns (no panic) on
     /// every char-boundary prefix, with and without masking, and `Ok` spans
     /// are in bounds on char boundaries.
@@ -797,6 +934,9 @@ mod tests {
         "? [k, l]\n: v\n? *x\n: w\n",
         "a: &p # c\n  v\nb: !t\n  [x]\nc: &a !!str\n\n  \"q\"\n",
         "x: &a\n  - 1\ny: !t &b {k: v}\nz: [&c a, !!str b, *c]\n",
+        "a: {{ .x }}\n{{- if y\n }}\nb: \"r:{{ ü }}\"\nc: {{ open\n",
+        "img: \"r:{{ .t }}\"\nplain: r:1\n{{- if .x }}\nother: v\n{{- end }}\n",
+        "image: {{ .x }}\n",
     ];
 
     #[test]
