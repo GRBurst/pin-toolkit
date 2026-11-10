@@ -67,7 +67,9 @@ pub struct ScalarRef {
     pub parent: usize,
     /// The enclosing collection is a flow collection (or nested in one).
     pub in_flow: bool,
-    /// A non-empty span overlaps a masked `{{…}}`.
+    /// A non-empty span overlaps a masked `{{…}}`, or (plain) touches one
+    /// across blanks: the value is a fragment of a template, never a
+    /// complete reference.
     pub templated: bool,
 }
 
@@ -303,6 +305,28 @@ impl Walker<'_> {
         }
     }
 
+    /// A non-empty token overlaps a masked `{{…}}`. A plain scalar counts
+    /// the blanks around it first: the masked bytes are blanks, so the
+    /// parser ends the token where the template begins (`x-{{ .v }}`) and
+    /// starts it where the template ends (`{{ .r }}/x`), but Go renders one
+    /// scalar. Blanks stay on the line; a flow separator ends the scalar.
+    fn templated(&self, range: &Range<usize>, style: Style) -> bool {
+        if range.is_empty() || self.mask.is_empty() {
+            return false;
+        }
+        let blank = |i: usize| matches!(self.src.get(i), Some(b' ' | b'\t'));
+        let (mut start, mut end) = (range.start, range.end);
+        if style == Style::Plain {
+            while start > 0 && blank(start - 1) {
+                start -= 1;
+            }
+            while blank(end) {
+                end += 1;
+            }
+        }
+        self.mask.iter().any(|m| m.start < end && start < m.end)
+    }
+
     fn at_key(&self) -> bool {
         matches!(self.stack.last(), Some(Frame::Map { want_key: true, .. }))
     }
@@ -428,11 +452,7 @@ impl Walker<'_> {
                     msg: format!("internal: bad span at byte {}", span.start.index()),
                 })?
         };
-        let templated = !range.is_empty()
-            && self
-                .mask
-                .iter()
-                .any(|m| m.start < range.end && range.start < m.end);
+        let templated = self.templated(&range, style);
         self.nodes.push(Node::Scalar(ScalarRef {
             path: self.path(),
             doc: self.docs_seen.saturating_sub(1),
@@ -573,7 +593,8 @@ fn blank_tabs_before(src: &str, c2b: &[usize], marker: usize) -> Option<String> 
 /// With `opts.mask_templates` the parser sees the text with every `{{…}}`
 /// blanked (see `mask_templates`): `value`s come from the masked text,
 /// `span`s are byte ranges of the original, and a scalar whose non-empty
-/// span overlaps a masked range is `templated`.
+/// span overlaps a masked range is `templated` (a plain scalar also when
+/// only blanks separate it from the range: `x-{{ .v }}`, `{{ .r }}/x`).
 ///
 /// A tab after `key:` is separator whitespace in YAML but an error for the
 /// parser: it is blanked (tab → space, offsets unchanged) in the scan copy
@@ -1043,6 +1064,55 @@ mod tests {
         assert!(!find("plain").templated);
         assert!(!find("other").templated);
         assert_eq!(find("other").line, 3);
+    }
+
+    /// Review M1: the masked bytes are blanks, so a plain scalar ends before
+    /// or starts after its `{{…}}`; blanks between them count as touching
+    /// (Go renders one scalar). A flow separator ends the scalar.
+    #[test]
+    fn plain_scalar_next_to_a_mask_is_templated() {
+        let templated = |t: &str, path: &str| {
+            let nodes = scan(
+                t,
+                ScanOpts {
+                    mask_templates: true,
+                },
+            )
+            .unwrap();
+            nodes
+                .into_iter()
+                .find_map(|n| match n {
+                    Node::Scalar(s) if path_str(&s.path) == path => Some((s.value, s.templated)),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no scalar at {path} in {t:?}"))
+        };
+        let yes = |v: &str| (v.to_string(), true);
+        let no = |v: &str| (v.to_string(), false);
+        // touching, after / before / blank-separated
+        assert_eq!(
+            templated("image: nginx:1.25-{{ .Values.variant }}\n", "image"),
+            yes("nginx:1.25-")
+        );
+        assert_eq!(
+            templated("version: 1.2.{{ .Values.patch }}\n", "version"),
+            yes("1.2.")
+        );
+        assert_eq!(
+            templated("image: {{ .Values.registry }}/nginx:1.25\n", "image"),
+            yes("/nginx:1.25")
+        );
+        assert_eq!(templated("a: x {{ y }}\n", "a"), yes("x"));
+        assert_eq!(templated("a: {{ y }} x\n", "a"), yes("x"));
+        assert_eq!(templated("a: x\t{{ y }}\n", "a"), yes("x"));
+        // in a sequence and in a flow sequence
+        assert_eq!(templated("l:\n  - x{{ y }}\n", "l[0]"), yes("x"));
+        assert_eq!(templated("l: [x{{ y }}]\n", "l[0]"), yes("x"));
+        // not adjacent: a flow separator, a comment, another line
+        assert_eq!(templated("{k: x, y: {{ .z }}}\n", "k"), no("x"));
+        assert_eq!(templated("[x, {{ .z }}]\n", "[0]"), no("x"));
+        assert_eq!(templated("a: x  # {{ c }}\n", "a"), no("x"));
+        assert_eq!(templated("a: x\n{{- if .z }}\nb: y\n", "a"), no("x"));
     }
 
     /// Characterisation (M8a decides what to report): an unquoted
