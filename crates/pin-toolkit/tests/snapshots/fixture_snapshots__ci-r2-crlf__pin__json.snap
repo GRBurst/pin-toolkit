@@ -47,7 +47,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-r2-crlf.yml",
       "line": 9,
       "reference": "redis:7",

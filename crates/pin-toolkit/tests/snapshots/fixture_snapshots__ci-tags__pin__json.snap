@@ -17,7 +17,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-tags.yml",
       "line": 3,
       "reference": "docker:24",

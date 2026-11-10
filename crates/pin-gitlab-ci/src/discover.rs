@@ -25,7 +25,7 @@ use pin_core::plugin::ScanError;
 use pin_core::text::LineIndex;
 use pin_core::yaml::{self, Node, PathSeg, ScalarRef, ScanOpts, Style};
 
-use crate::{COMPONENT, IMAGE, INCLUDE};
+use crate::{COMPONENT, IMAGE, INCLUDE, SERVICE};
 
 /// One discovered reference location in a CI file (M3: image, component or
 /// classic include).
@@ -33,6 +33,9 @@ use crate::{COMPONENT, IMAGE, INCLUDE};
 pub enum PinTarget {
     /// A container image reference (`image:` / `services:` value).
     Image {
+        /// [`IMAGE`] for an `image:` value, [`SERVICE`] for a `services:`
+        /// value.
+        kind: &'static str,
         /// 0-based line index in the file text.
         line: usize,
         /// Byte offset where the value token begins (incl. quotes).
@@ -86,8 +89,8 @@ pub enum PinTarget {
     /// `reason` is `block scalar` or `multi-line scalar`; `start..end` is
     /// one line (the range is cut at the first line break).
     Unsupported {
-        /// The kind the reference would have: `image`, `component` or
-        /// `include`.
+        /// The kind the reference would have: `image`, `service`,
+        /// `component` or `include`.
         kind: &'static str,
         /// 0-based line index in the file text.
         line: usize,
@@ -209,8 +212,8 @@ pub fn discover(text: &str) -> Result<Vec<PinTarget>, ScanError> {
         if s.span.is_empty() {
             continue;
         }
-        if is_image_path(&s.path) {
-            out.push(yaml_target(text, s, IMAGE, true));
+        if let Some(kind) = image_kind(&s.path) {
+            out.push(yaml_target(text, s, kind, true));
         } else if is_component_path(&s.path) {
             out.push(yaml_target(text, s, COMPONENT, comment_ok(s.line)));
         } else if let [m @ .., PathSeg::Key(k)] = &s.path[..]
@@ -265,7 +268,7 @@ fn unsupported(text: &str, s: &ScalarRef, kind: &'static str) -> Option<PinTarge
     })
 }
 
-/// The `image` or `component` target for `s`.
+/// The `image`/`service` or `component` target for `s`.
 fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str, comment_ok: bool) -> PinTarget {
     if let Some(u) = unsupported(text, s, kind) {
         return u;
@@ -282,6 +285,7 @@ fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str, comment_ok: bool) 
         }
     } else {
         PinTarget::Image {
+            kind,
             line,
             start,
             end,
@@ -291,25 +295,30 @@ fn yaml_target(text: &str, s: &ScalarRef, kind: &'static str, comment_ok: bool) 
 }
 
 /// `q` is `image|services` followed by nothing, `name`, an index, or an
-/// index and `name`.
-fn image_tail(q: &[PathSeg]) -> bool {
+/// index and `name`: [`IMAGE`] or [`SERVICE`] by the head.
+fn image_tail(q: &[PathSeg]) -> Option<&'static str> {
     let [PathSeg::Key(head), rest @ ..] = q else {
-        return false;
+        return None;
     };
-    if head != "image" && head != "services" {
-        return false;
-    }
+    let kind = match head.as_str() {
+        "image" => IMAGE,
+        "services" => SERVICE,
+        _ => return None,
+    };
     match rest {
-        [] | [PathSeg::Index(_)] => true,
-        [PathSeg::Key(n)] | [PathSeg::Index(_), PathSeg::Key(n)] => n == "name",
-        _ => false,
+        [] | [PathSeg::Index(_)] => Some(kind),
+        [PathSeg::Key(n)] | [PathSeg::Index(_), PathSeg::Key(n)] if n == "name" => Some(kind),
+        _ => None,
     }
 }
 
-/// `image` / `services` at the root, or one key down (a job, `default`, a
-/// hidden template).
-fn is_image_path(p: &[PathSeg]) -> bool {
-    image_tail(p) || (matches!(p.first(), Some(PathSeg::Key(_))) && image_tail(&p[1..]))
+/// The kind of an `image` / `services` path at the root, or one key down
+/// (a job, `default`, a hidden template).
+fn image_kind(p: &[PathSeg]) -> Option<&'static str> {
+    image_tail(p).or_else(|| match p.first() {
+        Some(PathSeg::Key(_)) => image_tail(&p[1..]),
+        _ => None,
+    })
 }
 
 /// The mapping of a classic include: the root key `include` itself, or one
@@ -619,6 +628,40 @@ mod tests {
             }
             other => panic!("expected IncludeRef, got {other:?}"),
         }
+    }
+
+    /// T29 (§4 C2, T-D26): `services:` values are the `service` kind,
+    /// `image:` values the `image` kind, at the root and in a job.
+    #[test]
+    fn services_are_service_kind() {
+        fn kind(t: &PinTarget) -> &'static str {
+            match t {
+                PinTarget::Image { kind, .. } | PinTarget::Unsupported { kind, .. } => kind,
+                other => panic!("not an image target: {other:?}"),
+            }
+        }
+        let text = "image: a:1\nservices: [b:1, {name: c:1}]\njob:\n  image: d:1\n  services:\n    - e:1\n";
+        let t = discover(text).unwrap();
+        assert_eq!(
+            t.iter().map(kind).collect::<Vec<_>>(),
+            ["image", "service", "service", "image", "service"]
+        );
+        assert_eq!(
+            t.iter().map(PinTarget::value).collect::<Vec<_>>(),
+            ["a:1", "b:1", "c:1", "d:1", "e:1"]
+        );
+        let block = discover("services: >-\n  redis:7\n").unwrap();
+        assert!(
+            matches!(
+                block[..],
+                [PinTarget::Unsupported {
+                    kind: "service",
+                    reason: "block scalar",
+                    ..
+                }]
+            ),
+            "{block:?}"
+        );
     }
 
     #[test]

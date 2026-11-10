@@ -20,11 +20,15 @@ const RECORD: &str = concat!(
     "/tests/parity/legacy-discover.txt"
 );
 
+/// The legacy record has no `service` kind: services count as `image`.
 fn kind(t: &PinTarget) -> &'static str {
     match t {
         PinTarget::Image { .. } => "image",
         PinTarget::Component { .. } => "component",
         PinTarget::IncludeRef { .. } => "include",
+        PinTarget::Unsupported {
+            kind: "service", ..
+        } => "image",
         PinTarget::Unsupported { kind, .. } => kind,
     }
 }

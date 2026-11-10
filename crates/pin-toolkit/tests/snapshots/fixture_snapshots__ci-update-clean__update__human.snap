@@ -5,5 +5,5 @@ expression: redact(&stdout)
 ci-update-clean.yml:2  gitlab-ci:image  updated  alpine:3.20 -> alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba  # alpine:3.20
 ci-update-clean.yml:4  gitlab-ci:image  pinned  docker:24 -> docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632  # docker:24
 ci-update-clean.yml:6  gitlab-ci:image  pinned  ubuntu:24.04 -> ubuntu:24.04@sha256:ca8beb9b4f1c0bdf19aee0c1099d4f61387e12cf4ea93953da4884b58e1394db  # ubuntu:24.04
-ci-update-clean.yml:9  gitlab-ci:image  updated  alpine:3.20 -> alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba  # alpine:3.20
+ci-update-clean.yml:9  gitlab-ci:service  updated  alpine:3.20 -> alpine:3.24@sha256:ade80fe2e99a394bce6ca8a3fe114a6a4695bf7e85651debfd9147030afc0bba  # alpine:3.20
 pinned: 2, ok: 0, updated: 2, skipped: 0, unresolved: 0

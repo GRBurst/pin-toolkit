@@ -48,7 +48,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-images-edge.yml",
       "line": 8,
       "reference": "docker:24",
@@ -58,7 +58,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-images-edge.yml",
       "line": 8,
       "reference": "redis:7",

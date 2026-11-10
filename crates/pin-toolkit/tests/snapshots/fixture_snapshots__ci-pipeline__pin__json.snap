@@ -17,7 +17,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-pipeline.yml",
       "line": 25,
       "reference": "docker:dind",
@@ -47,7 +47,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-pipeline.yml",
       "line": 49,
       "reference": "mysql:8.0",
@@ -57,7 +57,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-pipeline.yml",
       "line": 54,
       "reference": "redis:7",
@@ -88,7 +88,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-pipeline.yml",
       "line": 79,
       "reference": "docker:dind",

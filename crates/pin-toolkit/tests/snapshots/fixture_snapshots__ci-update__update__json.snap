@@ -17,7 +17,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-update.yml",
       "line": 5,
       "reference": "alpine:3.20",

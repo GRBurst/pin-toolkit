@@ -27,7 +27,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-quoted-comment.yml",
       "line": 4,
       "reference": "docker:24",
@@ -37,7 +37,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-quoted-comment.yml",
       "line": 4,
       "reference": "redis:7",
@@ -47,7 +47,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-quoted-comment.yml",
       "line": 6,
       "reference": "docker:24",
@@ -57,7 +57,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-quoted-comment.yml",
       "line": 6,
       "reference": "docker:24",

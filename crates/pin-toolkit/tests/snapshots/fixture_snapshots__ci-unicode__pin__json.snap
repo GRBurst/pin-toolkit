@@ -27,7 +27,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-unicode.yml",
       "line": 7,
       "reference": "ü-sidecar",
@@ -38,7 +38,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-unicode.yml",
       "line": 7,
       "reference": "docker:24",

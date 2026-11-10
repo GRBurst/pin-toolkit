@@ -28,7 +28,7 @@ expression: redact(&stdout)
     },
     {
       "plugin": "gitlab-ci",
-      "kind": "image",
+      "kind": "service",
       "file": "ci-multidoc.yml",
       "line": 13,
       "reference": "redis:7",

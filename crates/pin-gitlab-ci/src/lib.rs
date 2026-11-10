@@ -8,19 +8,26 @@ use pin_core::oci::pin_inline_image;
 use pin_core::plugin::{Finding, KindSet, KindSpec, Plugin, PluginMeta, ScanError, Source};
 use pin_core::run::Ctx;
 
-/// Kind id of `image:` and `services:` references (review L10).
+/// Kind id of `image:` references (review L10).
 pub const IMAGE: &str = "image";
+/// Kind id of `services:` references (§4 C2, T-D26).
+pub const SERVICE: &str = "service";
 /// Kind id of top-level `component:` references.
 pub const COMPONENT: &str = "component";
 /// Kind id of classic `include:` project/ref mappings.
 pub const INCLUDE: &str = "include";
 
 /// The reference kinds this plugin finds (all on by default).
-pub const KINDS: [KindSpec; 3] = [
+pub const KINDS: [KindSpec; 4] = [
     KindSpec {
         id: IMAGE,
         default_on: true,
-        help: "image: and services: references (C1, C2)",
+        help: "image: references (C1)",
+    },
+    KindSpec {
+        id: SERVICE,
+        default_on: true,
+        help: "services: references (C2)",
     },
     KindSpec {
         id: COMPONENT,
@@ -87,11 +94,12 @@ impl Plugin for GitlabCi {
     async fn resolve(&self, ctx: &Ctx, src: &Source<'_>, t: &PinTarget) -> Finding {
         match t {
             PinTarget::Image {
+                kind,
                 line,
                 start,
                 end,
                 value,
-            } => pin_inline_image(ctx, src.text, *line, *start, *end, value, IMAGE).await,
+            } => pin_inline_image(ctx, src.text, *line, *start, *end, value, kind).await,
             PinTarget::Component { parts, .. } => {
                 policy::resolve_component(ctx, src, t, parts.as_ref()).await
             }
@@ -108,7 +116,7 @@ impl Plugin for GitlabCi {
 /// The kind id of a discovered target.
 fn target_kind(t: &PinTarget) -> &'static str {
     match t {
-        PinTarget::Image { .. } => IMAGE,
+        PinTarget::Image { kind, .. } => kind,
         PinTarget::Component { .. } => COMPONENT,
         PinTarget::IncludeRef { .. } => INCLUDE,
         PinTarget::Unsupported { kind, .. } => kind,

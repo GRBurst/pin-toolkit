@@ -45,7 +45,33 @@ fn scan_filters_by_kind() {
 
     let mut no_image = KindSet::defaults(&KINDS);
     no_image.set("image", false);
-    assert_eq!(p.scan(path, &text, &no_image).unwrap().len(), 1);
+    assert_eq!(p.scan(path, &text, &no_image).unwrap().len(), 5);
+}
+
+/// D16, T29: `service` off drops the `services:` targets (no rows); the
+/// `image:` targets stay.
+#[test]
+fn service_kind_off_drops_service_rows() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/ci-rich.yml"
+    ))
+    .unwrap();
+    let p = GitlabCi;
+    let mut no_service = KindSet::defaults(&KINDS);
+    no_service.set("service", false);
+    let targets = p
+        .scan(Path::new("ci-rich.yml"), &text, &no_service)
+        .unwrap();
+    let images: Vec<(usize, &str)> = targets
+        .iter()
+        .filter_map(|t| match t {
+            PinTarget::Image { kind, .. } => Some((t.line(), *kind)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images, [(2, "image"), (7, "image")]);
+    assert_eq!(targets.len(), 3, "two images and the include");
 }
 
 #[test]
@@ -60,7 +86,7 @@ fn ids_kinds_and_files() {
     assert_eq!(as_dyn(&p), "gitlab-ci");
     assert_eq!(
         p.kinds().iter().map(|k| k.id).collect::<Vec<_>>(),
-        ["image", "component", "include"]
+        ["image", "service", "component", "include"]
     );
     assert!(p.kinds().iter().all(|k| k.default_on));
     assert_eq!(p.default_files(), &DEFAULT_FILES[..]);
