@@ -278,8 +278,7 @@ pub async fn pin_file(
     findings.sort_by_key(|f| f.line);
     mark_overlaps(&mut findings);
 
-    let splices: Vec<Splice> =
-        coalesce_comments(findings.iter().flat_map(|f| f.edits.clone()).collect());
+    let splices = ordered_splices(&findings);
     if !o.dry_run && !o.check && !splices.is_empty() {
         std::fs::write(path, apply(&text, &splices)).map_err(|e| FileError::Write {
             path: file.clone(),
@@ -300,6 +299,24 @@ pub async fn pin_file(
             reason: f.reason,
         })
         .collect())
+}
+
+/// Every finding's splices, findings stably ordered by `(line, first edit
+/// offset)` so trailing comments merge in byte order whatever order the
+/// plugin found the references in (review L1), then `coalesce_comments`.
+/// Rows keep finding order; only the splice order is touched.
+fn ordered_splices(findings: &[Finding]) -> Vec<Splice> {
+    let mut by_position: Vec<&Finding> = findings.iter().collect();
+    by_position.sort_by_key(|f| {
+        let first = f.edits.iter().map(|s| s.start).min();
+        (f.line, first.unwrap_or(usize::MAX))
+    });
+    coalesce_comments(
+        by_position
+            .into_iter()
+            .flat_map(|f| f.edits.iter().cloned())
+            .collect(),
+    )
 }
 
 /// Two splices overlap when both replace and their ranges intersect, or an
@@ -353,9 +370,11 @@ mod resolver_tests {
         help: "",
     }];
 
-    /// One target; `resolve` touches `ctx.oci()` iff `touch_oci`.
+    /// One target; `resolve` touches `ctx.oci()` iff `touch_oci` and
+    /// `ctx.gitlab()` iff `touch_gitlab`.
     struct Fake {
         touch_oci: bool,
+        touch_gitlab: bool,
     }
 
     impl PluginMeta for Fake {
@@ -380,6 +399,9 @@ mod resolver_tests {
         async fn resolve(&self, ctx: &Ctx, _: &str, _: &()) -> Finding {
             if self.touch_oci {
                 let _ = ctx.oci();
+            }
+            if self.touch_gitlab {
+                let _ = ctx.gitlab();
             }
             Finding {
                 line: 0,
@@ -421,15 +443,46 @@ mod resolver_tests {
     #[tokio::test]
     async fn no_resolver_needed_builds_none() {
         let ctx = Ctx::new(Default::default(), 0, env());
-        run_fake("none", &Fake { touch_oci: false }, &ctx).await;
+        run_fake(
+            "none",
+            &Fake {
+                touch_oci: false,
+                touch_gitlab: false,
+            },
+            &ctx,
+        )
+        .await;
         assert_eq!(ctx.resolvers_built(), Vec::<&str>::new());
     }
 
     #[tokio::test]
     async fn oci_target_builds_only_oci() {
         let ctx = Ctx::new(Default::default(), 0, env());
-        run_fake("oci", &Fake { touch_oci: true }, &ctx).await;
+        run_fake(
+            "oci",
+            &Fake {
+                touch_oci: true,
+                touch_gitlab: false,
+            },
+            &ctx,
+        )
+        .await;
         assert_eq!(ctx.resolvers_built(), ["oci"]);
+    }
+
+    #[tokio::test]
+    async fn gitlab_target_builds_only_gitlab() {
+        let ctx = Ctx::new(Default::default(), 0, env());
+        run_fake(
+            "gitlab",
+            &Fake {
+                touch_oci: false,
+                touch_gitlab: true,
+            },
+            &ctx,
+        )
+        .await;
+        assert_eq!(ctx.resolvers_built(), ["gitlab"]);
     }
 
     #[tokio::test]

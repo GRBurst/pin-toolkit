@@ -287,3 +287,83 @@ async fn scan_error_is_file_error_and_no_write() {
     assert_eq!(fake.max_in_flight.get(), 0);
     cleanup(&p);
 }
+
+/// Review L1 (Y-D12): the combined trailing comment lists originals in byte
+/// order of their replacements, whatever order the plugin found them in;
+/// rows keep finding order.
+#[tokio::test]
+async fn combined_comment_in_byte_order() {
+    let text = "k: [p, q]\n";
+    let p = scratch("comment-order", text);
+    let named = |name: &str, edits: Vec<Splice>| {
+        let mut f = finding(0, Status::Pinned, edits);
+        f.reference = name.into();
+        f.old = name.into();
+        f
+    };
+    let fake = Fake::new(vec![
+        named(
+            "q",
+            vec![Splice::replace(7, 8, "Q"), Splice::insert(9, "  # q")],
+        ),
+        named(
+            "p",
+            vec![Splice::replace(4, 5, "P"), Splice::insert(9, "  # p")],
+        ),
+    ]);
+    let rows = pin_file(&fake, &ctx(), &p, &on(), &opts(4)).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "k: [P, Q]  # p, q\n");
+    assert_eq!(rows[0].reference, "q");
+    assert_eq!(rows[1].reference, "p");
+    cleanup(&p);
+}
+
+/// Review L7: an insertion strictly inside another finding's replacement is
+/// an overlap (either finding order); both become `unresolved`, nothing is
+/// written.
+#[tokio::test]
+async fn insertion_inside_other_replacement_marks_both_unresolved() {
+    let text = "abcdefghij\n";
+    let replace = Splice::replace(2, 6, "X");
+    let insert = Splice::insert(4, "  # y");
+    for (n, order) in [[&replace, &insert], [&insert, &replace]]
+        .into_iter()
+        .enumerate()
+    {
+        let p = scratch(&format!("insert-inside-{n}"), text);
+        let fake = Fake::new(
+            order
+                .into_iter()
+                .map(|s| finding(0, Status::Pinned, vec![s.clone()]))
+                .collect(),
+        );
+        let rows = pin_file(&fake, &ctx(), &p, &on(), &opts(4)).await.unwrap();
+        for r in &rows {
+            assert_eq!(r.status, Status::Unresolved, "order {n}");
+            assert_eq!(r.reason.as_deref(), Some("internal: overlapping edits"));
+        }
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), text);
+        cleanup(&p);
+    }
+}
+
+/// Review L7: findings that overlap each other are marked, an independent
+/// finding next to them is still written.
+#[tokio::test]
+async fn independent_finding_written_next_to_overlap() {
+    let text = "abcdefghij\n";
+    let p = scratch("independent", text);
+    let fake = Fake::new(vec![
+        finding(0, Status::Pinned, vec![Splice::replace(0, 3, "A")]),
+        finding(0, Status::Pinned, vec![Splice::replace(2, 5, "B")]),
+        finding(0, Status::Pinned, vec![Splice::replace(7, 9, "C")]),
+    ]);
+    let rows = pin_file(&fake, &ctx(), &p, &on(), &opts(4)).await.unwrap();
+    let statuses: Vec<_> = rows.iter().map(|r| r.status).collect();
+    assert_eq!(
+        statuses,
+        [Status::Unresolved, Status::Unresolved, Status::Pinned]
+    );
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "abcdefgCj\n");
+    cleanup(&p);
+}
