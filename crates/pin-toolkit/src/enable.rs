@@ -33,8 +33,10 @@ fn not_in_build(id: &str) -> Fatal {
 /// come only from the env (PR-L6). Otherwise a compiled plugin runs unless
 /// `only` leaves it out, `skip` names it or `plugins.<id>.run = false`;
 /// `only`/`skip` ids must be known, and an `only` id must be compiled in
-/// (T-D11). In `Mode::All`, a config table for a known plugin that is not
-/// compiled in (unless `run = false`) gives a notice, never an error.
+/// (T-D11); in `Mode::Plugins` (the listing that explains a run) an `only`
+/// id that is not compiled in is a notice instead (M5d final L3). In
+/// `Mode::All`, a config table for a known plugin that is not compiled in
+/// (unless `run = false`) gives a notice, never an error.
 pub fn enable(eff: &Effective, mode: &Mode) -> Result<Plan, Fatal> {
     let mut notices = Vec::new();
     let ids: Vec<&'static str> = match *mode {
@@ -49,12 +51,17 @@ pub fn enable(eff: &Effective, mode: &Mode) -> Result<Plan, Fatal> {
                     return Err(Fatal(unknown_plugin(id)));
                 }
             }
-            if let Some(id) = only
+            let unbuilt = only
                 .into_iter()
                 .flatten()
-                .find(|id| compiled_plugin(id).is_none())
-            {
-                return Err(not_in_build(id));
+                .filter(|id| compiled_plugin(id).is_none());
+            for id in unbuilt {
+                if *mode == Mode::All {
+                    return Err(not_in_build(id));
+                }
+                notices.push(format!(
+                    "note: plugin {id} not in this build (named by --only/PIN_TOOLKIT_ONLY; a run exits 2)"
+                ));
             }
             if *mode == Mode::All {
                 for (id, pl) in &eff.plugins {

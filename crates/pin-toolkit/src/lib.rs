@@ -98,7 +98,11 @@ async fn run_mode(
     let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(&eff))
         .map_err(Fatal)?;
     if mode == Mode::Plugins {
-        out.stdout = plugins_listing(&eff)?;
+        let (listing, notices) = plugins_listing(&eff)?;
+        out.stdout = listing;
+        for n in &notices {
+            out.stderr.push_str(&format!("pin-toolkit: {n}\n"));
+        }
         return Ok(());
     }
     let plan = enable(&eff, &mode)?;
@@ -239,9 +243,11 @@ fn usage(e: &clap::Error) -> Output {
 
 /// `pin-toolkit plugins` (T-D27): per known plugin `{id}: {enabled |
 /// disabled | not in this build}` (the state a run without a subcommand
-/// would have), then per compiled kind `  {kind}: {on|off} — {help}`.
-fn plugins_listing(eff: &Effective) -> Result<String, Fatal> {
-    let enabled = enable(eff, &Mode::Plugins)?.ids();
+/// would have), then per compiled kind `  {kind}: {on|off} — {help}`; and
+/// the notices for stderr (an `only` id not in this build, L3).
+fn plugins_listing(eff: &Effective) -> Result<(String, Vec<String>), Fatal> {
+    let plan = enable(eff, &Mode::Plugins)?;
+    let enabled = plan.ids();
     let mut out = String::new();
     for k in &KNOWN {
         let Some(p) = compiled_plugin(k.id) else {
@@ -264,7 +270,7 @@ fn plugins_listing(eff: &Effective) -> Result<String, Fatal> {
             out.push_str(&format!("  {}: {on} — {}\n", kind.id, kind.help));
         }
     }
-    Ok(out)
+    Ok((out, plan.notices))
 }
 
 /// [`execute`] on a current-thread runtime (`Ctx` is not `Send`: the run is

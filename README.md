@@ -68,7 +68,10 @@ Flags are presence-only (there is no `--no-update`; use
 empty list counts as not given. An unknown id exits `2`
 (``unknown plugin `x` (known: gitlab-ci, helm, github-actions)``), for
 `--skip` too. `--only helm` in this build exits `2` with
-`plugin helm not in this build`. On the command line, `--only`/`--skip`
+`plugin helm not in this build`; `pin-toolkit --only helm plugins` (or
+`PIN_TOOLKIT_ONLY=helm pin-toolkit plugins`) still lists, exit `0`, with
+`pin-toolkit: note: plugin helm not in this build (named by --only/PIN_TOOLKIT_ONLY; a run exits 2)`
+on stderr. On the command line, `--only`/`--skip`
 together with a plugin subcommand or alias exit `2`
 (`--only/--skip cannot be combined with a plugin subcommand`).
 
@@ -188,9 +191,10 @@ JSON (`--json`, stdout), schema version 1:
 Exit `2` comes in two forms:
 
 - **Fatal, before the run:** a usage error, a config error (repo file,
-  env value, `--kind`, `--gitlab-host`), an explicit path claimed by no or
-  two plugins, a plugin that is requested (subcommand, alias, `--only`,
-  `PIN_TOOLKIT_ONLY`) but not in this build. stderr says
+  env value, `--kind`, `--gitlab-host`, `CI_SERVER_HOST`), an explicit
+  path claimed by no or two plugins, a plugin that is requested
+  (subcommand, alias, `--only`, `PIN_TOOLKIT_ONLY`) but not in this build
+  (`plugins` only notes the latter two). stderr says
   `pin-toolkit: {message}`; **stdout is empty, also with `--json`**;
   nothing is written.
 - **Per-file:** a file that cannot be read, parsed or written, a walk

@@ -409,7 +409,9 @@ implements the table; `crates/pin-toolkit/tests/exit_codes.rs` pins it and recom
 - `--kind <p>:<k>=on|off` is validated against `KNOWN`; a known kind that is not compiled (`helm-oci`) is
   accepted and ignored. Presence-only flags, no `--no-*` twins (T-D8).
 - `plugins` prints `{id}: enabled|disabled|not in this build`, then per compiled kind
-  `  {kind}: on|off — {help}` (T-D27). `config show` comes in M5e'.
+  `  {kind}: on|off — {help}` (T-D27). An `only` id that is not in this build does not fail it (a run
+  exits 2): it lists, exit 0, with the stderr note `pin-toolkit: note: plugin {id} not in this build
+  (named by --only/PIN_TOOLKIT_ONLY; a run exits 2)` (M5d final L3, main). `config show` comes in M5e'.
 
 ### 6.7 Resolver cache
 

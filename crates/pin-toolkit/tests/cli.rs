@@ -19,6 +19,39 @@ async fn plugins_lists_compiled_and_known() {
     assert_eq!(out.stderr, "");
 }
 
+/// M5d final L3: `plugins` explains a run whose `only` names a plugin that
+/// is not in this build instead of failing like that run: exit 0, the
+/// listing (gitlab-ci disabled by `only`), a note on stderr. An unknown id
+/// stays an error.
+#[cfg(feature = "gitlab-ci")]
+#[tokio::test]
+async fn plugins_notes_an_unbuilt_only_plugin() {
+    let root = repo("cli-plugins-only-unbuilt");
+    let mut expected = String::from("gitlab-ci: disabled\n");
+    for k in pin_gitlab_ci::KINDS {
+        expected.push_str(&format!("  {}: on — {}\n", k.id, k.help));
+    }
+    expected.push_str("helm: not in this build\ngithub-actions: not in this build\n");
+    let note = "pin-toolkit: note: plugin helm not in this build (named by --only/PIN_TOOLKIT_ONLY; a run exits 2)\n";
+    type Row<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)]);
+    let rows: [Row; 3] = [
+        (&["pin-toolkit", "--only", "helm", "plugins"], &[]),
+        (&["pin-toolkit", "plugins", "--only", "helm"], &[]),
+        (&["pin-toolkit", "plugins"], &[("PIN_TOOLKIT_ONLY", "helm")]),
+    ];
+    for (argv, vars) in rows {
+        let out = run_in(&root, argv, vars).await;
+        assert_eq!(
+            (out.code, out.stdout.as_str(), out.stderr.as_str()),
+            (0, expected.as_str(), note),
+            "{argv:?} {vars:?}"
+        );
+    }
+    let out = run_in(&root, &["pin-toolkit", "--only", "nope", "plugins"], &[]).await;
+    assert_eq!(out.code, 2, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, "");
+}
+
 #[cfg(not(feature = "gitlab-ci"))]
 #[tokio::test]
 async fn plugins_without_gitlab_ci() {
