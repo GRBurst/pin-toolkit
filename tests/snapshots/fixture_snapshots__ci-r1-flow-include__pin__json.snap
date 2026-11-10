@@ -1,0 +1,31 @@
+---
+source: tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-r1-flow-include.yml",
+      "line": 1,
+      "reference": "main",
+      "old": "main",
+      "new": "01c05e4d3720f3a64ebf3f2f3b52e5f1289e4767",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-r1-flow-include.yml",
+      "line": 1,
+      "reference": "dev",
+      "old": "dev",
+      "new": "d7cf18759d8f2c9a2f418dcf9df047638eb7fbdc",
+      "status": "pinned"
+    }
+  ],
+  "summary": {
+    "pinned": 2,
+    "ok": 0,
+    "updated": 0,
+    "skipped": 0,
+    "unresolved": 0
+  }
+}

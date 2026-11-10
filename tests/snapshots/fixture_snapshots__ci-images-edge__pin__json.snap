@@ -1,0 +1,64 @@
+---
+source: tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-images-edge.yml",
+      "line": 1,
+      "reference": "alpine",
+      "old": "alpine",
+      "new": "alpine@sha256:ad64e3823df30f61db46f16ddc2c99dd4ddc3fc343ecad26304007c4bfb9d0f9",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-images-edge.yml",
+      "line": 3,
+      "reference": "alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "old": "alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "new": "alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-images-edge.yml",
+      "line": 5,
+      "reference": "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}",
+      "old": "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}",
+      "new": null,
+      "status": "skipped",
+      "reason": "unparseable reference"
+    },
+    {
+      "file": "ci-images-edge.yml",
+      "line": 7,
+      "reference": "redis:7",
+      "old": "'redis:7'",
+      "new": "'redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e'",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-images-edge.yml",
+      "line": 8,
+      "reference": "docker:24",
+      "old": "\"docker:24\"",
+      "new": "\"docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632\"",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-images-edge.yml",
+      "line": 8,
+      "reference": "redis:7",
+      "old": "'redis:7'",
+      "new": "'redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e'",
+      "status": "pinned"
+    }
+  ],
+  "summary": {
+    "pinned": 5,
+    "ok": 0,
+    "updated": 0,
+    "skipped": 1,
+    "unresolved": 0
+  }
+}

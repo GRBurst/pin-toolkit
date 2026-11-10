@@ -1,0 +1,5 @@
+---
+source: tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+include: [{ project: g/a, ref: 01c05e4d3720f3a64ebf3f2f3b52e5f1289e4767 }, { project: g/b, ref: d7cf18759d8f2c9a2f418dcf9df047638eb7fbdc }]  # dev  # main

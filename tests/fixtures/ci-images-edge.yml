@@ -1,0 +1,8 @@
+image: alpine
+stale:
+  image: alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000
+templated:
+  image: ${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}
+quoted:
+  image: 'redis:7'
+  services: ["docker:24", 'redis:7']

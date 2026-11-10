@@ -1,0 +1,1 @@
+include: [{ project: g/a, ref: main }, { project: g/b, ref: dev }]

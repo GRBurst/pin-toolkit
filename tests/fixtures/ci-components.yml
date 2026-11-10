@@ -1,0 +1,14 @@
+component: gitlab.com/g/p/name@1.0.0
+include:
+  - project: g/p
+    ref: main
+  - project: g/p
+    ref: v1.2.3
+  - project: g/missing
+    ref: main
+  - project: g/p
+    ref: $CI_COMMIT_REF_NAME
+  - project: g/p
+    ref: e3262fdd0914fa823210cdb79a8c421e2cef79d8
+  - project: g/p
+    ref: v2.0.0

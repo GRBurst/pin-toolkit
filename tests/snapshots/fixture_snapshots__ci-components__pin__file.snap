@@ -1,0 +1,19 @@
+---
+source: tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+component: gitlab.com/g/p/name@6daf17a74fa888c76d61a72274f7013ca6f4cdd0  # 1.0.0
+include:
+  - project: g/p
+    ref: 5b0d6dd77c40c7fdb58e102ab44cb15acd1af5b5  # main
+  - project: g/p
+    ref: ba85606ebd469ef2141146e48641c2ca4052d13b  # v1.2.3
+  - project: g/missing
+    ref: main
+  - project: g/p
+    ref: $CI_COMMIT_REF_NAME
+  - project: g/p
+    ref: e3262fdd0914fa823210cdb79a8c421e2cef79d8
+  - project: g/p
+    ref: b38625b856e6250db7e23845951dc45ac99a8155  # v2.0.0
+[no newline at end of file]

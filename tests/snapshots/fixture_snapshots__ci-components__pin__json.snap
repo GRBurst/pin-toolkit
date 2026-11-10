@@ -1,0 +1,73 @@
+---
+source: tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-components.yml",
+      "line": 1,
+      "reference": "gitlab.com/g/p/name@1.0.0",
+      "old": "gitlab.com/g/p/name@1.0.0",
+      "new": "gitlab.com/g/p/name@6daf17a74fa888c76d61a72274f7013ca6f4cdd0",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-components.yml",
+      "line": 4,
+      "reference": "main",
+      "old": "main",
+      "new": "5b0d6dd77c40c7fdb58e102ab44cb15acd1af5b5",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-components.yml",
+      "line": 6,
+      "reference": "v1.2.3",
+      "old": "v1.2.3",
+      "new": "ba85606ebd469ef2141146e48641c2ca4052d13b",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-components.yml",
+      "line": 8,
+      "reference": "main",
+      "old": "main",
+      "new": null,
+      "status": "unresolved",
+      "reason": "g/missing:main not found (no tag or branch)"
+    },
+    {
+      "file": "ci-components.yml",
+      "line": 10,
+      "reference": "$CI_COMMIT_REF_NAME",
+      "old": "$CI_COMMIT_REF_NAME",
+      "new": null,
+      "status": "skipped",
+      "reason": "templated reference"
+    },
+    {
+      "file": "ci-components.yml",
+      "line": 12,
+      "reference": "e3262fdd0914fa823210cdb79a8c421e2cef79d8",
+      "old": "e3262fdd0914fa823210cdb79a8c421e2cef79d8",
+      "new": null,
+      "status": "ok"
+    },
+    {
+      "file": "ci-components.yml",
+      "line": 14,
+      "reference": "v2.0.0",
+      "old": "v2.0.0",
+      "new": "b38625b856e6250db7e23845951dc45ac99a8155",
+      "status": "pinned"
+    }
+  ],
+  "summary": {
+    "pinned": 4,
+    "ok": 1,
+    "updated": 0,
+    "skipped": 1,
+    "unresolved": 1
+  }
+}

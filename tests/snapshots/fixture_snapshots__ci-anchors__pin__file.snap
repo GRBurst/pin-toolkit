@@ -1,0 +1,14 @@
+---
+source: tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+image: &img alpine:3.20
+.base: &base
+  image: ubuntu:24.04
+job:
+  <<: *base
+  image: *img
+other:
+  services:
+    - &redis redis:7
+    - *redis
