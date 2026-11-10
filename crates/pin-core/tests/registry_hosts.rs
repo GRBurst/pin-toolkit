@@ -5,7 +5,7 @@
 
 use pin_core::oci::image_ref::ImageRef;
 use pin_core::oci::registry::{Creds, HostCreds, RegistryClient};
-use wiremock::matchers::{header, method, path, query_param};
+use wiremock::matchers::{basic_auth, header, method, path, query_param};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
 // M1 lesson: wiremock 0.6.5 has no 2-arg header matcher — the NoAuthorization
@@ -290,4 +290,95 @@ async fn no_challenge_401_unchanged() {
         err.contains("401 without WWW-Authenticate at /v2/a/b/manifests/1"),
         "unexpected error: {err}"
     );
+}
+
+/// Review H1 (§7.3): a bearer token is bound to the registry host that
+/// challenged for it. Host B challenges with the same `scope` as host A
+/// (with `same_realm`, A's realm and service too); B never sees A's token,
+/// and B's token request never carries A's login (B has none).
+async fn token_stays_with_its_host(same_realm: bool) {
+    const SCOPE: &str = "repository:org/private:pull";
+    const MANIFEST: &str = "/v2/org/private/manifests/1";
+    let a = MockServer::start().await;
+    let b = MockServer::start().await;
+    let challenge = |realm: &MockServer| {
+        format!(
+            r#"Bearer realm="{}/token",service="reg.example",scope="{SCOPE}""#,
+            realm.uri()
+        )
+    };
+    let b_realm = if same_realm { &a } else { &b };
+    // Mounted first, so it wins over every other mock of B.
+    Mock::given(header("authorization", "Bearer tok-a"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .named("host A's token sent to host B")
+        .mount(&b)
+        .await;
+    for (server, realm, token, digest) in [(&a, &a, "tok-a", D1), (&b, b_realm, "tok-b", D2)] {
+        Mock::given(method("HEAD"))
+            .and(path(MANIFEST))
+            .and(NoAuthorization)
+            .respond_with(
+                ResponseTemplate::new(401).insert_header("www-authenticate", challenge(realm)),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path(MANIFEST))
+            .and(header("authorization", format!("Bearer {token}").as_str()))
+            .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", digest))
+            .mount(server)
+            .await;
+    }
+    // A's token: A's login. B's token: anonymous.
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(query_param("scope", SCOPE))
+        .and(basic_auth("ua", "pa"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok-a"})),
+        )
+        .expect(1)
+        .mount(&a)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(query_param("scope", SCOPE))
+        .and(NoAuthorization)
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"token": "tok-b"})),
+        )
+        .expect(1)
+        .mount(b_realm)
+        .await;
+    let c = RegistryClient::new(
+        Creds::none().with_host(
+            "a.example",
+            HostCreds::Basic {
+                user: "ua".into(),
+                password: "pa".into(),
+            },
+        ),
+        std::collections::HashMap::from([
+            ("a.example".to_string(), a.uri()),
+            ("b.example".to_string(), b.uri()),
+        ]),
+    );
+    let ra = ImageRef::parse("a.example/org/private:1").unwrap();
+    let rb = ImageRef::parse("b.example/org/private:1").unwrap();
+    assert_eq!(c.digest(&ra).await, Ok(D1.to_string()));
+    assert_eq!(c.digest(&rb).await, Ok(D2.to_string()));
+    a.verify().await;
+    b.verify().await;
+}
+
+#[tokio::test]
+async fn bearer_token_is_not_replayed_to_another_host() {
+    token_stays_with_its_host(false).await;
+}
+
+#[tokio::test]
+async fn identical_challenge_on_two_hosts_gets_two_tokens() {
+    token_stays_with_its_host(true).await;
 }

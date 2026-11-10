@@ -225,6 +225,9 @@ fn entry_to_creds(entry: &serde_json::Value) -> Option<HostCreds> {
     None
 }
 
+/// Token cache key: `[host, realm, service, scope]`.
+type TokenKey = [String; 4];
+
 /// Client for the registry HTTP v2 API (M4a: per-host credentials; every
 /// host resolves — `base_urls` override, Docker Hub default, else
 /// `https://{host}`).
@@ -240,8 +243,10 @@ pub struct RegistryClient {
     /// Test hook: override the Docker Hub API base (M4b-1);
     /// `None` → `DEFAULT_HUB_API_BASE` (tags URL `{base}/v2/repositories/…`).
     hub_base: Option<String>,
-    /// Bearer tokens keyed by the `WWW-Authenticate` scope.
-    tokens: Arc<Mutex<HashMap<String, String>>>,
+    /// Bearer tokens keyed by `(host, realm, service, scope)`: a token is
+    /// only ever replayed to the host that challenged for it (§7.3,
+    /// review H1).
+    tokens: Arc<Mutex<HashMap<TokenKey, String>>>,
     /// Fetched tag lists keyed by `api_repo()`; avoids re-fetching for
     /// repeated refs to the same repo.
     tag_lists: Arc<Mutex<HashMap<String, Vec<String>>>>,
@@ -429,8 +434,9 @@ impl RegistryClient {
 
     /// Dispatch a 401 challenge (`www` header) for a request to `url`,
     /// returning the authenticated retry response:
-    /// - `Bearer realm=…` → the per-host token (cached by scope; the token
-    ///   request itself carries the per-host credential, M4a T1) and
+    /// - `Bearer realm=…` → the per-host token (cached per host and
+    ///   challenge; the token request itself carries the per-host
+    ///   credential, M4a T1) and
     ///   `Authorization: Bearer` on the retry. The scope is trusted as
     ///   issued by the registry (ECR public uses `scope=aws`, not the
     ///   Docker-Hub `repository:…:pull` grammar).
@@ -625,8 +631,8 @@ impl RegistryClient {
         Ok(tags)
     }
 
-    /// Bearer token for `scope`, from the cache or the token endpoint
-    /// (authed per `host`).
+    /// Bearer token for `host`'s challenge `(realm, service, scope)`, from
+    /// the cache or the token endpoint (authed per `host`).
     async fn cached_token(
         &self,
         scope: &str,
@@ -634,17 +640,15 @@ impl RegistryClient {
         service: &str,
         host: &str,
     ) -> Result<String, RegError> {
+        let key: TokenKey = [host, realm, service, scope].map(str::to_string);
         {
             let cache = self.tokens.lock().await;
-            if let Some(token) = cache.get(scope) {
+            if let Some(token) = cache.get(&key) {
                 return Ok(token.clone());
             }
         }
         let token = self.fetch_token(realm, service, scope, host).await?;
-        self.tokens
-            .lock()
-            .await
-            .insert(scope.to_string(), token.clone());
+        self.tokens.lock().await.insert(key, token.clone());
         Ok(token)
     }
 
