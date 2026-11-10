@@ -17,7 +17,7 @@ use tokio::sync::Semaphore;
 
 use crate::discover::{PinTarget, discover};
 use crate::gitlab::GitLabClient;
-use crate::registry::{Creds, RegError};
+use crate::registry::{Creds, RegError, is_old_enough};
 use crate::report::{RefResult, Report};
 
 pub use image_ref::ImageRef;
@@ -42,6 +42,24 @@ pub struct PinOptions {
     /// GitLab instance host for component/include resolution (default
     /// `gitlab.com`; set via `--gitlab-host`).
     pub gitlab_host: String,
+    /// With `update`, skip bump candidates younger than N days (Docker Hub
+    /// refs only; 0 = off; recommended 14). M4b-1 release-age guard.
+    pub min_age_days: u64,
+}
+
+/// Every field at its off/default value (the CLI defaults).
+impl Default for PinOptions {
+    fn default() -> Self {
+        Self {
+            dry_run: false,
+            json: false,
+            concurrency: 8,
+            update: false,
+            update_major: false,
+            gitlab_host: "gitlab.com".to_string(),
+            min_age_days: 0,
+        }
+    }
 }
 
 /// Build the registry client from the environment: per-host credentials via
@@ -114,6 +132,15 @@ fn is_catalog_managed(version: &str) -> bool {
 /// token on the same line (no double comment).
 fn comment_splice(text: &str, t: &PinTarget, orig: &str) -> Option<(usize, String)> {
     edit::comment_insert_offset(text, t.line(), t.end()).map(|pos| (pos, format!("  # {orig}")))
+}
+
+/// Current unix time in seconds from the system clock (M4b-1 release-age
+/// guard); `0` if the clock predates the epoch (impossible in practice).
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Resolve one discovered target: images against the registry (M1/M2),
@@ -199,7 +226,80 @@ async fn resolve_image(
                     };
                 }
             };
-            if let Some(new_tag) = versioning::pick_latest_stable(tag, &tags, opts.update_major)
+            let candidate = versioning::pick_latest_stable(tag, &tags, opts.update_major);
+            // M4b-1 release-age guard (R3-R6): active iff `min_age_days > 0`
+            // AND the ref is docker.io — every other host stays pure M2.
+            // Double-pick: the unfiltered M2 candidate vs the candidate
+            // picked from the tags old enough; a tag missing from the Hub
+            // timestamp map is NOT old enough (timestamp-required parity).
+            let new_tag = if opts.min_age_days > 0 && r.is_docker_hub() {
+                let stamps = match client.tag_timestamps(&r).await {
+                    Ok(stamps) => stamps,
+                    Err(e) => {
+                        let msg = match e {
+                            RegError::Unresolved(m) | RegError::Network(m) => m,
+                        };
+                        // tag_timestamps already prefixes its own errors
+                        // with "hub api:"; the bare network message gets
+                        // the prefix here (plan constraint 5).
+                        result.status = "unresolved".to_string();
+                        result.reason = Some(if msg.starts_with("hub api:") {
+                            msg
+                        } else {
+                            format!("hub api: {msg}")
+                        });
+                        return Resolved {
+                            result,
+                            replacement: None,
+                            comment: None,
+                        };
+                    }
+                };
+                let now = now_unix();
+                let days = opts.min_age_days;
+                let tags_age: Vec<String> = tags
+                    .iter()
+                    .filter(|t| {
+                        stamps
+                            .get(t.as_str())
+                            .is_some_and(|ts| is_old_enough(*ts, now, days))
+                    })
+                    .cloned()
+                    .collect();
+                let age_candidate =
+                    versioning::pick_latest_stable(tag, &tags_age, opts.update_major);
+                match (candidate, age_candidate) {
+                    // R5: unfiltered candidates existed but none is old
+                    // enough → skip; the ref stays byte-identical, exit 0.
+                    (Some(c), None) if c != tag => {
+                        result.status = "skipped".to_string();
+                        result.reason = Some(format!("release age: no candidate ≥ {days}d"));
+                        return Resolved {
+                            result,
+                            replacement: None,
+                            comment: None,
+                        };
+                    }
+                    (Some(c), Some(s)) if c != tag && s == tag => {
+                        result.status = "skipped".to_string();
+                        result.reason = Some(format!("release age: no candidate ≥ {days}d"));
+                        return Resolved {
+                            result,
+                            replacement: None,
+                            comment: None,
+                        };
+                    }
+                    // An old-enough candidate exists → update to IT (M2
+                    // shape: digest + splice).
+                    (Some(_), Some(a)) if a != tag => Some(a),
+                    // No unfiltered candidate: the existing M2 no-update
+                    // path (pin) applies unchanged.
+                    _ => None,
+                }
+            } else {
+                candidate
+            };
+            if let Some(new_tag) = new_tag
                 && new_tag != tag
             {
                 let mut bumped = r.clone();

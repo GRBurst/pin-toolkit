@@ -183,6 +183,7 @@ async fn oracle_matches_old_pipeline() {
         update: false,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(&paths, &opts, &client_from_env(), &gitlab_dummy())
         .await
@@ -445,6 +446,7 @@ async fn m2_oracle_update_matches_old_pipeline() {
             update: true,
             update_major: true,
             gitlab_host: "gitlab.com".into(),
+            ..Default::default()
         },
         &client_from_env(),
         &gitlab_dummy(),

@@ -116,6 +116,7 @@ async fn live_update_docker_hub() {
         update: true,
         update_major: true,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&yml), &opts, &client, &gitlab_dummy())
         .await

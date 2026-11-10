@@ -36,6 +36,11 @@ struct Cli {
     /// GitLab instance host for component/include resolution (default gitlab.com)
     #[arg(long, default_value = "gitlab.com")]
     gitlab_host: String,
+
+    /// with --update: skip bump candidates younger than N days (Docker Hub
+    /// refs only; 0 = off; recommended 14)
+    #[arg(long, default_value_t = 0)]
+    min_age_days: u64,
 }
 
 fn build_opts(cli: &Cli) -> PinOptions {
@@ -46,6 +51,7 @@ fn build_opts(cli: &Cli) -> PinOptions {
         update: cli.update,
         update_major: cli.update_major,
         gitlab_host: cli.gitlab_host.clone(),
+        min_age_days: cli.min_age_days,
     }
 }
 
@@ -105,5 +111,16 @@ mod tests {
         let cli = Cli::try_parse_from(["pin-ci", "--gitlab-host", "gitlab.example.com"]).unwrap();
         let opts = build_opts(&cli);
         assert_eq!(opts.gitlab_host, "gitlab.example.com");
+    }
+
+    #[test]
+    fn flag_default_zero() {
+        let cli = Cli::try_parse_from(["pin-ci"]).unwrap();
+        let opts = build_opts(&cli);
+        assert_eq!(opts.min_age_days, 0);
+
+        let cli = Cli::try_parse_from(["pin-ci", "--min-age-days", "7"]).unwrap();
+        let opts = build_opts(&cli);
+        assert_eq!(opts.min_age_days, 7);
     }
 }

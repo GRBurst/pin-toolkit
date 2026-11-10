@@ -839,9 +839,8 @@ fn parse_rfc3339_unix(s: &str) -> Option<i64> {
 
 /// True when `ts_unix` is at least `min_days` days before `now_unix`
 /// (boundary-inclusive: age exactly N days is old enough).
-/// Consumed by the M4b-1 T2 update path; allowed while only unit-tested.
-#[allow(dead_code)]
-fn is_old_enough(ts_unix: i64, now_unix: i64, min_days: u64) -> bool {
+/// Consumed by the `--min-age-days` guard in the update path (M4b-1 T2).
+pub(crate) fn is_old_enough(ts_unix: i64, now_unix: i64, min_days: u64) -> bool {
     ts_unix <= now_unix - min_days as i64 * 86_400
 }
 

@@ -75,6 +75,7 @@ fn opts(dry_run: bool) -> PinOptions {
         update: false,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     }
 }
 

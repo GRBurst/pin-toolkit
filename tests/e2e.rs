@@ -127,6 +127,7 @@ async fn pins_and_reports_all_states() {
         update: false,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -182,6 +183,7 @@ async fn second_run_is_noop() {
         update: false,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let _ = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -220,6 +222,7 @@ async fn dry_run_writes_nothing() {
         update: false,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -251,6 +254,7 @@ async fn templated_image_is_skipped_not_unresolved() {
         update: false,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -283,6 +287,7 @@ async fn missing_file_is_error() {
         update: false,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let r = pin_files(
         &[PathBuf::from("/nonexistent/ci.yml")],
@@ -334,6 +339,7 @@ async fn update_bumps_scalar_and_pins_digest() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -386,6 +392,7 @@ async fn update_works_on_nonhub() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -428,6 +435,7 @@ async fn update_no_bump_when_already_highest() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -480,6 +488,7 @@ async fn update_same_major_restriction() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -501,6 +510,7 @@ async fn update_same_major_restriction() {
         update: true,
         update_major: true,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -541,6 +551,7 @@ async fn update_pinned_never_bumps() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -581,6 +592,7 @@ async fn update_tag_list_failure_is_unresolved() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -612,6 +624,7 @@ async fn update_json_report() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -649,6 +662,7 @@ async fn update_human_report_line() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -682,6 +696,7 @@ async fn update_dry_run_does_not_write() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -709,6 +724,7 @@ async fn update_idempotent_second_run() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report1 = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -750,6 +766,7 @@ async fn update_exit_code() {
         update: true,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
 
     // Mix of updated + pinned: nothing unresolved → exit 0.
@@ -839,6 +856,7 @@ async fn update_off_keeps_m1_behavior() {
         update: false,
         update_major: false,
         gitlab_host: "gitlab.com".into(),
+        ..Default::default()
     };
     let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
         .await
@@ -853,5 +871,268 @@ async fn update_off_keeps_m1_behavior() {
         "build:\n  image: alpine:3.20@{D1}\nsidecars:\n  services:\n    - alpine:3.20@{D1}\nplain:\n  image: nginx:stable@{D3}\nexternal:\n  image: ghcr.io/org/img:v1@{D_GHCR}\n"
     );
     assert_eq!(out, expected);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- M4b-1 Task 2: release-age guard e2e (wiremock registry + hub) ----
+
+/// Guard-fixture Docker Hub repo (the guard is docker.io-only, R3).
+const GUARD_REPO: &str = "acme/app";
+
+/// Far-past / far-fixture push timestamps so wall-clock can't flip
+/// outcomes (plan constraint 8).
+const TS_OLD: &str = "2020-01-01T00:00:00Z";
+const TS_YOUNG: &str = "2999-01-01T00:00:00Z";
+
+/// Hub API mock: tag → `tag_last_pushed` (None = tag absent from the
+/// Hub listing, e.g. unparsed timestamp).
+fn hub_ts_mock(repo: &str, entries: &[(&str, Option<&str>)]) -> Mock {
+    let results: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|(name, ts)| match ts {
+            Some(ts) => serde_json::json!({ "name": name, "tag_last_pushed": ts }),
+            None => serde_json::json!({ "name": name }),
+        })
+        .collect();
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/repositories/{repo}/tags")))
+        .and(query_param("page_size", "100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "count": results.len(),
+            "next": null,
+            "results": results
+        })))
+}
+
+/// Digest (HEAD) mock for one repo tag on the registry base.
+fn digest_mock(repo: &str, tag: &str, digest: &str) -> Mock {
+    Mock::given(method("HEAD"))
+        .and(path(format!("/v2/{repo}/manifests/{tag}")))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", digest))
+}
+
+/// Per-test scratch dir under the repo's gitignored `.tmp/`.
+fn guard_tmp(name: &str) -> PathBuf {
+    let dir = std::path::Path::new(".tmp")
+        .join(format!("pin-ci-e2e-guard-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Registry mock with the guard's docker.io base plus the Hub mock on a
+/// separate server (the plan's registry + hub wiremock pattern).
+async fn guard_client(
+    tags: &[&str],
+    hub_entries: &[(&str, Option<&str>)],
+    digests: &[(&str, &str)],
+) -> (RegistryClient, MockServer, MockServer) {
+    let s = MockServer::start().await;
+    tag_list_mock(GUARD_REPO, tags).mount(&s).await;
+    for (tag, digest) in digests {
+        digest_mock(GUARD_REPO, tag, digest).mount(&s).await;
+    }
+    let hub = MockServer::start().await;
+    hub_ts_mock(GUARD_REPO, hub_entries).mount(&hub).await;
+    let client = RegistryClient::new(
+        Default::default(),
+        std::collections::HashMap::from([("docker.io".to_string(), s.uri())]),
+    )
+    .with_hub_base(&hub.uri());
+    (client, s, hub)
+}
+
+async fn guard_file(name: &str, ref_str: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = guard_tmp(name);
+    let p = dir.join("ci.yml");
+    std::fs::write(&p, format!("job:\n  image: {ref_str}\n")).unwrap();
+    (p, dir)
+}
+
+/// The youngest tag (1.4, far-future push ts) is too new for the 14d
+/// guard; the oldest old-enough candidate (1.3) wins, digest-pinned.
+#[tokio::test]
+async fn guard_young_top_dropped() {
+    let (client, _s, _hub) = guard_client(
+        &["1.1", "1.2", "1.3", "1.4"],
+        &[
+            ("1.1", Some(TS_OLD)),
+            ("1.2", Some(TS_OLD)),
+            ("1.3", Some(TS_OLD)),
+            ("1.4", Some(TS_YOUNG)), // too young → dropped
+        ],
+        &[("1.2", D2), ("1.3", D3)],
+    )
+    .await;
+    let (p, dir) = guard_file("young-top", "acme/app:1.2").await;
+    let opts = PinOptions {
+        update: true,
+        min_age_days: 14,
+        ..Default::default()
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
+        .await
+        .unwrap();
+    assert_eq!(report.summary.updated, 1);
+    assert_eq!(report.summary.skipped, 0);
+    assert_eq!(report.summary.unresolved, 0);
+    assert_eq!(
+        report.results[0].new.as_deref(),
+        Some(format!("acme/app:1.3@{D3}").as_str())
+    );
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        format!("job:\n  image: acme/app:1.3@{D3}\n")
+    );
+    assert_eq!(exit_code(&report), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Every bump candidate is younger than 14d → R5 skip: the ref is left
+/// byte-identical, reported `skipped (release age: …)`, exit 0.
+#[tokio::test]
+async fn guard_no_eligible_skip() {
+    let (client, _s, _hub) = guard_client(
+        &["1.1", "1.2", "1.3"],
+        &[
+            ("1.1", Some(TS_OLD)),
+            ("1.2", Some(TS_YOUNG)), // too young
+            ("1.3", Some(TS_YOUNG)), // too young
+        ],
+        &[("1.1", D1)],
+    )
+    .await;
+    let (p, dir) = guard_file("no-eligible", "acme/app:1.1").await;
+    let original = "job:\n  image: acme/app:1.1\n";
+    let opts = PinOptions {
+        update: true,
+        min_age_days: 14,
+        ..Default::default()
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
+        .await
+        .unwrap();
+    assert_eq!(report.summary.skipped, 1);
+    assert_eq!(report.summary.updated, 0);
+    assert_eq!(report.summary.unresolved, 0);
+    assert_eq!(report.results[0].status, "skipped");
+    assert_eq!(
+        report.results[0].reason.as_deref(),
+        Some("release age: no candidate ≥ 14d")
+    );
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), original);
+    assert_eq!(exit_code(&report), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A tag with no Hub timestamp entry is NOT old enough (R6,
+/// timestamp-required parity): 1.3 is excluded, 1.2 wins.
+#[tokio::test]
+async fn guard_missing_timestamp_excluded() {
+    let (client, _s, _hub) = guard_client(
+        &["1.1", "1.2", "1.3"],
+        &[
+            ("1.1", Some(TS_OLD)),
+            ("1.2", Some(TS_OLD)),
+            ("1.3", None), // absent from the Hub listing → excluded
+        ],
+        &[("1.1", D1), ("1.2", D2)],
+    )
+    .await;
+    let (p, dir) = guard_file("missing-ts", "acme/app:1.1").await;
+    let opts = PinOptions {
+        update: true,
+        min_age_days: 14,
+        ..Default::default()
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
+        .await
+        .unwrap();
+    assert_eq!(report.summary.updated, 1);
+    assert_eq!(report.summary.skipped, 0);
+    assert_eq!(report.results[0].status, "updated");
+    assert_eq!(
+        report.results[0].new.as_deref(),
+        Some(format!("acme/app:1.2@{D2}").as_str())
+    );
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        format!("job:\n  image: acme/app:1.2@{D2}\n")
+    );
+    assert_eq!(exit_code(&report), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Same fixture as `guard_young_top_dropped`, but the flag is absent
+/// (min_age_days = 0, the default): pure M2 — the youngest tag wins and
+/// the Hub API is never called.
+#[tokio::test]
+async fn guard_off_default_m2_unchanged() {
+    let (client, _s, hub) = guard_client(
+        &["1.1", "1.2", "1.3", "1.4"],
+        &[
+            ("1.1", Some(TS_OLD)),
+            ("1.2", Some(TS_OLD)),
+            ("1.3", Some(TS_OLD)),
+            ("1.4", Some(TS_YOUNG)),
+        ],
+        &[("1.2", D2), ("1.4", D4)],
+    )
+    .await;
+    let (p, dir) = guard_file("off-default", "acme/app:1.2").await;
+    let opts = PinOptions {
+        update: true,
+        ..Default::default()
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
+        .await
+        .unwrap();
+    assert_eq!(report.summary.updated, 1);
+    assert_eq!(report.results[0].status, "updated");
+    assert_eq!(
+        report.results[0].new.as_deref(),
+        Some(format!("acme/app:1.4@{D4}").as_str())
+    );
+    // R4: with the flag off the behavior is M2 — the Hub API is a
+    // no-op, zero requests.
+    assert!(hub.received_requests().await.unwrap().is_empty());
+    assert_eq!(exit_code(&report), 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// R3: a non-docker.io host is a documented no-op — M2 behavior
+/// verbatim and the Hub API is never called (zero requests).
+#[tokio::test]
+async fn guard_nonhub_noop() {
+    let s = MockServer::start().await;
+    tag_list_mock("org/img", &["1.0", "1.2"]).mount(&s).await;
+    digest_mock("org/img", "1.0", D1).mount(&s).await;
+    digest_mock("org/img", "1.2", D2).mount(&s).await;
+    let hub = MockServer::start().await; // nothing mounted: any call would 404
+    let client = RegistryClient::new(
+        Default::default(),
+        std::collections::HashMap::from([("ghcr.io".to_string(), s.uri())]),
+    )
+    .with_hub_base(&hub.uri());
+    let dir = guard_tmp("nonhub");
+    let p = dir.join("ci.yml");
+    std::fs::write(&p, "job:\n  image: ghcr.io/org/img:1.0\n").unwrap();
+    let opts = PinOptions {
+        update: true,
+        min_age_days: 14,
+        ..Default::default()
+    };
+    let report = pin_files(std::slice::from_ref(&p), &opts, &client, &gitlab_dummy())
+        .await
+        .unwrap();
+    assert_eq!(report.summary.updated, 1);
+    assert_eq!(report.summary.skipped, 0);
+    assert_eq!(report.summary.unresolved, 0);
+    assert_eq!(report.results[0].status, "updated");
+    assert_eq!(
+        report.results[0].new.as_deref(),
+        Some(format!("ghcr.io/org/img:1.2@{D2}").as_str())
+    );
+    assert!(hub.received_requests().await.unwrap().is_empty());
+    assert_eq!(exit_code(&report), 0);
     std::fs::remove_dir_all(&dir).ok();
 }
