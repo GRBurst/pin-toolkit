@@ -109,8 +109,8 @@ GitLab API ref → commit. **IDX** = classic Helm repo `index.yaml`. **GH** = Gi
 | # | Kind | Location | Resolver | Output (human-readable kept) | Impossible / skipped | Milestone |
 |---|---|---|---|---|---|---|
 | C1 | `image` | top-level, `default:` and job `image:` (string or `name:`) | OCI | `alpine:3.20@sha256:<d>` (inline tag). Tagless `alpine` → `alpine@sha256:<d>` | value that does not parse as an image ref (e.g. `$VAR`) → `skipped (unparseable reference)` | exists (M1–M4b-1) |
-| C2 | `service` | `services:` items (string or `name:`) | OCI | same as C1 | same | exists. Reported as `image` until M5d adds the `service` kind tag |
-| C3 | `component` | top-level `component:` line | GL | `gitlab.com/g/p/name@<sha40>  # 1.0.0` | catalog-managed (`~latest`, `1.0.x`, partial `1`/`1.0`) → skipped. Host ≠ configured host → skipped | exists |
+| C2 | `service` | `services:` items (string or `name:`) | OCI | same as C1 | same | exists. Reported as kind `service` since M5d (before: `image`) |
+| C3 | `component` | top-level `component:` line | GL | `gitlab.com/g/p/name@<sha40>  # 1.0.0` | catalog-managed (`~latest`, `1.0.x`, partial `1`/`1.0`) → skipped. Host ≠ configured host → skipped (as built, M5d: host ∉ {primary} ∪ `gitlab-hosts`) | exists |
 | C3b | `component` | `include:` items `- component: <host>/<path>@<ver>` (**GitLab's documented form**; pin-ci does **not** discover it today) | GL | same as C3. `$CI_SERVER_FQDN`/`$CI_SERVER_HOST` host maps to the configured GitLab host, and the variable text is kept | as C3 | G1 |
 | C4 | `include` | `include:` `{project, ref[, file]}`, block or flow, any key order | GL | `ref: <sha40>  # v1.2.3`. Flow: `{ …, ref: <sha40> }  # main` | bare `{project}` (default branch): no target. `$` ref → skipped. `local:`/`template:` have no external id | exists |
 | C5 | `helm-oci` | `script`/`before_script`/`after_script` items: `helm install\|upgrade\|template\|pull\|show … oci://h/p/c` | OCI (chart manifest) | `oci://h/p/c@sha256:<d> --version 1.2.3` or `oci://h/p/c:1.2.3@sha256:<d>`. A range `--version ~1.2` is resolved to an exact version and rewritten. No comment needed: the version stays in `--version`/`:tag` | needs Helm ≥ 3.17 to read the digest. `$VAR` → skipped (dynamic). `oci://c` with no version → `oci://c:<highest stable>@sha256:<d>`, the same way tagless images are handled (my call). `helm push`, `docker run … helm` → no target | M7 |
@@ -194,6 +194,14 @@ crates/pin-toolkit/        bin `pin-toolkit`; features gitlab-ci, helm, github-a
 pin-ci-images.sh extract-docker-pins.py config.js   repo root, unmodified (oracle, kept while useful)
 flake.nix nix/             M6
 ```
+
+**As built (M5d):** `config` and `cli` live in `pin-toolkit`, not in pin-core (T-D2): the repo schema
+validates `[plugins.<id>]` for known but unbuilt plugins from pin-toolkit's static `KNOWN` list
+(`known.rs`), and the core must not know plugin ids (D10). pin-toolkit = lib (`execute(Process, tune)
+-> Output`, `main_with`; `cli`, `config/{mod,repo,env}`, `known`, `enable`, `walk`) plus a thin
+`[[bin]] pin-toolkit`; the process env is read only in `Process::from_os()`. Features:
+`default = ["gitlab-ci"]` (the only plugin crate so far). pin-core has no `config`/`cli` modules; it
+gained the feature `test-support` (dev-dependencies only, D38).
 
 ### 6.2 Core interface (one design)
 
@@ -282,6 +290,27 @@ Rules:
 - Error texts carry over as the starting point: digest errors report the inner message, tag-list errors read `tag list: {e}`, GitLab errors use `e.to_string()`. Any change shows in a snapshot diff.
 - **Lazy, feature-gated resolvers (D36).** Each resolver is a pin-core cargo feature; its HTTP deps are optional behind it. A client is built on first use (`std::cell::OnceCell` suffices: futures are joined, never spawned), so a run without helm targets never builds `HelmRepoClient`. A construction error (e.g. unreadable CA file) is cached and makes every reference that needs it `unresolved (<error>)`, exit 1. Config errors stay eager (exit 2). Plugin crates enable only the features they need; no extra crates.
 
+**As built (M5d):**
+- `Plugin::resolve(&self, ctx, src: &Source<'_>, t)`. `Source { path, text, lines: LineIndex }` is built
+  once per file in `DynPlugin::plan` (review L3); `trailing_comment(text, lines, line, token_end, orig)`.
+- `Selection { kinds: KindSet, ignore: RefPatterns }` replaces `on: &KindSet` in `plan` and `pin_file`.
+  `Plugin::ignore_key` (default `None`) gives a target's key: gitlab-ci uses the value with quotes
+  stripped, and `{project}@{ref}` for includes (T-D17). `*` (any run, incl. `/` and empty) and `?`
+  match the whole key. Ignored targets have no row and are never resolved.
+- `run::{Route { plugin, sel, path, display }, run(routes, ctx, RunOptions) -> Report}`: sequential over
+  routes; a `FileError` becomes `ErrorEntry { file, line, message }` under its plugin; never stops early.
+  `pin_file` writes only the edits of `pinned`/`updated` findings (review L2).
+- One file = one plugin, as built (T-D10): an explicit file with a subcommand or alias is claimed
+  regardless of globs; in all-plugins mode an explicit path claimed by 0 or 2+ enabled plugins is fatal
+  before the run (exit 2). A **walked** file claimed by 2+ plugins is a per-file `ErrorEntry` under the
+  first claimant (compiled order): not routed, the other files run, exit 2 (PR-L11).
+- D38: the raw `RegistryClient`, `Creds`, `GitLabClient`, `GitLabHosts`, `Ctx::with_oci/with_gitlab` and
+  `ResolverEnv::from_process` are `#[doc(hidden)] pub` only under the pin-core feature `test-support`,
+  which only dev-dependencies enable; `scripts/gate.sh` checks it (`cargo check -p pin-gitlab-ci -p
+  pin-toolkit`; `cargo tree -e normal,build` must not show `test-support`).
+- Kind ids are constants (`pin_gitlab_ci::{IMAGE, SERVICE, COMPONENT, INCLUDE}`, review L10);
+  `PinTarget::Image` carries its `kind` (`service` under `services:`, else `image`).
+
 ### 6.3 One-pass run
 
 1. Load the config (§7) and build `Ctx`: env and host bindings, an empty memo, `now`. No resolver client is built yet (§6.2).
@@ -290,6 +319,21 @@ Rules:
 4. Merge rows, per-plugin summaries, follow-ups and per-file errors into one `Report`. Render it and exit (§6.5).
 
 A file that fails to read, parse (§6.9) or write is recorded under `plugins.<id>.errors`. The other files and plugins continue, and the exit code is 2.
+
+**As built (M5d, T-D23):** the git root is the first ancestor of the cwd (incl.) with a `.git` entry,
+else the cwd. `ignore::WalkBuilder` with `hidden(false)` (keeps `.gitlab-ci.yml`, `.gitlab/`) and `.git`
+filtered; ignore files at the crate defaults (`.ignore`; inside a git repository `.gitignore`,
+`.git/info/exclude`, the global excludes), so results can differ per machine. Only regular files;
+symlinks are not followed in a walk, an explicit symlink is used as given. Globs (globset,
+`literal_separator(true)`) match the path relative to the git root; for an explicit directory outside
+the git root, relative to that directory's own git root, else to the directory itself (review-2 M1,
+main). Paths are normalised lexically (`.`/`..`, no file-system access) and deduplicated by the
+normalised absolute path: the first spelling is shown, and the input stays explicit if any spelling
+was (review-2 M2). Display: relative to the cwd for walked files (`../.gitlab-ci.yml`), as passed for
+explicit ones; routes are sorted by display. A walk error (e.g. an unreadable directory) is a per-file
+`ErrorEntry` under the first enabled plugin (exit 2); a bad line in an ignore file is a stderr warning
+`pin-toolkit: warning: {file}:{line}: {message}`, exit unaffected (review-2 L3, main). Files run
+sequentially (T-D20); the memo (§6.7) makes repeated refs cheap.
 
 ### 6.4 Merged report
 
@@ -310,6 +354,22 @@ Human output: the pin-ci line format (`file:line  status  old -> new  # referenc
 one summary line per plugin follows, then `follow-up: …` lines. A disabled kind produces **no row**:
 disabling it was an explicit choice, and `config show` (M5e') reports it.
 
+**As built (M5d, T-D21, T-D22):**
+- Human: `{file}:{line}  {plugin}:{kind}  {status}[ ({reason})]  {old} -> {new|-}  # {reference}`, then the
+  unchanged total line `pinned: …, ok: …, updated: …, skipped: …, unresolved: …`, then one `{plugin}: pinned: …`
+  line per plugin when more than one plugin **ran** (`Report.ran`: plugins with ≥ 1 routed file or row;
+  a plugin that only carries conflict or walk errors does not count, review-2 L7), then
+  `follow-up: {text}` lines (dedup, first seen). Per-file errors go to **stderr** in both modes as
+  `pin-toolkit: {file}[:{line}]: {message}`.
+- JSON: key order `schema_version, results, summary, plugins, follow_ups`; row keys
+  `plugin, kind, file, line, reference, old, new, status[, reason]`; `plugins.<id> = {summary, errors}`;
+  `errors[i] = {file, line?, message}`. The `plugins` keyset equals the **enabled** plugins: the toolkit
+  seeds it from the enablement plan, so an empty repo gives each enabled plugin a zero summary and
+  `errors: []` (main, review-2 L7). Each plugin's errors are sorted by `(file, line)` regardless of
+  origin (read/parse/write, walk, conflict; main); stderr uses the same order.
+- pin-core: `Report::assemble(rows, ran, errors)`, `Report::exit_code(check)`, `render_human`, `to_json`.
+- Fatal errors (exit 2 before the run): stderr `pin-toolkit: {msg}`, **stdout empty, also with `--json`**.
+
 ### 6.5 Exit codes
 
 | Code | `pin-toolkit` (and every alias) |
@@ -321,11 +381,33 @@ disabling it was an explicit choice, and `config show` (M5e') reports it.
 `--check` = `--dry-run` plus the exit-1 rule above. Its intended use is a CI gate. From M4b-2 it
 also verifies that a `# <ref>` comment still resolves to the pinned SHA, like pinact's verify.
 
+**As built (M5d):** exit 2 is either fatal before the run (usage, config, an explicit path claimed by
+0 or 2+ plugins, a requested plugin that is not in the build; stdout empty) or per-file (read, parse
+or write error, walk error, walked file claimed by 2+ plugins; the report is printed). `Report::exit_code`
+implements the table; `crates/pin-toolkit/tests/exit_codes.rs` pins it and recomputes it from the JSON.
+
 ### 6.6 Front-ends
 
 - `pin-toolkit [OPTIONS] [PATHS]…` runs all enabled plugins. `pin-toolkit <plugin> …` runs one plugin, as does the argv[0] alias `pin-<plugin>`. Also `pin-toolkit plugins` (lists compiled-in plugins, kinds, effective enable state) and, from M5e', `pin-toolkit config show [--origin]`.
 - Options: `--dry-run --check --json --update --update-major --min-age-days N --concurrency N --only/--skip <p,…> --kind <p>:<k>=on|off --config FILE --no-config --gitlab-host H`.
 - **No `pin-ci` legacy mode** (D33). M5d deletes the crate's `[[bin]] pin-ci`. `pin-ci` may remain only as a plain argv[0] alias of `pin-toolkit gitlab-ci` (toolkit flags, config, output and exit codes) if it costs no more than one dispatch entry and one symlink; otherwise it is dropped. The README says which.
+
+**As built (M5d):**
+- `pin-ci` is **kept**: one entry `ALIASES = [("pin-ci", "gitlab-ci")]`; `pin-<id>` for every id in `KNOWN`
+  dispatches too (basename, `.exe` stripped). The symlinks ship with the nix package (M6). `[[bin]] pin-ci`
+  is deleted (7ec517a); its driver lives on as the test helper `crates/pin-gitlab-ci/tests/common/driver.rs`
+  for the e2e, live and oracle tests (T-D25).
+- clap derive; every option is `global = true`. A subcommand is recognised only before the first path
+  (`pin-toolkit a.yml gitlab-ci` treats `gitlab-ci` as a path). clap's implicit `help` subcommand is kept,
+  so a directory named `help` must be passed as `./help` (main). Usage and help always say `pin-toolkit`,
+  also after an alias (review-2 L4).
+- CLI `--only`/`--skip` with a subcommand or alias → exit 2 (`--only/--skip cannot be combined with a plugin
+  subcommand`, T-D28). An unknown id in `--only` or `--skip` → exit 2. CLI and env lists are trimmed,
+  empty items are dropped, and an empty list counts as unset (review-2 L1, N3).
+- `--kind <p>:<k>=on|off` is validated against `KNOWN`; a known kind that is not compiled (`helm-oci`) is
+  accepted and ignored. Presence-only flags, no `--no-*` twins (T-D8).
+- `plugins` prints `{id}: enabled|disabled|not in this build`, then per compiled kind
+  `  {kind}: on|off — {help}` (T-D27). `config show` comes in M5e'.
 
 ### 6.7 Resolver cache
 
@@ -336,6 +418,13 @@ cannot get two outcomes in a run. Concurrent identical lookups are coalesced. Th
 cache**: freshness is the product. Revisit only if the Hub API limit (180 req/h per IP, used by the
 M4b-1 age guard) bites. Existing per-client token caches stay.
 
+**As built (M5d, T-D15):** `Memo<K, V> = RefCell<HashMap<K, Rc<tokio::sync::OnceCell<V>>>>` per entry
+point, keyed by `(host, api_repo, effective_tag)` for digests, `(host, api_repo)` for tag lists and tag
+times, `(host, project, ref)` for GitLab. Errors are cached (`RegError: Clone`, review L4); concurrent
+identical lookups are coalesced by `OnceCell::get_or_init`. The registry client's repo-keyed tag-list
+cache was removed (review-1 M1), so the memo is the one result cache; bearer tokens are cached per
+`(host, realm, service, scope)` (review-1 H1).
+
 ### 6.8 Release age
 
 `--min-age-days` (M4b-1, docker.io only via the Hub API) generalises to every resolver that has
@@ -343,6 +432,12 @@ timestamps: Hub API tags, `index.yaml` `created`, the OCI `org.opencontainers.im
 annotation, GitLab tag dates (M4b-2), GitHub (M9). When the age is unknown, `release_age.unknown =
 "allow"` is the default. That matches today's documented no-op for non-docker.io hosts, and
 `"block"` is the alternative. The default stays 0 (off) and 14 is documented as the recommended value.
+
+**As built (M5d, T-D18):** `AgePolicy { Allow (default), Block }` in `UpdatePolicy::unknown_age`; the guard
+is active iff `min_age_days > 0 ∧ (docker.io ∨ Block)`. Outside docker.io no timestamps are fetched, so
+`Block` skips a reference that has an update candidate with `skipped (release age unknown ({host};
+release_age.unknown = block))`; without a candidate it is pinned as usual. Set by `[release_age] unknown`
+or `PIN_TOOLKIT_RELEASE_AGE_UNKNOWN` (`allow`/`block`, case-insensitive).
 
 ### 6.9 YAML discovery (D32)
 
@@ -392,8 +487,8 @@ sample texts, masked and unmasked).
 A file that does not parse (after masking) is a per-file error: `ScanError { line, msg: "invalid YAML:
 {parser info}" }`, which `run::pin_file` turns into `FileError::Parse` (`<path>:<line>: invalid YAML: …`)
 with nothing written; no partial targets, no second hand-rolled discoverer (my call; revisit in DF1).
-The `pin-ci` driver exits 1 on it and stops at the first such file (printing the rows of the files before it, review L2) until M5d, which adds exit 2 under
-`plugins.<id>.errors` and continues with the other files. Hand-rolled code stays only for the
+The `pin-ci` driver exited 1 on it and stopped at the first such file (printing the rows of the files before it, review L2) until M5d;
+the toolkit records it under `plugins.<id>.errors`, exits 2 and continues with the other files (M5d, as built). Hand-rolled code stays only for the
 fix-ups, template masking, trailing-comment detection, `requote` and the C5 shell tokenizer.
 
 **Comment guard (review M2).** `edit::trailing_comment` knows lines, not YAML: in a multi-line flow
@@ -461,6 +556,31 @@ helmfile = { oci-digest = false }
 aliases = { stable = "https://charts.helm.sh/stable" }   # name → URL only, never credentials
 ```
 
+**As built (M5d, T-D4–T-D7):**
+- One precedence function, `Effective::fold(&[Layer])`; repo, env and CLI each produce a `Layer`. Scalars:
+  last set wins; `files` and `gitlab-hosts` are replaced; `ignore` concatenates; `kinds` merge per key.
+- Repo file = `--no-config` ? none : `--config` (must exist) : `PIN_TOOLKIT_CONFIG` (must exist) :
+  `<git root>/.pin-toolkit.toml` if it exists; `config file not found: {path}`, an unreadable file
+  `{path}: {io error}`. Messages name the file relative to the cwd (review-2 N1).
+- Repo parsing: a `toml::Table` pre-pass (global-only keys, then `version`, then plugin ids) before the
+  typed parse with `deny_unknown_fields`. Tables of known but unbuilt plugins are validated too. The
+  `files` globs of **every** plugin table are validated (review-2 L2). Rejected (exit 2): the global-only
+  keys `hosts` and `concurrency`, unknown keys, plugin ids or kinds, wrong types, `version` missing or
+  ≠ 1, invalid globs, a `gitlab-hosts` entry that is not a plain host (§7.3), a helm `aliases` URL with
+  userinfo (`plugins.helm.aliases.{name}: a repository URL must not contain credentials`, PR-L14). There
+  is no `gitlab-host` key, so a repo cannot set the primary host.
+- Env: `PIN_TOOLKIT_{UPDATE, UPDATE_MAJOR, MIN_AGE_DAYS, RELEASE_AGE_UNKNOWN, CONCURRENCY, JSON, ONLY, SKIP,
+  GITLAB_HOST, CONFIG}`. Booleans `1/0, true/false, yes/no, on/off`, `allow`/`block`, both
+  case-insensitive; lists comma-separated (trimmed, empty items dropped, an empty list is unset); an
+  empty value is unset. A bad value of a known variable → exit 2 (`{VAR}: expected a boolean (…), got
+  "{v}"`, `{VAR}: expected a number, got "{v}"`, `{VAR}: expected allow or block, got "{v}"`,
+  ``PIN_TOOLKIT_GITLAB_HOST: invalid GitLab host `{h}` ``). Any other `PIN_TOOLKIT_*` variable → one
+  stderr warning `pin-toolkit: ignoring unknown environment variable {VAR}` each (sorted), exit
+  unaffected (main, PR-M3: GitLab exports every CI/CD variable to the job).
+- `PIN_TOOLKIT_ONLY`/`PIN_TOOLKIT_SKIP` are ignored with a plugin subcommand or alias (main, PR-L6, T-D28);
+  in all-plugins mode an unknown id → exit 2 and `PIN_TOOLKIT_ONLY=<unbuilt>` → `plugin <p> not in this
+  build`, exit 2.
+
 ### 7.2 Where settings may live
 
 | Setting | Global (HM) | Repo | Env / CLI |
@@ -469,6 +589,10 @@ aliases = { stable = "https://charts.helm.sh/stable" }   # name → URL only, ne
 | `concurrency`, output format | ✓ | — | ✓ |
 | **`[hosts]`**: GitLab hosts that may receive tokens, which env var holds each token, helm repo URL → credential env names, CA file, registry aliases/mirrors | **✓ only** | ✗ (exit 2) | ✓ (`--gitlab-host`, `CI_SERVER_HOST`) |
 | secrets | never | never | env, `~/.docker/config.json`/`$DOCKER_CONFIG`, `$HELM_REGISTRY_CONFIG`, `$HELM_REPOSITORY_CONFIG` |
+
+**As built (M5d):** `concurrency` in a repo file is exit 2 with the global-only message, like `[hosts]`
+(``{path}: `{key}` is a global-only key; it is not allowed in a repository config``). The output format,
+`--dry-run`/`--check` and `only`/`skip` have no repo key.
 
 ### 7.3 Security rule: credentials bind to hosts only in global config or env
 
@@ -499,6 +623,18 @@ password-env = "CHARTS_PASSWORD"
 kind = "oci"
 ca-file = "/etc/ssl/certs/corp-ca.pem"  # private CA (F3; §8.4)
 ```
+
+**As built (M5d, D31/D37 implemented, 3607bc7):** pin-core `GitlabEnv { primary, hosts, gitlab_token,
+ci_job_token, ci_server_host }`; primary = `--gitlab-host` > `PIN_TOOLKIT_GITLAB_HOST` > `CI_SERVER_HOST` >
+`gitlab.com` (T-D12); resolve set = {primary} ∪ `plugins.gitlab-ci.gitlab-hosts` (`CI_SERVER_HOST` is not
+added implicitly); `GitlabEnv::auth_for(host)`: `PRIVATE-TOKEN` (`GITLAB_TOKEN`) only to the primary,
+else `JOB-TOKEN` (`CI_JOB_TOKEN`) only to `CI_SERVER_HOST`, else anonymous. Token-holding types have a
+redacting `Debug` (T-D29). Host values (`--gitlab-host`, `PIN_TOOLKIT_GITLAB_HOST`, `gitlab-hosts`) must
+match `^[A-Za-z0-9.-]+(:[0-9]+)?$`, else exit 2 (review-2 L6: `gitlab.com@evil.example` would send the
+token to `evil.example`). **Deferred to M5e' (T-D30, main, PR-M6 option b):** the `unresolved (<host>:
+not trusted for credentials — bind it in …)` message. In M5d a non-primary `gitlab-hosts` host that is
+not `CI_SERVER_HOST` resolves anonymously, and a failure keeps the plain `unresolved (…)` reason. Wiremock
+tests: pin-core `gitlab_hosts.rs`, pin-toolkit `credentials.rs`.
 
 ## 8. Packaging and distribution
 
@@ -540,6 +676,10 @@ programs.pin-toolkit = {
   reported once as `skipped (plugin <p> not in this build)` (exit unaffected); `pin-toolkit <p>`
   for a missing plugin exits 2 with the same message. CI uses the container image, which always
   has all plugins, so a repo's config behaves the same in CI regardless of a user's local build.
+- As built (M5d, T-D11): the notice is the stderr line `pin-toolkit: skipped (plugin <p> not in this
+  build)`, printed once per plugin and only in all-plugins mode, for a repo `[plugins.<p>]` table with
+  `run ≠ false`. An explicit request (`pin-toolkit <p>`, `pin-<p>`, `--only <p>`, `PIN_TOOLKIT_ONLY` in
+  all-plugins mode) exits 2 with `pin-toolkit: plugin <p> not in this build`.
 
 Source for `homeModules`: https://github.com/nix-community/home-manager/blob/master/flake-module.nix.
 
@@ -596,7 +736,7 @@ frozen output. Rows are in execution order.
 | M5b | `git mv src tests` → `crates/pin-gitlab-ci/`. The package is still named `pin-ci`. Root workspace manifest, root `Cargo.lock`. Oracle path: `oracle.rs:21` `REPO = env!("CARGO_MANIFEST_DIR")` → `concat!(env!("CARGO_MANIFEST_DIR"), "/../..")` | all tests green, snapshots unchanged |
 | M5c | Split out `pin-core`. First `git mv` image_ref, registry, gitlab, versioning and report verbatim, in move-only commits. Then add `Status`, `Splice`/`Finding`, the lazy feature-gated `Ctx` (§6.2, D36), `decide_image`/`pin_inline_image`, `Plugin` + `run::pin_file`. lib.rs becomes `GitlabCi`; today's `pin_files(paths, &PinOptions, &reg, &gitlab)` may survive as a test helper until M5d, not as API. Rename the package to `pin-gitlab-ci`. `is_sha` dedups into the ungated `git::is_commit_sha` (github shares it in M9). `discover.rs` moves verbatim. Fix R1 (`coalesce_comments`) and R2 (one shared `LineIndex`), one commit each. `main.rs` stays as the crate's `[[bin]] pin-ci` until M5d. Tests: mock_registry, registry_hosts, hub_api, gitlab_client and live_gitlab move to `pin-core`; e2e, e2e_components, live, oracle and fixtures stay in `pin-gitlab-ci`. Relative `.tmp` paths resolve per package and are still covered by the root `.gitignore` | snapshots unchanged except the reviewed R1/R2 diffs; properties green |
 | M5c-y | **Done** (branch `m5cy-yaml-discovery`, 11 commits, last 7546e0f). Own step right after M5c (kept M5c manageable): `core::yaml` = saphyr-parser + fix-ups (§6.9); gitlab-ci discovery is path matching over `Vec<Node>`; the `discover.rs` line-scanner primitives are deleted (≈ −800 lines). Fixes R7, R8, R9. Also built: `PinTarget::Unsupported` (`skipped (block scalar)`, `skipped (multi-line scalar)`, §6.9), invalid YAML as a file error, the review carry-overs L1 and L7 (§14.1). Review fixes after 8515e54 (`.superpowers/sdd/2026-11-10-m5cy/fix-review.md`): tab after `key:` retry (H1), plain scalar next to a mask is `templated` (M1), comment guard `skipped (no safe place for comment)` (M2), bare CR is a `ScanError` (L1), `pin-ci` prints the earlier rows before a file error (L2) | discovery-parity test against a frozen record of the old output plus an exact exception table (§11); exactly 12 snapshots changed (`ci-anchors`, `ci-r2-crlf`, `ci-tags`, `ci-bom` × human/json/file), all reviewed |
-| M5d | Minimal `pin-toolkit` binary, replaces `pin-ci`: walk, routing, `pin-toolkit gitlab-ci` and `pin-<plugin>` aliases (optional `pin-ci` alias, §6.6), `service` kind tag, combined report, exit codes 0/1/2, `--check`, memo. Config: repo `.pin-toolkit.toml` + env + CLI only (§7.1, D35). `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` only (D37). Delete the crate's `[[bin]] pin-ci` | toolkit snapshots (human + JSON) over the M5a fixtures, diffs reviewed; exit-code table tests; repo `[hosts]` → exit 2; wiremock: `CI_JOB_TOKEN` never sent to another host |
+| M5d | **Done** 2026-11-11 (branch `m5d-toolkit-binary`, 8f053e2 … 3941898 plus the docs close-out; plan `2026-11-10-pin-toolkit-m5d-toolkit-binary.md`, two review checkpoints, reviews in `.superpowers/sdd/2026-11-10-m5d/`; as built: §6.1–§6.8, §7.1–§7.3, §8.2). Minimal `pin-toolkit` binary, replaces `pin-ci`: walk, routing, `pin-toolkit gitlab-ci` and `pin-<plugin>` aliases (optional `pin-ci` alias, §6.6), `service` kind tag, combined report, exit codes 0/1/2, `--check`, memo. Config: repo `.pin-toolkit.toml` + env + CLI only (§7.1, D35). `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` only (D37). Delete the crate's `[[bin]] pin-ci` | toolkit snapshots (human + JSON) over the M5a fixtures, diffs reviewed; exit-code table tests; repo `[hosts]` → exit 2; wiremock: `CI_JOB_TOKEN` never sent to another host |
 | M5f | Docs: README → toolkit README plus per-plugin sections (fix R5 drift; states the `pin-ci` alias decision), a pointer from the old spec, LICENSE (O4), push to GitHub with full history (O3) | — |
 | M5e' | Global config layer (`~/.config/pin-toolkit/config.toml`, written by the HM module), `[hosts]` bindings (D31), `config show --origin`. Right before M6, whose HM module needs it | precedence table tests; token-binding tests (§7.3) |
 
@@ -628,7 +768,7 @@ S ≈ 1–2 tasks, M ≈ 3–4, L ≈ 5+. Each milestone gets its own plan in `d
 | S2 | YAML discovery spike (done, §6.9) | S | none |
 | M5a–c | snapshots → workspace move → core split + lazy resolvers + R1/R2 fixes (§9) | S + S + L | R1/R2 fixed (reviewed snapshot diffs) |
 | M5c-y | done (7546e0f): gitlab-ci discovery on `core::yaml` (saphyr-parser + fix-ups) | M | R7, R8, R9 fixed (reviewed snapshot diffs); invalid YAML is a file error (exit 1 until M5d) |
-| M5d | minimal `pin-toolkit` binary (replaces `pin-ci`); repo config + env + CLI; `CI_JOB_TOKEN` → `CI_SERVER_HOST` only | M | new binary; `pin-ci` gone or a plain alias |
+| M5d | done (2026-11-11, … 3941898 + docs): minimal `pin-toolkit` binary (replaces `pin-ci`); repo config + env + CLI; `CI_JOB_TOKEN` → `CI_SERVER_HOST` only | M (built as 31 tasks + review fixes) | new binary; `pin-ci` kept as a plain argv[0] alias |
 | M5f | docs, license, GitHub publish | S | none |
 | M5e' | global config (HM-written), `[hosts]`, `config show --origin` | M | new config layer |
 | M6 | flake + crane + checks + HM module (M), GitHub Actions + Cachix (S), releases + container (M). Human prerequisites (O3): GitHub repo, Cachix cache + `CACHIX_AUTH_TOKEN`, GHCR push rights | L | none |
@@ -704,6 +844,15 @@ GitHub repo, and M5e' precedes M6 because the HM module writes the global config
 | D36 | Resolvers (`oci`, `gitlab`, `helm-repo`, `github`) are pin-core cargo features, each built lazily on first use; plugin crates enable what they need; no extra crates (§6.2) | owner (2026-11-10) | `Ctx` is no god object; trimmed builds compile only the clients they use |
 | D37 | `CI_JOB_TOKEN` bound to `CI_SERVER_HOST` only, in M5d (pulled from F3, which keeps only native TLS roots) | my call | security fix: today it can reach gitlab.com; must hold before DF1 runs in CI |
 | D38 | Plugins resolve only via `Ctx` entry points (`oci_digest`, `oci_tags`, `oci_tag_times`, `gitlab_resolve`; helm-repo/github alike), never via a raw client; the clients are crate-private (§6.2) | my call (2026-11-10, M5a–c plan review) | memo (§6.7) and token binding (D31, D37) in one place; no plugin can bypass them |
+| D39 | Routing (M5d T-D10): an explicit file with a plugin subcommand or alias is claimed regardless of globs; in all-plugins mode an explicit path claimed by 0 or 2+ enabled plugins is exit 2 before the run; a **walked** file claimed by 2+ plugins is a per-file error under the first claimant, not routed, the other files run, exit 2 | main (2026-11-10, M5d plan Open 3; walked part PR-L11) | one file = one plugin (D11); one ambiguous glob must not stop every run (e.g. `.gitlab/ci/values.yaml` under gitlab-ci and helm in M8) |
+| D40 | GitLab primary host = `--gitlab-host` > `PIN_TOOLKIT_GITLAB_HOST` > `CI_SERVER_HOST` > gitlab.com; resolve set = {primary} ∪ `gitlab-hosts`; `CI_SERVER_HOST` is not added implicitly (M5d T-D12) | main (2026-11-10, Open 10) | D31 + D37; credentials follow only bound hosts |
+| D41 | `ignore` keys: the value with quotes stripped for image/service/component, `{project}@{ref}` for includes; `*` (crosses `/`, may be empty) and `?` over the whole key; an ignored target has no row and no count (M5d T-D17) | main (2026-11-10, Open 4) | `registry/*` must match nested repos; ignoring is an explicit choice like a disabled kind (D16) |
+| D42 | Human report: `plugin:kind` after `file:line`; the total summary line always, one line per plugin when more than one plugin ran, then `follow-up:` lines; per-file errors on stderr in both modes (M5d T-D21) | main (2026-11-10, Open 5, PR-L1) | §6.4 verbatim; errors on stdout would corrupt `--json` |
+| D43 | Fatal errors (exit 2 before the run) print nothing on stdout, also with `--json` (M5d T-D22) | main (2026-11-10, Open 6) | a half-written report is worse than none; CI reads the exit code |
+| D44 | CLI `--only`/`--skip` with a plugin subcommand or alias is exit 2; env `PIN_TOOLKIT_ONLY`/`PIN_TOOLKIT_SKIP` are ignored in subcommand/alias mode (M5d T-D28) | main (2026-11-10, Open 15, PR-L6) | ambiguous intent on the command line; a CI-wide env value must not break `pin-ci` |
+| D45 | The §7.3 `unresolved (<host>: not trusted for credentials — bind it in …)` message is deferred to M5e'; in M5d an unbound host resolves anonymously with the plain `unresolved` reason (M5d T-D30) | main (2026-11-10, Open 17, PR-M6 option b) | the message names the global config, which exists only from M5e' |
+| D46 | JSON `plugins` keyset = the enabled plugins (zero summary when a plugin found nothing); per-plugin `errors` sorted by `(file, line)` whatever their origin; the per-plugin human lines count only plugins that ran (routed files), not conflict- or walk-error-only entries (M5d review-2 L7) | main (2026-11-11) | a consumer can read `plugins["gitlab-ci"].summary` on an empty repo; deterministic output |
+| D47 | An explicit directory outside the git root is matched relative to its own git root (else the directory itself); walk errors are per-file errors (exit 2); bad ignore-file lines only warn (M5d review-2 M1, L3) | main (2026-11-11) | `--check ../other` must not be a silent green; §6.3 treats read failures as per-file errors |
 
 ## 13. Owner answers
 
@@ -711,7 +860,7 @@ Open for the owner: retiring the oracle, decided after DF1 (D29).
 
 | # | Question | Owner answer | Affects |
 |---|---|---|---|
-| O1 | What does "plugin disabled in Home Manager" mean? | **Not installed.** Enabling a plugin is a build decision, configuring it is runtime (§8.2). The owner runs with all plugins enabled, i.e. the cached default package; a subset is a local feature-trimmed build. A repo config can still stop a built plugin from running (`run = false`) | M6 (HM module, package override), M5d (`run` key, "not in this build" handling), M5e' (global config) |
+| O1 | What does "plugin disabled in Home Manager" mean? | **Not installed.** Enabling a plugin is a build decision, configuring it is runtime (§8.2). The owner runs with all plugins enabled, i.e. the cached default package; a subset is a local feature-trimmed build. A repo config can still stop a built plugin from running (`run = false`). **M5d: resolved as T-D11** (a repo table for an unbuilt plugin → notice, exit unaffected; an explicit request → exit 2; §8.2 as built) | M6 (HM module, package override), M5d (`run` key, "not in this build" handling), M5e' (global config) |
 | O2 | values.yaml map image without a `digest:` key | **Always write `tag: "1.2.3@sha256:<d>"` by default**, opt-out `plugins.helm.values.tag-digest = false` (→ `skipped (no digest key)`). An existing `digest:` key is still filled instead (tag kept). Known risk, accepted: charts that use `.tag` in labels or `semverCompare` | M8a |
 | O3 | Name, owner, Cachix, GitLab repo | Name **`pin-toolkit`**. Repo `github.com/<owner>/pin-toolkit` where `<owner>` is the owner's **personal GitHub user** (exact handle to be filled in at M5f), full history pushed. Cachix cache: not set up yet; use the recommended name **`pin-toolkit`** (`pin-toolkit.cachix.org`). The GitLab repo **stays** (mirror) and additionally **hosts the GitLab test components/projects** used by the live component/include tests. Human prerequisites for M6: create the GitHub repo, the Cachix cache + `CACHIX_AUTH_TOKEN` secret, GHCR push rights | M5f, M6, live GitLab tests |
 | O4 | License | **`MIT OR Apache-2.0`** | M5f |
@@ -737,14 +886,17 @@ Open for the owner: retiring the oracle, decided after DF1 (D29).
 ### 14.1 Carry-overs from the code reviews (M5a–c: `.superpowers/sdd/2026-11-10-m5abc/code-review.md`; M5c-y below)
 
 - **Before M8 (M1):** `run::pin_file` checks overlap only between findings. Validate each finding's own splices (start ≤ end, no self-overlap) and mark the finding `unresolved` instead of panicking in `edit::apply` or corrupting the file.
-- **In M5d (M3):** enforce D38. The raw `RegistryClient`/`GitLabHosts` and their constructors are still `pub`; make them crate-private (or `#[doc(hidden)]` behind a test-support feature) so plugins cannot bypass the memo and token binding. `RegError: Clone` for the memo (L4).
+- **Done in M5d (M3):** D38 enforced: the raw clients and their constructors are `#[doc(hidden)] pub` only under pin-core `test-support` (fadf5c3), checked by `scripts/gate.sh` (761c591, review-2 L8); `RegError: Clone` for the memo (L4, 4ffff5f).
 - **Done in M5c-y:** R1 combined comment in byte order, not scan order (L1, 3a329b1; `run::ordered_splices` orders the splices by `(line, first edit offset)`, rows keep finding order); the missing overlap and lazy-resolver regression tests and the span-based byte-exact check in `tests/common/mod.rs` (L7, d5f4d58 and 3a329b1; `check_spans` ties every replacement to exactly one discovered span and checks the comment in byte order).
-- **Moved to M5d (L3):** one `LineIndex` per file in `trailing_comment`. It needs a per-file context in `Plugin::resolve` or in the target, and M5d reshapes `run`.
-- **M5d (low), still open:** skip writing edits of non-pinned findings (L2); unreachable `.expect` in the resolver construction (L5); `PartialEq<&str>` on `Status` out of the public API (L6); single GitLab host set, kind-id constants (L8–L10).
+- **Done in M5d (L3):** one `LineIndex` per file via `plugin::Source` in `Plugin::resolve` (7217e37).
+- **Done in M5d (low):** edits of non-pinned findings are never written (L2, 92c4051); fallible `try_new` client constructors, construction errors cached (L5, 4ffff5f); no `PartialEq<&str>` on `Status` (L6, 968c3ae); one GitLab host set, `GitlabCi` a unit struct (L9, aa2a0c5); kind-id constants and no `unreachable!` in `policy.rs` (L10, N5, cdc717e). L8 (the combined comment on a partially pinned flow line lists only the pinned refs) is documented in the README ("What gets skipped").
 - Done before merge (M2): public `Ctx::env()` removed (89f7ffe).
 - **From the M5c-y review (`.superpowers/sdd/2026-11-10-m5cy/code-review.md`), L3, for M8a:** an implicit-null span is a marker, not an insertion point (block: before the `:`; flow: at the next token). **Never splice at an empty span.** H3 fills an existing `digest:` key; if that key is null (`digest:` with no value), M8a needs an insertion position (e.g. the byte after the key's `:`) as an extra field on `ScalarRef`. `digest: ""` and `digest: ~` already work.
 - **For M8a/M8c (L3, masking limits):** `mask_templates` pairs a `{{` inside a YAML **comment** with the next `}}`, even lines later: `# a {{ comment\nimage: {{ .x }}\nb: c` loses `image`. A `"}}"` inside a template string ends the mask early, which gives a parse error. Known limitations; handle in M8a (mask comments out first, or tokenise the template) or document them.
-- The rest of the M5c-y review fits M8 as is: `parent` groups `image: {repository, tag, digest}` and Chart.yaml `dependencies[*]`; `doc` and per-document paths handle multi-document values; `Tagged`/`Alias` are not targets; `templated` exists (M1 fixed before anyone consumed it). Open nit, not fixed: `policy.rs` uses `unreachable!` on a shape the caller already matched; passing `(kind, reason)` would remove the panic path.
+- The rest of the M5c-y review fits M8 as is: `parent` groups `image: {repository, tag, digest}` and Chart.yaml `dependencies[*]`; `doc` and per-document paths handle multi-document values; `Tagged`/`Alias` are not targets; `templated` exists (M1 fixed before anyone consumed it). The `policy.rs` `unreachable!` nit is fixed in M5d (N5, cdc717e): callers pass the destructured fields.
 - **Done in M5d (review `.superpowers/sdd/2026-11-10-m5d/code-review-1.md`):** registry bearer tokens keyed by `(host, realm, service, scope)`, never replayed to another host (H1, 7d28c82); the repo-only `RegistryClient` tag-list cache removed, the per-run memo is the one cache (M1, 750ccc9); L1–L6 and N2 too (`.superpowers/sdd/2026-11-10-m5d/fix-review-1.md`).
 - **M5d review N1, open:** `Selection` derives `Default` = empty `KindSet` = scan nothing, so a `..Default::default()` would silently disable every kind; drop `Default` (keep `From<KindSet>`).
-- **M5d review N3, open (T31 README):** an `Unsupported` include ref's ignore key is just the ref, so `ignore = ["g/p@*"]` still leaves its `skipped (block scalar)` row; document it, or carry `project` on `Unsupported`.
+- **M5d review N3, documented (README, `ignore`):** an `Unsupported` include ref's ignore key is just the ref, so `ignore = ["g/p@*"]` still leaves its `skipped (block scalar)` row; carrying `project` on `Unsupported` stays an option.
+- **Done in M5d (review `.superpowers/sdd/2026-11-10-m5d/code-review-2.md`, log `impl-review2-t26-t31.md`):** M1 and M2 walk fixes (30fc42c), M3 plan amendment (dbd39ec), L1 + N3 empty/trimmed id lists (99aa62d), L2 globs of every plugin table (b20b918), L3 walk errors (e7e83cb), L4 usage says `pin-toolkit` (045b4d2), L5 tests (53bdf23), L6 host syntax (f637f21), L7 `plugins` keyset (d7aa4cc, D46), L8 `scripts/gate.sh` (761c591), N1 one display rule (11f321d).
+- **M5d review-2 N2, open:** `#[allow(dead_code)]` on the whole `pub(crate)` modules without `test-support` (`crates/pin-core/src/lib.rs:8`, `crates/pin-core/src/oci/mod.rs:11`) also hides genuinely dead production code; narrow it to the test-only items (`Creds::load_from`, …).
+- **M5d review-2 N4, open:** `enable::Plan.plugins: Vec<(&dyn DynPlugin, Selection, GlobSet)>` should become a named struct once per-plugin data grows (M7+).

@@ -1,49 +1,305 @@
-# pin-ci
+# pin-toolkit
 
-Pin container image references in GitLab CI files to immutable digests.
+Pin CI references to immutable ids: container images in GitLab CI files to
+digests, GitLab components and includes to commit SHAs.
+
+`pin-toolkit` is one multi-call binary with one plugin per file format. This
+build has the `gitlab-ci` plugin; `helm` and `github-actions` are known
+plugin ids that are not built yet (`pin-toolkit plugins` shows the state).
+It replaces the former `pin-ci` binary, which no longer exists: `pin-ci` is
+now only an argv[0] alias of `pin-toolkit gitlab-ci` (see [Aliases](#aliases)).
 
 ## What it does
 
-M1 pins image references in GitLab CI files: every image or service
-reference is resolved to its current digest and rewritten in place as
-`original-as-written@sha256:<digest>` (an existing `@sha256:<old>` has its
-digest replaced; tags are never changed). Edits are byte-exact and
-idempotent. M1 started Docker-Hub-only — references on other hosts were
-`skipped (registry not enabled)`; M4a removes that skip entirely (see
-[Multi-registry support (M4a)](#multi-registry-support-m4a)).
+Every image or service reference is resolved to its current digest and
+rewritten in place as `original-as-written@sha256:<digest>` (an existing
+`@sha256:<old>` has its digest replaced; tags are never changed without
+`--update`). Images on every docker-v2 registry host are pinned (see
+[Multi-registry support](#multi-registry-support)). With `--update`, each
+reference's tag is first bumped to the latest eligible stable tag (see
+[Tag updates](#tag-updates---update)). The same run pins GitLab
+**components** and **classic includes** to commit SHAs (see
+[Components & includes](#components--includes)).
 
-M2 adds `--update`: before pinning, each reference's tag is bumped to the
-latest eligible stable tag (see [Tag updates](#tag-updates--update)).
-M3 extends the same run to GitLab **components** and **classic includes**
-(see [Components & includes (M3)](#components--includes-m3)).
+Edits are byte-exact and idempotent: bytes outside a reference are never
+touched, and a second run reports everything `ok` and writes nothing.
 
 ## Usage
 
 ```
-pin-ci [OPTIONS] [FILES]...
+pin-toolkit [OPTIONS] [PATHS]...             # every enabled plugin
+pin-toolkit gitlab-ci [OPTIONS] [PATHS]...   # only the gitlab-ci plugin
+pin-toolkit plugins                          # compiled-in plugins, kinds, enable state
 ```
 
-- `FILES` — CI files to pin (default: `ci/.gitlab-ci.yml`)
-- `--dry-run` — resolve and report without writing files
-- `--json` — print the report as JSON instead of human-readable text
-- `--concurrency` — max concurrent digest lookups per file (default: 8)
-- `--update` — bump each reference's tag to the latest eligible stable tag
-  before pinning it (same major as the current tag by default)
-- `--update-major` — with `--update`, also allow major version bumps
-- `--min-age-days` — with `--update`, skip bump candidates younger than N
-  days by Docker Hub push timestamp (Docker Hub refs only; other hosts are
-  a no-op; default `0` = off; recommended `14`)
-- `--gitlab-host` — GitLab instance host for component/include resolution
-  (default: `gitlab.com`)
+- `PATHS` — files or directories. Default: the git root (the first
+  ancestor of the current directory that contains `.git`), else the
+  current directory. Without paths the whole repository is walked, also
+  from a subdirectory; paths are shown relative to the current directory
+  (`../.gitlab-ci.yml`). See [Which files are pinned](#which-files-are-pinned).
+- A plugin subcommand must come **before** the paths:
+  `pin-toolkit a.yml gitlab-ci` treats `gitlab-ci` as a path, so it is an
+  all-plugins run that fails with `no plugin claims …` (exit `2`).
+- clap's `help` subcommand exists (`pin-toolkit help`, `pin-toolkit help
+  gitlab-ci`), so a directory named `help` must be passed as `./help`.
+- Options may appear before or after the subcommand.
+
+| Option | Meaning |
+|---|---|
+| `--dry-run` | resolve and report without writing files |
+| `--check` | `--dry-run`, and exit `1` if anything would change (CI gate) |
+| `--json` | print the report as JSON (schema v1, see [Report](#report)) |
+| `--update` | bump versioned references to the latest compatible stable tag before pinning |
+| `--update-major` | with `--update`, also allow a higher major version |
+| `--min-age-days <N>` | with `--update`, skip candidates younger than N days (`0` = off, the default; recommended `14`) |
+| `--concurrency <N>` | max resolutions in flight per file (default `8`) |
+| `--only <P,…>` | run only these plugins |
+| `--skip <P,…>` | do not run these plugins |
+| `--kind <P:K=on\|off>` | turn one kind on or off, repeatable (e.g. `--kind gitlab-ci:service=off`) |
+| `--config <FILE>` | repository config file (default: `.pin-toolkit.toml` at the git root) |
+| `--no-config` | do not read a config file |
+| `--gitlab-host <H>` | primary GitLab host (default: `CI_SERVER_HOST`, else `gitlab.com`) |
+
+Flags are presence-only (there is no `--no-update`; use
+`PIN_TOOLKIT_UPDATE=0` over a repo `enabled = true`).
+
+`--only`/`--skip` take known plugin ids (`gitlab-ci`, `helm`,
+`github-actions`); items are trimmed, empty items are dropped, and an
+empty list counts as not given. An unknown id exits `2`
+(``unknown plugin `x` (known: gitlab-ci, helm, github-actions)``), for
+`--skip` too. `--only helm` in this build exits `2` with
+`plugin helm not in this build`. On the command line, `--only`/`--skip`
+together with a plugin subcommand or alias exit `2`
+(`--only/--skip cannot be combined with a plugin subcommand`).
 
 Example:
 
 ```console
-$ pin-ci --update --update-major ci/.gitlab-ci.yml
-ci/.gitlab-ci.yml:1  updated  alpine:3.20 -> alpine:3.24@sha256:25b0e91ad7048476c484f3a5128e2b5d9a4f2c1e8b7a6d5c4f3e2d1a0b9c8d7e  # alpine:3.20
-ci/.gitlab-ci.yml:3  updated  ubuntu:24.04 -> ubuntu:26.04@sha256:8083fbb2465d13d61f77932a49d1a1fde3c2b1a09f8e7d6c5b4a39281706f5e4  # ubuntu:24.04
+$ pin-toolkit --update --update-major
+.gitlab-ci.yml:1  gitlab-ci:image  updated  alpine:3.20 -> alpine:3.24@sha256:25b0e91ad7048476c484f3a5128e2b5d9a4f2c1e8b7a6d5c4f3e2d1a0b9c8d7e  # alpine:3.20
+.gitlab-ci.yml:4  gitlab-ci:service  updated  postgres:16 -> postgres:17@sha256:8083fbb2465d13d61f77932a49d1a1fde3c2b1a09f8e7d6c5b4a39281706f5e4  # postgres:16
 pinned: 0, ok: 0, updated: 2, skipped: 0, unresolved: 0
 ```
+
+### Aliases
+
+`pin-<plugin>` (e.g. `pin-gitlab-ci`) and `pin-ci` are argv[0] aliases of
+`pin-toolkit <plugin>` / `pin-toolkit gitlab-ci`: the same flags, config,
+output and exit codes. The `pin-ci` alias is kept as one dispatch entry;
+the symlinks ship with the nix package (M6). Until then, create one by hand
+(`ln -s pin-toolkit pin-ci`). `pin-ci` has no legacy mode: without paths it
+walks the repository (there is no `ci/.gitlab-ci.yml` default any more),
+and it accepts any explicit file. Usage and help texts always say
+`pin-toolkit`. `pin-helm` (a known plugin that is not built) exits `2` with
+`plugin helm not in this build`.
+
+### Which files are pinned
+
+- **Walk.** A directory (the default git root, or one passed as a path) is
+  walked with the `ignore` crate's defaults: `.ignore` files and, inside a
+  git repository, `.gitignore`, `.git/info/exclude` and the user's global
+  gitignore are honoured, so results can differ per machine. Hidden files are walked
+  (`.gitlab-ci.yml`, `.gitlab/`); `.git` is skipped. Symlinks are not
+  followed during a walk; a symlink passed explicitly is used as given.
+- **Globs.** Each walked file is matched against the `files` globs of
+  every enabled plugin, **relative to the git root** (also for an explicit
+  directory such as `ci/`). gitlab-ci defaults:
+  `.gitlab-ci.yml`, `**/*.gitlab-ci.yml`, `.gitlab/ci/**/*.yml`; `*` does
+  not cross `/`, and `**/*.gitlab-ci.yml` also matches
+  `ci/.gitlab-ci.yml`. A directory outside the git root is matched
+  relative to its own git root, or to itself when it is in no repository.
+- **Walked files** nobody claims are ignored. A walked file claimed by two
+  plugins is a per-file error (exit `2`; the other files still run):
+  ``x.yml is claimed by p1 and p2 (narrow their `files` globs, or choose one: pin-toolkit <plugin> x.yml)``.
+- **Explicit files.** With a plugin subcommand or alias a file is claimed
+  regardless of the globs. Otherwise it must match exactly one enabled
+  plugin's globs, else exit `2` before the run:
+  `no plugin claims docs/readme.yml (choose one: pin-toolkit <plugin> docs/readme.yml)`.
+- A file passed twice (`a.yml`, `./a.yml`, `ci/../a.yml`, or a file and its
+  directory) runs once, shown as first spelled. Files run in path order,
+  one after the other.
+- **Walk errors** (e.g. an unreadable directory) are per-file errors:
+  `pin-toolkit: secret: Permission denied (os error 13)`, exit `2`. A bad
+  line in an ignore file only warns, exit unaffected:
+  `pin-toolkit: warning: .gitignore:3: …`.
+
+### Report
+
+Human (stdout): one row per reference, the total summary line, then (when
+more than one plugin ran) one summary line per plugin, then `follow-up:`
+lines (gitlab-ci has none):
+
+```
+{file}:{line}  {plugin}:{kind}  {status}[ ({reason})]  {old} -> {new|-}  # {reference}
+pinned: N, ok: N, updated: N, skipped: N, unresolved: N
+{plugin}: pinned: N, ok: N, updated: N, skipped: N, unresolved: N
+follow-up: {text}
+```
+
+Kinds of the gitlab-ci plugin: `image`, `service`, `component`, `include`
+(`helm-oci` is accepted in config and `--kind` but has no targets until M7).
+`services:` items are reported as `service` (before M5d: `image`). A
+disabled kind produces no row.
+
+JSON (`--json`, stdout), schema version 1:
+
+```json
+{
+  "schema_version": 1,
+  "results": [
+    { "plugin": "gitlab-ci", "kind": "image", "file": ".gitlab-ci.yml", "line": 1,
+      "reference": "alpine:3.20", "old": "alpine:3.20", "new": "alpine:3.20@sha256:…",
+      "status": "pinned" }
+  ],
+  "summary": { "pinned": 1, "ok": 0, "updated": 0, "skipped": 0, "unresolved": 0 },
+  "plugins": {
+    "gitlab-ci": {
+      "summary": { "pinned": 1, "ok": 0, "updated": 0, "skipped": 0, "unresolved": 0 },
+      "errors": [ { "file": "bad.gitlab-ci.yml", "line": 2, "message": "invalid YAML: …" } ]
+    }
+  },
+  "follow_ups": []
+}
+```
+
+- A row has `reason` only when it has one; `new` is `null` when nothing is
+  written. An error has `line` only when known.
+- `plugins` has one entry per **enabled** plugin, even if it found no file
+  (zero summary, no errors). The per-plugin summaries add up to `summary`.
+- `errors` are sorted by file, then line, whatever their origin (read,
+  parse or write error, walk error, walked file claimed twice). A walk
+  error is listed under the first enabled plugin.
+- Per-file errors also go to **stderr**, in both modes:
+  `pin-toolkit: {file}:{line}: {message}` or `pin-toolkit: {file}: {message}`.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | nothing `unresolved` and no error; with `--check` also nothing would change |
+| `1` | at least one reference `unresolved`; with `--check` also any row that would be `pinned` or `updated` |
+| `2` | an error (below) |
+
+Exit `2` comes in two forms:
+
+- **Fatal, before the run:** a usage error, a config error (repo file,
+  env value, `--kind`, `--gitlab-host`), an explicit path claimed by no or
+  two plugins, a plugin that is requested (subcommand, alias, `--only`,
+  `PIN_TOOLKIT_ONLY`) but not in this build. stderr says
+  `pin-toolkit: {message}`; **stdout is empty, also with `--json`**;
+  nothing is written.
+- **Per-file:** a file that cannot be read, parsed or written, a walk
+  error, a walked file claimed twice. The file is recorded under
+  `plugins.<id>.errors`; the other files are still pinned and the report
+  is printed.
+
+A file that is not valid YAML (e.g. a tab as block indentation) is a
+per-file error (`<path>:<line>: invalid YAML: …`); nothing in it is
+changed. A tab as separator after `key:` (`image:<TAB>alpine`) is valid
+YAML and is read as such. A file with bare-CR (`\r`-only) line endings is
+an error too (`bare CR line endings are not supported`).
+
+`--check` is meant as a CI gate: exit `1` when a run would change a file,
+nothing is written, and `0` again after a pin run.
+
+## Configuration
+
+Settings come from four layers, each overriding the one before:
+**defaults < repo `.pin-toolkit.toml` < env `PIN_TOOLKIT_*` < CLI**. A
+global config file arrives in M5e'.
+
+- Scalars: the highest layer that sets them wins. `files` and
+  `gitlab-hosts` lists are **replaced** by a higher layer; `ignore` lists
+  **concatenate**; `kinds` merge per kind.
+- The repo file is `--config FILE` if given, else `PIN_TOOLKIT_CONFIG`,
+  else `.pin-toolkit.toml` at the git root if it exists. A named file must
+  exist (`config file not found: …`); a file that cannot be read exits `2`
+  with `{path}: {error}`. `--no-config` reads none.
+
+### `.pin-toolkit.toml`
+
+```toml
+version = 1                                   # required, must be 1
+[update]
+enabled = false                               # = --update
+major = false                                 # = --update-major
+[release_age]
+min_days = 0                                  # = --min-age-days
+unknown = "allow"                             # "allow" | "block", see Release age guard
+[plugins.gitlab-ci]
+run = true                                    # false: not run in all-plugins mode
+files = [".gitlab-ci.yml", "**/*.gitlab-ci.yml", ".gitlab/ci/**/*.yml"]   # replaces the defaults
+ignore = ["registry.example.com/legacy/*"]    # references never touched
+gitlab-hosts = ["gitlab.com", "gitlab.example.com"]   # hosts to resolve; never credentials
+kinds = { image = true, service = true, component = true, include = true, helm-oci = true }
+[plugins.helm]                                # accepted and validated, unused until helm is built
+run = true
+kinds = { chart-dependency = true, values-image = true, helmfile-release = true }
+values = { tag-digest = true }
+helmfile = { oci-digest = false }
+aliases = { stable = "https://charts.helm.sh/stable" }
+[plugins.github-actions]                      # accepted and validated, unused until built
+run = true
+kinds = { action = true, docker-action = true, container = true }
+```
+
+Exit `2` (the message names the file) for: a missing `version` or one
+other than `1`; any unknown key, plugin id or kind; a wrong type; an
+invalid glob in any plugin's `files`
+(``invalid glob `[` in plugins.gitlab-ci.files: …``); a `gitlab-hosts`
+entry that is not a plain host (see [GitLab hosts and auth](#gitlab-hosts-and-auth));
+a helm `aliases` URL with credentials
+(`plugins.helm.aliases.<name>: a repository URL must not contain credentials`);
+and the **global-only** keys `hosts` and `concurrency`
+(`` `hosts` is a global-only key; it is not allowed in a repository config ``).
+A repository cannot set the primary GitLab host, the output format,
+`--dry-run`/`--check` or `--only`/`--skip`: no such key exists.
+
+`run = false` stops a plugin in all-plugins mode; `pin-toolkit <plugin>`
+still runs it. A table for a known plugin that is not in this build (and
+not `run = false`) prints one notice in all-plugins mode,
+`pin-toolkit: skipped (plugin helm not in this build)`, exit unaffected.
+
+`ignore` patterns match a reference's key as a whole: `*` matches any run
+of characters (including `/` and none), `?` one character.
+
+- images, services, components: the value as written, quotes stripped.
+  `ignore = ["alpine:3.20"]` therefore does not match an already pinned
+  `alpine:3.20@sha256:…`; use `alpine:3.20*`.
+- includes: `{project}@{ref}`, e.g. `gitlab-org/example@main` or
+  `gitlab-org/example@*`. An include ref that cannot be rewritten (block
+  or multi-line scalar) has just the ref as its key, so `g/p@*` keeps its
+  `skipped (block scalar)` row.
+
+An ignored reference has no row and is never resolved.
+
+### Environment
+
+| Variable | Setting | Values |
+|---|---|---|
+| `PIN_TOOLKIT_UPDATE`, `PIN_TOOLKIT_UPDATE_MAJOR`, `PIN_TOOLKIT_JSON` | `--update`, `--update-major`, `--json` | boolean: `1/0`, `true/false`, `yes/no`, `on/off` (any case) |
+| `PIN_TOOLKIT_MIN_AGE_DAYS` | `--min-age-days` | number |
+| `PIN_TOOLKIT_RELEASE_AGE_UNKNOWN` | `release_age.unknown` | `allow`, `block` (any case) |
+| `PIN_TOOLKIT_CONCURRENCY` | `--concurrency` | number |
+| `PIN_TOOLKIT_ONLY`, `PIN_TOOLKIT_SKIP` | `--only`, `--skip` | comma list of plugin ids (as on the CLI) |
+| `PIN_TOOLKIT_GITLAB_HOST` | `--gitlab-host` | host |
+| `PIN_TOOLKIT_CONFIG` | repo config path (below `--config`) | path |
+
+- An empty value counts as unset.
+- A bad value exits `2`: `PIN_TOOLKIT_UPDATE: expected a boolean (1/0, true/false, yes/no, on/off), got "maybe"`,
+  `…: expected a number, got "x"`, `…: expected allow or block, got "x"`,
+  ``PIN_TOOLKIT_GITLAB_HOST: invalid GitLab host `x` ``.
+- Any other `PIN_TOOLKIT_*` variable only warns, exit unaffected
+  (GitLab exports every CI/CD variable to the job):
+  `pin-toolkit: ignoring unknown environment variable PIN_TOOLKIT_VERSION`.
+- `PIN_TOOLKIT_ONLY`/`PIN_TOOLKIT_SKIP` are **ignored** with a plugin
+  subcommand or alias, so a CI-wide value cannot break `pin-ci`. In
+  all-plugins mode an unknown id exits `2`, as on the CLI.
+
+Credentials are read from the environment too, see
+[GitLab hosts and auth](#gitlab-hosts-and-auth) and
+[Per-host logins](#per-host-logins). Nothing secret is written to files or
+logs.
 
 ## Tag updates (`--update`)
 
@@ -64,7 +320,7 @@ A reference is never bumped (digest/SHA re-pin only) when:
   the digest of the tag it carries.
 
 If the tag list cannot be fetched, the reference is reported as
-`unresolved(tag list: <reason>)`, the tool exits `1`, and all other
+`unresolved (tag list: <reason>)`, the tool exits `1`, and all other
 references in the file are still written.
 
 ### Differences from the old pipeline
@@ -72,27 +328,32 @@ references in the file are still written.
 Two deliberate divergences from `pin-ci-images.sh` (renovate + crane):
 
 - **Same major by default.** Renovate bumps to the newest tag of any major;
-  pin-ci keeps the current major unless `--update-major` is given.
+  pin-toolkit keeps the current major unless `--update-major` is given.
 - **Release-age guard is opt-in.** Renovate's config sets
-  `minimumReleaseAge: 14d`; by default pin-ci has no such guard and will
+  `minimumReleaseAge: 14d`; by default pin-toolkit has no such guard and will
   pick a just-published stable tag — `--min-age-days 14` restores parity
-  (see [Release age guard (M4b-1)](#release-age-guard-m4b1)). With the
+  (see [Release age guard](#release-age-guard)). With the
   guard off, the M2 oracle accepts a tag divergence from the old pipeline
   only as a versioning-policy difference (both tags crane-verified; e.g.
   renovate's `ubuntu` versioning treats odd-minor interludes as unstable).
 
-## Release age guard (M4b-1)
+## Release age guard
 
 `--min-age-days <N>` (default `0` = off) makes `--update` wait for newly
 published tags: a bump candidate must have been pushed at least N days
 before the run, per its Docker Hub push timestamp (`tag_last_pushed`,
 fallback `last_updated`).
 
-- **Default off.** Without the flag, pin/update behavior is exactly M2 —
+- **Default off.** Without the flag, pin/update behaviour is unchanged —
   the newest stable tag is picked even if it was pushed minutes ago.
-- **Docker Hub refs only.** The guard is active only for `docker.io`
-  references (including the no-slash default). References on any other
-  host are a documented no-op: M2 update behavior, unchanged.
+- **Docker Hub refs only.** Timestamps exist only for `docker.io`
+  references (including the no-slash default).
+- **Other hosts: `release_age.unknown`.** Their age is unknown. With
+  `allow` (the default) they update as without the guard. With `block`
+  (`[release_age] unknown = "block"` or `PIN_TOOLKIT_RELEASE_AGE_UNKNOWN=block`)
+  and `N > 0`, a reference with an update candidate is left untouched:
+  `skipped (release age unknown (<host>; release_age.unknown = block))`.
+  Without a candidate it is pinned as usual.
 - **Recommended: `14`.** The old pipeline (`pin-ci-images.sh`, renovate)
   sets `minimumReleaseAge: 14d` in its config — but that rule is scoped to
   `matchUpdateTypes: ['pinDigest','digest']`, so it did not apply to tag
@@ -108,9 +369,9 @@ fallback `last_updated`).
   (→ the skip above); other Hub errors (network, 429, malformed page) make
   the reference `unresolved (hub api: …)`, exit `1`.
 
-## Components & includes (M3)
+## Components & includes
 
-M3 resolves and pins, in the same run as image pinning:
+The same run resolves and pins:
 
 - **component references** — a top-level (unindented)
   `component: <host>/<group…/project>/<name>@<version>` line. The version
@@ -125,8 +386,8 @@ M3 resolves and pins, in the same run as image pinning:
 
 - **classic includes with an explicit `ref`** — a top-level `include:`
   mapping (block or flow, any key order) carrying both `project` and
-  `ref`. The ref is resolved to a commit SHA and replaced, with the
-  original ref kept as a trailing comment:
+  `ref`. The ref is resolved on the primary GitLab host to a commit SHA
+  and replaced, with the original ref kept as a trailing comment:
 
   ```yaml
   include:
@@ -167,17 +428,16 @@ M3 resolves and pins, in the same run as image pinning:
   `\t# comment` no longer includes the comment.
 
   A line that already has a trailing comment is left as-is (no second
-  comment is added). Edits are byte-exact and idempotent — a second run
-  reports everything `ok` and writes nothing.
+  comment is added).
 
 ### What gets skipped
 
 Skipped targets are left untouched and keep the exit code `0`:
 
-- **host not enabled** — a component reference whose host differs from
-  `--gitlab-host` (default `gitlab.com`): `skipped (host not enabled: <host>)`.
-  A classic include's `project` is a project path on the same instance,
-  so includes are always eligible (there is no host to compare).
+- **host not enabled** — a component reference whose host is neither the
+  primary GitLab host nor listed in `plugins.gitlab-ci.gitlab-hosts`:
+  `skipped (host not enabled: <host>)`. A classic include's `project` is a
+  project path on the primary host, so includes are always eligible.
 - **catalog-managed versions** — component versions that GitLab's CI/CD
   Catalog resolves at pipeline time and that have no tag/branch to pin
   against: versions starting with `~` (e.g. `~latest`), containing a
@@ -190,8 +450,10 @@ Skipped targets are left untouched and keep the exit code `0`:
   as a tag name.
 - **templated references** — a ref value containing `$` (e.g.
   `ref: ${CI_REF}`): `skipped (templated reference)`.
-- **unparseable component references** — no `@`, too few path segments,
-  or an empty version: `skipped (unparseable reference)`.
+- **unparseable references** — an image value that does not parse as an
+  image reference (e.g. `$CI_REGISTRY_IMAGE:1`), or a component with no
+  `@`, too few path segments, or an empty version:
+  `skipped (unparseable reference)`.
 - **block scalars** — a `|` / `>` value at an image, component or include
   path is never rewritten: `skipped (block scalar)`.
 - **multi-line scalars** — a quoted or plain value continued on the next
@@ -201,30 +463,42 @@ Skipped targets are left untouched and keep the exit code `0`:
   same flow mapping (a flow include whose `file:` value continues on the
   next line): nothing is written for it,
   `skipped (no safe place for comment)`.
+- **release age** — see [Release age guard](#release-age-guard).
+
+On a flow line with several includes where only some are pinned, the
+combined `# …` comment lists only the pinned refs; a later run treats the
+line as commented and adds none for the rest.
 
 Never targets at all (not even reported): include mappings with
 `project` but no `ref` (bare `{project}`); include items that are plain
 local templates (`"local-template.yml"`), `remote:` URLs, or `template:`
 names; indented (job-level) `component:` / `include:`.
 
-### GitLab auth
+### GitLab hosts and auth
 
-- `GITLAB_TOKEN` — sent as `PRIVATE-TOKEN`; takes precedence.
-- `CI_JOB_TOKEN` — sent as `JOB-TOKEN` (for runs inside a pipeline).
-  When a job token is the active token, branch resolution uses the list
-  endpoint `GET /projects/:id/repository/branches?search=<name>` plus an
-  exact-name match (the single-branch endpoint is not in the job-token
-  allowlist); PAT/anonymous use the single-branch endpoint.
-- Neither set — anonymous; works for public projects.
-
-### Self-hosted instances
-
-`--gitlab-host <host>` (default `gitlab.com`) points component/include
-resolution at a self-hosted GitLab. Only component references whose host
-equals the configured host are pinned; references on other hosts are
-skipped (`host not enabled`).
-
-### Errors & exit codes
+- **Primary host:** `--gitlab-host` > `PIN_TOOLKIT_GITLAB_HOST` >
+  `CI_SERVER_HOST` > `gitlab.com`. Includes resolve there. A repository
+  config cannot set it.
+- **Resolved hosts:** the primary plus `plugins.gitlab-ci.gitlab-hosts`;
+  components on other hosts are `skipped (host not enabled: …)`.
+  `CI_SERVER_HOST` is not added implicitly when it is not the primary.
+- **`GITLAB_TOKEN`** is sent as `PRIVATE-TOKEN` to the primary host only.
+- **`CI_JOB_TOKEN`** is sent as `JOB-TOKEN` to `CI_SERVER_HOST` only —
+  never to gitlab.com or another host. When both tokens apply to the same
+  host, `GITLAB_TOKEN` wins. With the job token, branch resolution uses
+  the list endpoint `GET /projects/:id/repository/branches?search=<name>`
+  plus an exact-name match (the single-branch endpoint is not in the
+  job-token allowlist); PAT/anonymous use the single-branch endpoint.
+- Every other host is resolved **anonymously** (public projects work). A
+  `gitlab-hosts` entry other than the primary host and `CI_SERVER_HOST` is
+  resolved anonymously; a private project there fails as `unresolved`.
+  Binding credentials to further hosts arrives with the global config
+  (M5e').
+- A host value (`--gitlab-host`, `PIN_TOOLKIT_GITLAB_HOST`, `gitlab-hosts`
+  entries) must be a plain host with an optional port,
+  `^[A-Za-z0-9.-]+(:[0-9]+)?$`; anything else (a URL, `user@host`, a path)
+  exits `2`: ``--gitlab-host: invalid GitLab host `x` ``,
+  ``invalid GitLab host `x` in plugins.gitlab-ci.gitlab-hosts``.
 
 Resolution failures are reported per reference and never abort the run —
 other targets in the file are still written:
@@ -234,34 +508,35 @@ other targets in the file are still written:
 - `401`/`403`:
   `unresolved (gitlab api: <status> unauthorized (check GITLAB_TOKEN/CI_JOB_TOKEN))`
 - `429`: `unresolved (gitlab api: rate limited (429), retry later)` —
-  **no retry** day one; run again later
+  **no retry**; run again later
 - other API/network failures: `unresolved (gitlab api: …)`
 
-The exit code is `1` iff at least one reference is `unresolved`; skipped
-targets keep exit `0` (M1/M2 exit-code rules unchanged).
+## Multi-registry support
 
-## Multi-registry support (M4a)
-
-M4a extends image pinning to **every docker-v2 registry host** —
+Image pinning works on **every docker-v2 registry host** — `docker.io`,
 `ghcr.io`, GCP Artifact Registry, ECR (public and private), JFrog
-Artifactory, and any self-hosted registry. The M1 status
-`skipped (registry not enabled)` no longer occurs for images.
+Artifactory, and any self-hosted registry.
 
 ### Per-host logins
 
 | Registry host | How to authenticate |
 |---|---|
-| `docker.io` | `DOCKERHUB_USER` + `DOCKERHUB_TOKEN` (env, used first) or `~/.docker/config.json` (M1 auths keys) |
+| `docker.io` | `DOCKERHUB_USER` + `DOCKERHUB_TOKEN` (env, used first) or `~/.docker/config.json` |
 | `ghcr.io` | `GITHUB_TOKEN` (a PAT with `read:packages`), sent as Bearer on the token request, or config.json |
 | GCP Artifact Registry (`<region>-docker.pkg.dev`) | `gcloud auth configure-docker <host>` — writes an `identitytoken` entry to config.json, sent as Bearer |
 | ECR public (`public.ecr.aws`) | none — anonymous |
 | ECR private (`registry-…amazonaws.com`) | `docker login -u AWS -p "$(aws ecr get-login-password …)" registry-…` — lands in config.json. SigV4 credential minting is deliberately **not** in the tool |
 | JFrog Artifactory / self-hosted | `docker login <host>` — lands in config.json; both `Basic` and `Bearer` challenges are handled |
 
-config.json entries resolve per host: `username` + `password` → Basic
-credentials, otherwise `identitytoken` → Bearer token. Precedence is
-per host: env vars first, then config.json. A missing or malformed
-config.json is never fatal — the host simply has no credentials.
+config.json (`$HOME/.docker/config.json`) entries resolve per host, `auths`
+keys in order `https://index.docker.io/v1/`, `https://docker.io`,
+`index.docker.io/v1/`, `docker.io` for Docker Hub; `ghcr.io` /
+`https://ghcr.io` for GitHub; `{host}` / `https://{host}` for anything
+else. An entry's `username` + `password` are Basic credentials, otherwise
+an `identitytoken` is a Bearer token. Precedence is per host: env vars
+first, then config.json. A missing or malformed config.json is never
+fatal — the host simply has no credentials. A registry token is only ever
+sent to the host it was issued for.
 
 ### Fail loud (no silent skips)
 
@@ -274,52 +549,29 @@ code is `1`:
 - other hosts: `unresolved (<host>: token denied — docker login <host>)`; a `Basic` challenge with no (or Bearer-only) credentials reports `unresolved (<host>: registry requires basic login — docker login <host>)`
 
 Everything else in the file is still resolved and written (partial-write
-semantics, M1/M2/M3 rules). `--gitlab-host` (M3) is unaffected: it only
-selects the GitLab instance for component/include resolution.
-
-## Environment
-
-Example:
-
-```console
-$ pin-ci ci/.gitlab-ci.yml
-ci/.gitlab-ci.yml:1  pinned  alpine:3.20 -> alpine:3.20@sha256:25b0e91ad7048476c484f3a5128e2b5d9a4f2c1e8b7a6d5c4f3e2d1a0b9c8d7e  # alpine:3.20
-ci/.gitlab-ci.yml:3  pinned  ubuntu:24.04 -> ubuntu:24.04@sha256:8083fbb2465d13d61f77932a49d1a1fde3c2b1a09f8e7d6c5b4a39281706f5e4  # ubuntu:24.04
-pinned: 2, ok: 0, skipped: 0, unresolved: 0
-```
-
-## Environment
-
-- `DOCKERHUB_USER` / `DOCKERHUB_TOKEN` — `docker.io` credentials, used
-  first.
-- `GITHUB_TOKEN` — `ghcr.io`, sent as Bearer on the token request.
-- Fallback: `~/.docker/config.json`, per host — `auths` keys in order
-  `https://index.docker.io/v1/`, `https://docker.io`,
-  `index.docker.io/v1/`, `docker.io` for Docker Hub; `ghcr.io` /
-  `https://ghcr.io` for GitHub; `{host}` / `https://{host}` for anything
-  else. An entry's `username` + `password` are Basic credentials; an
-  `identitytoken` is a Bearer token. A missing or malformed config.json
-  is never fatal (no credentials for that host).
-
-Nothing secret is written to files or logs.
-
-## Exit codes
-
-- `0` — nothing was `unresolved` (and no IO error).
-- `1` — at least one reference was `unresolved`, or an IO error occurred.
-
-A file that is not valid YAML (e.g. a tab as block indentation) is an error
-for that file (`<path>:<line>: invalid YAML: …`); nothing in it is changed.
-`pin-ci` stops at the first such file (per-file continuation comes with
-M5d), prints the rows of the files before it, and exits `1`. A tab as
-separator after `key:` (`image:<TAB>alpine`) is valid YAML and is read as
-such. A file with bare-CR (`\r`-only) line endings is an error too
-(`bare CR line endings are not supported`).
+semantics).
 
 ## Tests
 
-- `cargo test --workspace --all-features` — unit, mock-registry, and end-to-end tests. Always runs
-  without network, registry credentials, or external tools.
+- `scripts/gate.sh` — the repository gate, run before every commit: the
+  whole test suite with all features (`INSTA_UPDATE=no`, snapshots must
+  match), `cargo fmt --check`, clippy `-D warnings` (workspace, the
+  pin-core feature matrix, pin-toolkit `--no-default-features`), the
+  pin-toolkit tests without plugins, the D38 checks (`cargo check -p
+  pin-gitlab-ci -p pin-toolkit` and a `cargo tree` check that no normal
+  dependency enables pin-core's `test-support`) and
+  `RUSTDOCFLAGS=-D warnings cargo doc`. It uses the `cargo` on `PATH`;
+  logs go to `.tmp/gate-*.log`.
+- `cargo test --workspace --all-features` — unit, mock-registry and
+  end-to-end tests. Always runs without network, registry credentials, or
+  external tools. pin-toolkit's own tests (`crates/pin-toolkit/tests/`):
+  `cli.rs`, `config_layers.rs`, `run.rs`, `exit_codes.rs` (the exit-code
+  table), `credentials.rs` (tokens on the wire, wiremock), `aliases.rs`
+  (argv[0] aliases through the real binary, unix), `fixture_snapshots.rs`
+  (human + JSON snapshots over the gitlab-ci fixtures).
+- `PIN_CI_LIVE=1 cargo test -p pin-toolkit --test live` — opt-in live smoke
+  of the real binary: pins `alpine:3.20` from Docker Hub, then `--check`
+  exits `0`.
 - `PIN_CI_LIVE=1 cargo test -p pin-gitlab-ci --test live` — opt-in live tests against real
   registries: Docker Hub digest resolution for `alpine:3.20` /
   `ubuntu:24.04` plus a full `--update --update-major` run whose tag
@@ -355,6 +607,10 @@ such. A file with bare-CR (`\r`-only) line endings is an error too
   Both require `renovate`, `crane`, `python3` and `git` on `PATH` (and
   outbound network); without the env flag or the tools they print a SKIP
   notice and pass.
+
+The pin-gitlab-ci live and oracle tests drive the plugin through a test
+helper (`crates/pin-gitlab-ci/tests/common/driver.rs`, the former `pin-ci`
+driver), not through the binary.
 
 ## Old pipeline
 

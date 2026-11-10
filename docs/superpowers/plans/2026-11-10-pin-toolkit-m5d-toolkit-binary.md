@@ -565,6 +565,7 @@ invalid glob; `gitlab-hosts` entry empty or containing `/`, `://` or whitespace;
 - `no plugin claims {file} (choose one: pin-toolkit <plugin> {file})` · `{file} is claimed by {p1} and {p2} (narrow their \`files\` globs, or choose one: pin-toolkit <plugin> {file})`
 - `invalid glob \`{g}\` in plugins.{p}.files: {msg}` · `invalid GitLab host \`{h}\` in plugins.gitlab-ci.gitlab-hosts`
 - Per-file error lines `pin-toolkit: {file}:{line}: {message}` / `pin-toolkit: {file}: {message}`; human summary: the unchanged total line, then (> 1 plugin ran) per plugin `{plugin}: pinned: …` (PR-L1); `follow-up: {text}`.
+- Added at close-out (T31; implementer texts accepted by review 2, and the review-2 fixes): `--gitlab-host: invalid GitLab host \`{h}\`` · `PIN_TOOLKIT_GITLAB_HOST: invalid GitLab host \`{h}\`` · `{path}: {io error}` (config file unreadable) · `cannot start the runtime: {e}` · `{path}: invalid glob \`{g}\` in plugins.{p}.files: {msg}` (repo file, review-2 L2) · walk error `pin-toolkit: {dir}: {io error}` (per-file, exit 2) and warning `pin-toolkit: warning: {file}:{line}: {message}` (bad ignore-file line, exit unaffected; review-2 L3). `PIN_TOOLKIT_RELEASE_AGE_UNKNOWN` values are case-insensitive.
 
 ## Setup
 
