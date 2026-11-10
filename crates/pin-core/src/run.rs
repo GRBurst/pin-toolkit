@@ -122,27 +122,60 @@ fn non_empty(vars: &BTreeMap<String, String>, name: &str) -> Option<String> {
     vars.get(name).filter(|v| !v.is_empty()).cloned()
 }
 
+/// A GitLab host name as configured or taken from the environment (the
+/// primary host, `gitlab-hosts` entries, `CI_SERVER_HOST`): `name[:port]`
+/// with `name` = dot-separated labels of ASCII letters, digits and `-`
+/// (no empty label, no label starting or ending with `-`) and `port` =
+/// 1..=65535. So no scheme, path, userinfo (`gitlab.com@evil.example`),
+/// query or fragment (review-2 L6, M5d final M1/N5). The API base is
+/// `https://{host}/api/v4`.
+pub fn valid_gitlab_host(h: &str) -> bool {
+    let (name, port) = match h.split_once(':') {
+        Some((name, port)) => (name, Some(port)),
+        None => (h, None),
+    };
+    let label = |l: &str| {
+        !l.is_empty()
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+            && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    let port_ok = |p: &str| {
+        !p.is_empty()
+            && p.chars().all(|c| c.is_ascii_digit())
+            && p.parse::<u16>().is_ok_and(|n| n > 0)
+    };
+    name.split('.').all(label) && port.is_none_or(port_ok)
+}
+
 impl GitlabEnv {
     /// `primary` (the toolkit passes CLI > `PIN_TOOLKIT_GITLAB_HOST`), else
     /// `CI_SERVER_HOST`, else `gitlab.com`; tokens from `GITLAB_TOKEN` and
-    /// `CI_JOB_TOKEN`. Empty values count as unset.
+    /// `CI_JOB_TOKEN`. Empty values count as unset. A `CI_SERVER_HOST` that
+    /// is not a [`valid_gitlab_host`] is an error, never a fallback: it
+    /// would be the default primary and the job token's host (M5d final M1).
     pub fn from_vars(
         vars: &BTreeMap<String, String>,
         primary: Option<String>,
         hosts: BTreeSet<String>,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let ci_server_host = non_empty(vars, "CI_SERVER_HOST");
+        if let Some(h) = &ci_server_host
+            && !valid_gitlab_host(h)
+        {
+            return Err(format!("CI_SERVER_HOST: invalid GitLab host `{h}`"));
+        }
         let primary = primary
             .filter(|p| !p.is_empty())
             .or_else(|| ci_server_host.clone())
             .unwrap_or_else(|| "gitlab.com".to_string());
-        Self {
+        Ok(Self {
             primary,
             hosts,
             gitlab_token: non_empty(vars, "GITLAB_TOKEN"),
             ci_job_token: non_empty(vars, "CI_JOB_TOKEN"),
             ci_server_host,
-        }
+        })
     }
 
     /// `host` resolves: the primary or one of `hosts`.
@@ -234,20 +267,20 @@ pub struct ResolverEnv {
 
 impl ResolverEnv {
     /// `home` = `HOME` (empty = unset: never a cwd-relative
-    /// `.docker/config.json`), `gitlab` = [`GitlabEnv::from_vars`],
-    /// `registry` = [`REGISTRY_VARS`] from `vars`.
+    /// `.docker/config.json`), `gitlab` = [`GitlabEnv::from_vars`] (its
+    /// error is this one's), `registry` = [`REGISTRY_VARS`] from `vars`.
     pub fn from_vars(
         vars: &BTreeMap<String, String>,
         primary: Option<String>,
         hosts: BTreeSet<String>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, String> {
+        Ok(Self {
             home: non_empty(vars, "HOME").map(PathBuf::from),
-            gitlab: GitlabEnv::from_vars(vars, primary, hosts),
+            gitlab: GitlabEnv::from_vars(vars, primary, hosts)?,
             registry: RegistryEnv::from_vars(vars),
             #[cfg(feature = "test-support")]
             base_urls: BaseUrls::default(),
-        }
+        })
     }
 
     /// Registry credentials: env-map variables over `~/.docker/config.json`
@@ -260,7 +293,8 @@ impl ResolverEnv {
     /// [`ResolverEnv::from_vars`] over the process environment (UTF-8
     /// variables only) with `primary` and no other GitLab host: for the
     /// pin-ci driver and the live/oracle tests. A process-env reader below
-    /// the binary edge: test helpers only (PR-L9).
+    /// the binary edge: test helpers only (PR-L9). Panics on an invalid
+    /// `CI_SERVER_HOST`.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn from_process(primary: &str) -> Self {
@@ -268,6 +302,7 @@ impl ResolverEnv {
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
             .collect();
         Self::from_vars(&vars, Some(primary.to_string()), BTreeSet::new())
+            .unwrap_or_else(|e| panic!("{e}"))
     }
 }
 
@@ -920,7 +955,8 @@ mod resolver_tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect()
         };
-        let env = ResolverEnv::from_vars(&vars(&[("GITHUB_TOKEN", "x")]), None, BTreeSet::new());
+        let env =
+            ResolverEnv::from_vars(&vars(&[("GITHUB_TOKEN", "x")]), None, BTreeSet::new()).unwrap();
         assert_eq!(
             env.creds().for_host("ghcr.io"),
             Some(&HostCreds::Bearer { token: "x".into() })
@@ -929,7 +965,8 @@ mod resolver_tests {
             &vars(&[("DOCKERHUB_USER", "u"), ("DOCKERHUB_TOKEN", "t")]),
             None,
             BTreeSet::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             env.creds().for_host("docker.io"),
             Some(&HostCreds::Basic {
@@ -937,12 +974,15 @@ mod resolver_tests {
                 password: "t".into()
             })
         );
-        let env = ResolverEnv::from_vars(&BTreeMap::new(), None, BTreeSet::new());
+        let env = ResolverEnv::from_vars(&BTreeMap::new(), None, BTreeSet::new()).unwrap();
         assert_eq!(env.creds().for_host("ghcr.io"), None);
         // An empty HOME is unset, never a cwd-relative `.docker/config.json`
         // (M5d review-1 L4).
-        let home =
-            |h: &str| ResolverEnv::from_vars(&vars(&[("HOME", h)]), None, BTreeSet::new()).home;
+        let home = |h: &str| {
+            ResolverEnv::from_vars(&vars(&[("HOME", h)]), None, BTreeSet::new())
+                .unwrap()
+                .home
+        };
         assert_eq!(home(""), None);
         assert_eq!(home("/h"), Some(PathBuf::from("/h")));
     }
@@ -963,7 +1003,7 @@ mod resolver_tests {
         .map(|k| (k.to_string(), S.to_string()))
         .chain([("CI_SERVER_HOST".to_string(), "gitlab.com".to_string())])
         .collect();
-        let env = ResolverEnv::from_vars(&vars, None, BTreeSet::new());
+        let env = ResolverEnv::from_vars(&vars, None, BTreeSet::new()).unwrap();
         assert!(env.gitlab.gitlab_token.is_some() && env.gitlab.ci_job_token.is_some());
         let client =
             GitLabClient::try_new("http://127.0.0.1:9".into(), Some(S.into()), true).unwrap();
@@ -1014,7 +1054,7 @@ mod tests {
         .into_iter()
         .filter_map(|(k, v)| v.map(|v| (k.to_string(), v.to_string())))
         .collect();
-        GitlabEnv::from_vars(&vars, Some(primary.to_string()), BTreeSet::new())
+        GitlabEnv::from_vars(&vars, Some(primary.to_string()), BTreeSet::new()).unwrap()
     }
 
     /// D31 + D37 (T-D12): `GITLAB_TOKEN` only to the primary, `CI_JOB_TOKEN`
@@ -1048,7 +1088,9 @@ mod tests {
                 .collect()
         };
         let primary = |vars: &BTreeMap<String, String>, p: Option<&str>| {
-            GitlabEnv::from_vars(vars, p.map(str::to_string), BTreeSet::new()).primary
+            GitlabEnv::from_vars(vars, p.map(str::to_string), BTreeSet::new())
+                .unwrap()
+                .primary
         };
         let server = vars(&[("CI_SERVER_HOST", ex)]);
         assert_eq!(primary(&server, Some("h.example")), "h.example");
@@ -1057,16 +1099,93 @@ mod tests {
         assert_eq!(primary(&BTreeMap::new(), None), com);
         assert_eq!(primary(&vars(&[("CI_SERVER_HOST", "")]), None), com);
         let empty = vars(&[("GITLAB_TOKEN", ""), ("CI_JOB_TOKEN", "")]);
-        let env = GitlabEnv::from_vars(&empty, None, BTreeSet::new());
+        let env = GitlabEnv::from_vars(&empty, None, BTreeSet::new()).unwrap();
         assert_eq!(env.auth_for(com), Anonymous);
         assert_eq!(env.ci_server_host, None);
 
         // Enabled hosts and the resolve set: {primary} ∪ hosts.
-        let env = GitlabEnv::from_vars(&BTreeMap::new(), None, BTreeSet::from([ex.to_string()]));
+        let env =
+            GitlabEnv::from_vars(&BTreeMap::new(), None, BTreeSet::from([ex.to_string()])).unwrap();
         assert!(env.enabled(com) && env.enabled(ex) && !env.enabled("other.example"));
         assert_eq!(
             env.resolve_set(),
             BTreeSet::from([com.to_string(), ex.to_string()])
+        );
+    }
+
+    /// Host syntax (review-2 L6, M5d final N5): `name[:port]`, labels of
+    /// letters, digits and inner `-`, port 1..=65535.
+    #[test]
+    fn valid_gitlab_host_syntax() {
+        let good = [
+            "gitlab.com",
+            "gitlab.example.com:8443",
+            "a",
+            "x-1.example",
+            "127.0.0.1:9",
+            "h:1",
+            "h:65535",
+            "GitLab.Example.COM",
+        ];
+        for h in good {
+            assert!(valid_gitlab_host(h), "{h} must be valid");
+        }
+        let bad = [
+            "",
+            ".",
+            "-",
+            "..",
+            "a..b",
+            ".gitlab.com",
+            "gitlab.com.",
+            "-gitlab.com",
+            "gitlab-.com",
+            "a.-b.c",
+            "gitlab.com@evil.example",
+            "gitlab.com@127.0.0.1:9",
+            "https://x",
+            "a b",
+            "h?x",
+            "h#x",
+            "h/x",
+            "h:",
+            "h:x",
+            "h:0",
+            "h:65536",
+            "h:99999999999",
+            "h:+1",
+            "h:1:2",
+            ":443",
+            "ä.example",
+        ];
+        for h in bad {
+            assert!(!valid_gitlab_host(h), "{h} must be invalid");
+        }
+    }
+
+    /// M5d final M1: an invalid `CI_SERVER_HOST` fails loud (it would be the
+    /// default primary and the job token's host), even when an explicit
+    /// primary is set; an empty one is unset.
+    #[test]
+    fn invalid_ci_server_host_is_an_error() {
+        let bad = "gitlab.com@127.0.0.1:9";
+        let vars: BTreeMap<String, String> = [
+            ("CI_SERVER_HOST", bad),
+            ("CI_JOB_TOKEN", "jt"),
+            ("GITLAB_TOKEN", "pt"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let want = Err(format!("CI_SERVER_HOST: invalid GitLab host `{bad}`"));
+        assert_eq!(GitlabEnv::from_vars(&vars, None, BTreeSet::new()), want);
+        assert_eq!(
+            GitlabEnv::from_vars(&vars, Some("gitlab.com".into()), BTreeSet::new()),
+            want
+        );
+        assert_eq!(
+            ResolverEnv::from_vars(&vars, None, BTreeSet::new()).map(|e| e.gitlab),
+            want
         );
     }
 }

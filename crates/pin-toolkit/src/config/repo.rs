@@ -6,11 +6,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use pin_core::run::AgePolicy;
+use pin_core::run::{AgePolicy, valid_gitlab_host};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 
-use super::{Fatal, Layer, PluginLayer, valid_gitlab_host};
+use super::{Fatal, Layer, PluginLayer};
 use crate::enable::file_glob;
 use crate::known::{KNOWN, known};
 
@@ -390,7 +390,7 @@ aliases = { stable = "https://charts.helm.sh/stable" }"#,
                 "version = 1\n[plugins.gitlab-ci]\ngitlab-hosts = [\"a b\"]\n",
                 Exact("invalid GitLab host `a b` in plugins.gitlab-ci.gitlab-hosts"),
             ),
-            // Review-2 L6: `^[A-Za-z0-9.-]+(:[0-9]+)?$`.
+            // Review-2 L6 (`pin_core::run::valid_gitlab_host`).
             (
                 "version = 1\n[plugins.gitlab-ci]\ngitlab-hosts = [\"ok.example\", \"a@b\"]\n",
                 Exact("invalid GitLab host `a@b` in plugins.gitlab-ci.gitlab-hosts"),

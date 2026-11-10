@@ -94,6 +94,9 @@ async fn run_mode(
     }
     let root = walk::git_root(&p.cwd).unwrap_or_else(|| p.cwd.clone());
     let eff = config::load(p, &root, cli)?;
+    // Before any work: an invalid `CI_SERVER_HOST` is fatal (M5d final M1).
+    let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(&eff))
+        .map_err(Fatal)?;
     if mode == Mode::Plugins {
         out.stdout = plugins_listing(&eff)?;
         return Ok(());
@@ -113,7 +116,6 @@ async fn run_mode(
         out.stderr.push_str(&format!("pin-toolkit: warning: {w}\n"));
     }
     let routed = walk::route(found.files, &claims, forced)?;
-    let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(&eff));
     tune(&mut renv);
     let ctx = Ctx::new(eff.update.clone(), now_unix(), renv);
     let routes: Vec<Route<'_>> = routed

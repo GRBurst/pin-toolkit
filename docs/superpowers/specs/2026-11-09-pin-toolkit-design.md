@@ -629,9 +629,13 @@ ci_job_token, ci_server_host }`; primary = `--gitlab-host` > `PIN_TOOLKIT_GITLAB
 `gitlab.com` (T-D12); resolve set = {primary} ∪ `plugins.gitlab-ci.gitlab-hosts` (`CI_SERVER_HOST` is not
 added implicitly); `GitlabEnv::auth_for(host)`: `PRIVATE-TOKEN` (`GITLAB_TOKEN`) only to the primary,
 else `JOB-TOKEN` (`CI_JOB_TOKEN`) only to `CI_SERVER_HOST`, else anonymous. Token-holding types have a
-redacting `Debug` (T-D29). Host values (`--gitlab-host`, `PIN_TOOLKIT_GITLAB_HOST`, `gitlab-hosts`) must
-match `^[A-Za-z0-9.-]+(:[0-9]+)?$`, else exit 2 (review-2 L6: `gitlab.com@evil.example` would send the
-token to `evil.example`). **Deferred to M5e' (T-D30, main, PR-M6 option b):** the `unresolved (<host>:
+redacting `Debug` (T-D29). Host values (`--gitlab-host`, `PIN_TOOLKIT_GITLAB_HOST`, `gitlab-hosts`, and a
+non-empty `CI_SERVER_HOST`) must satisfy `pin_core::run::valid_gitlab_host`: `name[:port]`, `name` =
+dot-separated labels of `[A-Za-z0-9-]` (no empty label, none starting or ending with `-`), port 1..=65535;
+else exit 2 before any request (review-2 L6: `gitlab.com@evil.example` would send the token to
+`evil.example`). `CI_SERVER_HOST` is checked by `GitlabEnv::from_vars` (it returns
+``Err("CI_SERVER_HOST: invalid GitLab host `{h}`")``; the toolkit makes it a fatal error, never a fallback
+to `gitlab.com`), because it is the default primary and the job token's host (M5d final review M1, N5). **Deferred to M5e' (T-D30, main, PR-M6 option b):** the `unresolved (<host>:
 not trusted for credentials — bind it in …)` message. In M5d a non-primary `gitlab-hosts` host that is
 not `CI_SERVER_HOST` resolves anonymously, and a failure keeps the plain `unresolved (…)` reason. Wiremock
 tests: pin-core `gitlab_hosts.rs`, pin-toolkit `credentials.rs`.

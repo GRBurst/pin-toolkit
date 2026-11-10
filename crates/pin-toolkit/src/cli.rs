@@ -6,9 +6,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use pin_core::run::valid_gitlab_host;
 
 use crate::config::repo::{unknown_kind, unknown_plugin};
-use crate::config::{Fatal, Layer, id_list, valid_gitlab_host};
+use crate::config::{Fatal, Layer, id_list};
 use crate::known::{ALIASES, KNOWN, known};
 
 // No `args_conflicts_with_subcommands` (PR-H1): with it, clap stops
@@ -357,7 +358,7 @@ mod tests {
 
         for h in [
             "https://gitlab.example.com",
-            // Review-2 L6: `^[A-Za-z0-9.-]+(:[0-9]+)?$`.
+            // Review-2 L6 (`pin_core::run::valid_gitlab_host`).
             "gitlab.com@evil.example",
             "gitlab.com\\x",
             "h#x",

@@ -17,20 +17,6 @@ pub mod repo;
 /// The default `--concurrency`.
 pub const DEFAULT_CONCURRENCY: usize = 8;
 
-/// A GitLab host name as configured (`gitlab-hosts` entries and the
-/// primary host): `^[A-Za-z0-9.-]+(:[0-9]+)?$`, so no scheme, path,
-/// userinfo (`gitlab.com@evil.example`), query or fragment (review-2 L6).
-/// The API base is `https://{host}/api/v4`.
-pub fn valid_gitlab_host(h: &str) -> bool {
-    let (name, port) = h.split_once(':').unwrap_or((h, "1"));
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        && !port.is_empty()
-        && port.chars().all(|c| c.is_ascii_digit())
-}
-
 /// A plugin id list (`--only`/`--skip`, `PIN_TOOLKIT_ONLY`/`_SKIP`): items
 /// trimmed, empty items dropped; nothing left = unset (T-D7, review-2 L1,
 /// N3). Ids are checked where they are used (enablement).

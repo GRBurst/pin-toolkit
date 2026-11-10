@@ -147,3 +147,52 @@ async fn ci_server_host_is_default_primary() {
     // the include goes there, the component to B, anonymously.
     pin("cred-default", B, B, &[], &vars, &a, &b).await;
 }
+
+/// M5d final M1: a `CI_SERVER_HOST` with userinfo would be the default
+/// primary and the job token's host, and the request would go to the
+/// userinfo-stripped host with both tokens. It is fatal (exit 2, stdout
+/// empty) before any request, with or without an explicit primary; no
+/// fallback to `gitlab.com`. The bad host's API base is a mock, so a
+/// request would be seen.
+#[tokio::test]
+async fn invalid_ci_server_host_is_fatal_before_any_request() {
+    const BAD: &str = "gitlab.com@127.0.0.1:9";
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    for server in [&a, &b] {
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(server)
+            .await;
+    }
+    let root = repo("cred-bad-server-host");
+    write(
+        &root,
+        ".gitlab-ci.yml",
+        "include:\n  - project: g/p\n    ref: main\n",
+    );
+    let vars = [
+        ("CI_SERVER_HOST", BAD),
+        ("CI_JOB_TOKEN", "jt"),
+        ("GITLAB_TOKEN", "pt"),
+    ];
+    for extra in [&[][..], &["--gitlab-host", B][..]] {
+        let argv: Vec<&str> = std::iter::once("pin-toolkit")
+            .chain(extra.iter().copied())
+            .collect();
+        let bases = BTreeMap::from([(BAD.to_string(), a.uri()), (B.to_string(), b.uri())]);
+        let out = run_tuned(&root, &argv, &vars, |env| env.base_urls.gitlab = bases).await;
+        assert_eq!(out.code, 2, "{argv:?} stderr: {}", out.stderr);
+        assert_eq!(out.stdout, "", "{argv:?}");
+        assert_eq!(
+            out.stderr,
+            format!("pin-toolkit: CI_SERVER_HOST: invalid GitLab host `{BAD}`\n"),
+            "{argv:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(root.join(".gitlab-ci.yml")).unwrap(),
+        "include:\n  - project: g/p\n    ref: main\n",
+        "file untouched"
+    );
+}

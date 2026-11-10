@@ -495,10 +495,14 @@ names; indented (job-level) `component:` / `include:`.
   Binding credentials to further hosts arrives with the global config
   (M5e').
 - A host value (`--gitlab-host`, `PIN_TOOLKIT_GITLAB_HOST`, `gitlab-hosts`
-  entries) must be a plain host with an optional port,
-  `^[A-Za-z0-9.-]+(:[0-9]+)?$`; anything else (a URL, `user@host`, a path)
-  exits `2`: ``--gitlab-host: invalid GitLab host `x` ``,
-  ``invalid GitLab host `x` in plugins.gitlab-ci.gitlab-hosts``.
+  entries, and a non-empty `CI_SERVER_HOST`) must be a plain host with an
+  optional port: dot-separated labels of letters, digits and `-` (no empty
+  label, no label starting or ending with `-`), then optionally `:port`
+  with port 1–65535. Anything else (a URL, `user@host`, a path) exits `2`
+  before any request: ``--gitlab-host: invalid GitLab host `x` ``,
+  ``invalid GitLab host `x` in plugins.gitlab-ci.gitlab-hosts``,
+  ``CI_SERVER_HOST: invalid GitLab host `x` `` (no fallback to
+  `gitlab.com`).
 
 Resolution failures are reported per reference and never abort the run —
 other targets in the file are still written:

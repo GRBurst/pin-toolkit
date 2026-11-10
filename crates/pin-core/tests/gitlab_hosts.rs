@@ -51,7 +51,7 @@ fn ctx(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
     let hosts: BTreeSet<String> = hosts.iter().map(|h| h.to_string()).collect();
-    let mut env = ResolverEnv::from_vars(&vars, Some(primary.to_string()), hosts);
+    let mut env = ResolverEnv::from_vars(&vars, Some(primary.to_string()), hosts).unwrap();
     env.base_urls.gitlab = BTreeMap::from([(A.to_string(), a.uri()), (B.to_string(), b.uri())]);
     Ctx::new(Default::default(), 0, env)
 }

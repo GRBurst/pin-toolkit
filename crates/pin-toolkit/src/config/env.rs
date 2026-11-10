@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use pin_core::run::AgePolicy;
+use pin_core::run::{AgePolicy, valid_gitlab_host};
 
-use super::{Fatal, Layer, id_list, valid_gitlab_host};
+use super::{Fatal, Layer, id_list};
 
 /// Prefix of the toolkit's variables.
 pub const PREFIX: &str = "PIN_TOOLKIT_";
@@ -301,7 +301,7 @@ mod tests {
                 "a b",
                 format!("{GITLAB_HOST}: invalid GitLab host `a b`"),
             ),
-            // Review-2 L6: `^[A-Za-z0-9.-]+(:[0-9]+)?$`.
+            // Review-2 L6 (`pin_core::run::valid_gitlab_host`).
             (
                 GITLAB_HOST,
                 "gitlab.com@evil.example",
