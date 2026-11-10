@@ -160,7 +160,11 @@ M3 resolves and pins, in the same run as image pinning:
   (`<<:`) and `!reference [...]` are not targets. CRLF files, children of
   anchored keys (`.base: &base`) and a first key after a BOM are
   discovered (R7, R8, R9; before: missed or
-  `skipped (unparseable reference)`).
+  `skipped (unparseable reference)`). Also fixed (R10): flow
+  `image: { name: x }` is pinned (before: the whole flow text was an
+  unparseable target), `services: [a:1, {name: b:1, alias: x}]` and
+  multi-line flow includes are found, and a value followed by
+  `\t# comment` no longer includes the comment.
 
   A line that already has a trailing comment is left as-is (no second
   comment is added). Edits are byte-exact and idempotent — a second run
@@ -192,6 +196,11 @@ Skipped targets are left untouched and keep the exit code `0`:
   path is never rewritten: `skipped (block scalar)`.
 - **multi-line scalars** — a quoted or plain value continued on the next
   line is never rewritten: `skipped (multi-line scalar)`.
+- **no safe place for a comment** — the `# ref` comment of a pinned
+  component or include would land inside another multi-line scalar of the
+  same flow mapping (a flow include whose `file:` value continues on the
+  next line): nothing is written for it,
+  `skipped (no safe place for comment)`.
 
 Never targets at all (not even reported): include mappings with
 `project` but no `ref` (bare `{project}`); include items that are plain
@@ -304,7 +313,8 @@ for that file (`<path>:<line>: invalid YAML: …`); nothing in it is changed.
 `pin-ci` stops at the first such file (per-file continuation comes with
 M5d), prints the rows of the files before it, and exits `1`. A tab as
 separator after `key:` (`image:<TAB>alpine`) is valid YAML and is read as
-such.
+such. A file with bare-CR (`\r`-only) line endings is an error too
+(`bare CR line endings are not supported`).
 
 ## Tests
 
