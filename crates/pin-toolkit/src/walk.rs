@@ -761,9 +761,23 @@ mod tests {
         }
     }
 
+    /// Restores a directory's mode `0o755` on drop, also when an assertion
+    /// panics: a leftover `000` directory breaks the next run (M5d final N4).
+    #[cfg(unix)]
+    struct Restore(PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
     /// Review-2 L3: an unreadable directory is a per-file error under its
     /// display path; an invalid `.gitignore` line only a warning (its valid
-    /// lines still apply); the readable files are still walked.
+    /// lines still apply); the readable files are still walked. Skipped
+    /// where permissions do not apply (root).
     #[cfg(unix)]
     #[test]
     fn walk_errors_are_reported() {
@@ -779,23 +793,23 @@ mod tests {
         );
         std::fs::write(root.join(".gitignore"), "ignored/\n[z-a]\n").unwrap();
         let locked = root.join("ci/locked");
-        let mode = |m: u32| std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(m));
-        mode(0o000).unwrap();
-        let readable = std::fs::read_dir(&locked).is_ok(); // e.g. running as root
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let _restore = Restore(locked.clone());
+        if std::fs::read_dir(&locked).is_ok() {
+            eprintln!("skipped: permissions do not apply (running as root?)");
+            return;
+        }
         let found = inputs(&root.join("ci"), &root, &[]);
-        mode(0o755).unwrap();
         let displays: Vec<_> = found.files.iter().map(|i| i.display.as_str()).collect();
         assert_eq!(displays, ["../.gitignore", "../.gitlab-ci.yml"]);
-        if !readable {
-            assert_eq!(
-                found.errors,
-                [ErrorEntry {
-                    file: "locked".into(),
-                    line: None,
-                    message: "Permission denied (os error 13)".into(),
-                }]
-            );
-        }
+        assert_eq!(
+            found.errors,
+            [ErrorEntry {
+                file: "locked".into(),
+                line: None,
+                message: "Permission denied (os error 13)".into(),
+            }]
+        );
         assert_eq!(found.warnings.len(), 1, "{:?}", found.warnings);
         assert!(
             found.warnings[0].starts_with("../.gitignore:2: ")

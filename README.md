@@ -170,8 +170,9 @@ JSON (`--json`, stdout), schema version 1:
 }
 ```
 
-- A row has `reason` only when it has one; `new` is `null` when nothing is
-  written. An error has `line` only when known.
+- A row has `reason` only when it has one; `new` is `null` when nothing
+  would be written (`--dry-run`/`--check` rows carry `new`). An error has
+  `line` only when known.
 - `plugins` has one entry per **enabled** plugin, even if it found no file
   (zero summary, no errors). The per-plugin summaries add up to `summary`.
 - `errors` are sorted by file, then line, whatever their origin (read,

@@ -79,6 +79,13 @@ async fn usage_error_exits_2() {
         "stdout: {}",
         out.stdout
     );
+    // M5d final N3: no Helm in the about text until the helm plugin (M7).
+    assert!(
+        out.stdout.starts_with("Pin CI references to immutable ids")
+            && !out.stdout.contains("Helm"),
+        "stdout: {}",
+        out.stdout
+    );
     assert_eq!(out.stderr, "");
 
     let out = run_in(&root, &["pin-toolkit", "--version"], &[]).await;

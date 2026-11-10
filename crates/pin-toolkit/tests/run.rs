@@ -7,6 +7,8 @@ mod common;
 mod support;
 
 use common::{Fakes, fake_hex, start_fakes};
+#[cfg(unix)]
+use support::lock;
 use support::{fakes, repo, run_tuned, write};
 
 /// The resolvers of a run, pointed at `f`.
@@ -92,7 +94,6 @@ async fn explicit_dir_outside_the_git_root() {
 #[cfg(unix)]
 #[tokio::test]
 async fn walk_errors_exit_2_ignore_file_lines_warn() {
-    use std::os::unix::fs::PermissionsExt;
     let f = start_fakes().await;
     let root = repo("run-walk-errors");
     write(&root, ".gitlab-ci.yml", "image: alpine:3.20\n");
@@ -107,13 +108,9 @@ async fn walk_errors_exit_2_ignore_file_lines_warn() {
     );
 
     write(&root, "locked/x.gitlab-ci.yml", "image: alpine:3.20\n");
-    let locked = root.join("locked");
-    let mode = |m: u32| std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(m));
-    mode(0o000).unwrap();
-    if std::fs::read_dir(&locked).is_ok() {
-        mode(0o755).unwrap();
-        return; // permissions do not apply (e.g. running as root)
-    }
+    let Some(_restore) = lock(&root.join("locked")) else {
+        return;
+    };
     for argv in [
         &["pin-toolkit", "--dry-run"][..],
         &["pin-toolkit", "gitlab-ci", "--dry-run"],
@@ -133,7 +130,6 @@ async fn walk_errors_exit_2_ignore_file_lines_warn() {
             out.stdout
         );
     }
-    mode(0o755).unwrap();
 }
 
 #[tokio::test]

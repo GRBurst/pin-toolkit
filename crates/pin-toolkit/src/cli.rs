@@ -16,7 +16,7 @@ use crate::known::{ALIASES, KNOWN, known};
 // recognising a subcommand after any global flag. Without it a subcommand
 // is recognised only before the first path: `[a.yml, gitlab-ci, b.yml]`
 // are three paths.
-/// Pin CI and Helm references to immutable ids.
+/// Pin CI references to immutable ids.
 #[derive(Debug, Parser)]
 #[command(name = "pin-toolkit", version)]
 pub struct Cli {

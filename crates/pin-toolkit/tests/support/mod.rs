@@ -77,3 +77,31 @@ pub fn fakes(registry: String, gitlab: String) -> impl FnOnce(&mut ResolverEnv) 
             .insert("gitlab.com".to_string(), gitlab);
     }
 }
+
+/// A directory made unreadable (`000`) until dropped, which restores
+/// `0o755` (also when an assertion panics: a leftover `000` directory
+/// breaks the next run; M5d final N4).
+#[cfg(unix)]
+pub struct Locked(PathBuf);
+
+#[cfg(unix)]
+impl Drop for Locked {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// Make `dir` unreadable; `None` (after a skip note on stderr, mode
+/// restored) where permissions do not apply, e.g. running as root.
+#[cfg(unix)]
+pub fn lock(dir: &Path) -> Option<Locked> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let locked = Locked(dir.to_path_buf());
+    if std::fs::read_dir(dir).is_ok() {
+        eprintln!("skipped: permissions do not apply (running as root?)");
+        return None;
+    }
+    Some(locked)
+}

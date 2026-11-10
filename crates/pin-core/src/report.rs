@@ -40,7 +40,8 @@ pub struct Row {
     pub plugin: &'static str,
     /// Reference kind within the plugin.
     pub kind: &'static str,
-    /// As passed on the CLI.
+    /// As displayed: as passed for an explicit file, else relative to the
+    /// cwd.
     pub file: String,
     /// 1-based.
     pub line: usize,
