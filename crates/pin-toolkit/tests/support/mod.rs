@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use pin_core::run::ResolverEnv;
 use pin_toolkit::{Output, Process, execute};
 
 /// A fresh scratch repo `.tmp/{name}-{pid}/` with an empty `.git/`.
@@ -41,13 +42,38 @@ pub fn env(vars: &[(&str, &str)]) -> BTreeMap<String, String> {
 
 /// `execute(argv)` in `cwd` with the env map `vars`, resolvers untouched.
 pub async fn run_in(cwd: &Path, argv: &[&str], vars: &[(&str, &str)]) -> Output {
+    run_tuned(cwd, argv, vars, |_| {}).await
+}
+
+/// [`run_in`] with `tune` applied to the resolver env (fakes).
+pub async fn run_tuned(
+    cwd: &Path,
+    argv: &[&str],
+    vars: &[(&str, &str)],
+    tune: impl FnOnce(&mut ResolverEnv),
+) -> Output {
     execute(
         Process {
             args: args(argv),
             env: env(vars),
             cwd: cwd.to_path_buf(),
         },
-        |_| {},
+        tune,
     )
     .await
+}
+
+/// Resolvers pointed at fakes: registry hosts `docker.io` and `ghcr.io` →
+/// `registry`, GitLab `gitlab.com` → `gitlab` (API base).
+pub fn fakes(registry: String, gitlab: String) -> impl FnOnce(&mut ResolverEnv) {
+    move |env| {
+        for host in ["docker.io", "ghcr.io"] {
+            env.base_urls
+                .registry
+                .insert(host.to_string(), registry.clone());
+        }
+        env.base_urls
+            .gitlab
+            .insert("gitlab.com".to_string(), gitlab);
+    }
 }

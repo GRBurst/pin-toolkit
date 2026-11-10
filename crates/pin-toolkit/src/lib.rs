@@ -9,15 +9,18 @@ pub mod enable;
 pub mod known;
 pub mod walk;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use pin_core::run::ResolverEnv;
+use globset::GlobSet;
+use pin_core::plugin::{DynPlugin, Selection};
+use pin_core::report::{ErrorEntry, Report};
+use pin_core::run::{Ctx, ResolverEnv, Route, RunOptions, now_unix, run};
 
 use crate::cli::{Cli, Mode};
 use crate::config::{Effective, Fatal, env};
-use crate::enable::{enable, selection};
+use crate::enable::{Plan, enable, selection};
 use crate::known::{KNOWN, compiled_plugin};
 
 /// What one invocation sees of the process: read once, at the edge.
@@ -53,7 +56,6 @@ pub struct Output {
 /// One invocation. `tune` adjusts the resolver env before the run (tests
 /// point resolvers at fakes).
 pub async fn execute(p: Process, tune: impl FnOnce(&mut ResolverEnv)) -> Output {
-    let _ = tune; // wired into the run in T21
     let args = cli::dispatch_argv0(p.args.clone());
     let (cli, mode) = match cli::parse(&args) {
         Ok(parsed) => parsed,
@@ -65,7 +67,7 @@ pub async fn execute(p: Process, tune: impl FnOnce(&mut ResolverEnv)) -> Output 
             "pin-toolkit: ignoring unknown environment variable {var}\n"
         ));
     }
-    if let Err(fatal) = run_mode(&p, &cli, mode, &mut out) {
+    if let Err(fatal) = run_mode(&p, &cli, mode, &mut out, tune).await {
         out.stdout.clear();
         out.stderr.push_str(&format!("{fatal}\n"));
         out.code = 2;
@@ -73,8 +75,17 @@ pub async fn execute(p: Process, tune: impl FnOnce(&mut ResolverEnv)) -> Output 
     out
 }
 
-/// Everything after parsing; a `Fatal` leaves stdout empty (T-D22).
-fn run_mode(p: &Process, cli: &Cli, mode: Mode, out: &mut Output) -> Result<(), Fatal> {
+/// Everything after parsing: config, enablement, routing, then one pass
+/// over the routes (spec §6.3) and its report: stdout the human or JSON
+/// report, stderr one line per file error (T-D21), the exit code from the
+/// report. A `Fatal` leaves stdout empty (T-D22).
+async fn run_mode(
+    p: &Process,
+    cli: &Cli,
+    mode: Mode,
+    out: &mut Output,
+    tune: impl FnOnce(&mut ResolverEnv),
+) -> Result<(), Fatal> {
     // CLI values only: env ONLY/SKIP are ignored in this mode (T-D28).
     if matches!(mode, Mode::Plugin(_)) && (cli.opts.only.is_some() || cli.opts.skip.is_some()) {
         return Err(Fatal(
@@ -91,7 +102,91 @@ fn run_mode(p: &Process, cli: &Cli, mode: Mode, out: &mut Output) -> Result<(), 
     for n in &plan.notices {
         out.stderr.push_str(&format!("pin-toolkit: {n}\n"));
     }
+    let claims: Vec<(&'static str, &GlobSet)> =
+        plan.plugins.iter().map(|(p, _, g)| (p.id(), g)).collect();
+    let forced = match mode {
+        Mode::Plugin(id) => Some(id),
+        Mode::All | Mode::Plugins => None,
+    };
+    let routed = walk::route(walk::inputs(&p.cwd, &root, cli.paths()), &claims, forced)?;
+    let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(&eff));
+    tune(&mut renv);
+    let ctx = Ctx::new(eff.update.clone(), now_unix(), renv);
+    let routes: Vec<Route<'_>> = routed
+        .routes
+        .into_iter()
+        .map(|(input, id)| {
+            let (plugin, sel) = plugin_of(&plan, id);
+            Route {
+                plugin,
+                sel,
+                path: input.path,
+                display: input.display,
+            }
+        })
+        .collect();
+    let options = RunOptions {
+        dry_run: eff.dry_run,
+        check: eff.check,
+        concurrency: eff.concurrency,
+    };
+    let mut report = run(&routes, &ctx, options).await;
+    record_conflicts(&mut report, routed.conflicts);
+    out.stdout = if eff.json {
+        report.to_json() + "\n"
+    } else {
+        report.render_human()
+    };
+    out.stderr.push_str(&error_lines(&report));
+    out.code = report.exit_code(eff.check);
     Ok(())
+}
+
+/// Walked files claimed by 2+ plugins become per-file errors under their
+/// first claimant (PR-L11): exit 2, the other files ran.
+fn record_conflicts(report: &mut Report, conflicts: Vec<(&'static str, ErrorEntry)>) {
+    for (id, e) in conflicts {
+        report
+            .plugins
+            .entry(id.to_string())
+            .or_default()
+            .errors
+            .push(e);
+    }
+}
+
+/// The GitLab hosts to resolve besides the primary
+/// (`plugins.gitlab-ci.gitlab-hosts`).
+fn gitlab_hosts(eff: &Effective) -> BTreeSet<String> {
+    eff.plugins
+        .get("gitlab-ci")
+        .and_then(|pl| pl.gitlab_hosts.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+/// The enabled plugin `id` (routes name only enabled plugins) and its
+/// selection.
+fn plugin_of<'a>(plan: &'a Plan, id: &str) -> (&'static dyn DynPlugin, &'a Selection) {
+    plan.plugins
+        .iter()
+        .find(|(p, ..)| p.id() == id)
+        .map(|(p, sel, _)| (*p, sel))
+        .expect("routes name enabled plugins")
+}
+
+/// One stderr line per file error (T-D21): `pin-toolkit: {file}[:{line}]:
+/// {message}`, plugins in report order.
+fn error_lines(report: &Report) -> String {
+    let mut out = String::new();
+    for e in report.plugins.values().flat_map(|p| &p.errors) {
+        match e.line {
+            Some(line) => out.push_str(&format!("pin-toolkit: {}:{line}: {}\n", e.file, e.message)),
+            None => out.push_str(&format!("pin-toolkit: {}: {}\n", e.file, e.message)),
+        }
+    }
+    out
 }
 
 /// A clap outcome that is not a parsed command line: help and version on
@@ -154,5 +249,29 @@ pub fn main_with(p: Process) -> Output {
             code: 2,
             ..Output::default()
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(file: &str, line: Option<usize>, message: &str) -> ErrorEntry {
+        ErrorEntry {
+            file: file.into(),
+            line,
+            message: message.into(),
+        }
+    }
+
+    #[test]
+    fn walked_conflicts_are_file_errors() {
+        let mut report = Report::new(vec![]);
+        assert_eq!(report.exit_code(false), 0);
+        let msg = "x.yml is claimed by p1 and p2 (narrow their `files` globs, or choose one: pin-toolkit <plugin> x.yml)";
+        record_conflicts(&mut report, vec![("p1", entry("x.yml", None, msg))]);
+        assert_eq!(report.exit_code(false), 2, "PR-L11: exit 2");
+        assert_eq!(report.plugins["p1"].errors, [entry("x.yml", None, msg)]);
+        assert_eq!(error_lines(&report), format!("pin-toolkit: x.yml: {msg}\n"));
     }
 }

@@ -1,5 +1,6 @@
-//! M5a: snapshot baseline. For every fixture and mode, three insta
-//! snapshots: the human report, the JSON report and the edited file.
+//! M5a: snapshot baseline. For every fixture and mode, the edited file as
+//! an insta snapshot. The human and JSON report snapshots moved to
+//! pin-toolkit (`crates/pin-toolkit/tests/fixture_snapshots.rs`, M5d T-D24).
 //!
 //! Registries and GitLab are fakes (`common`): digests/SHAs derive from the
 //! request, so a new fixture needs no new mock. Accept with
@@ -14,10 +15,8 @@ async fn fixture_snapshots() {
     for fx in fixtures() {
         for m in modes(&fx.name) {
             let p = scratch_copy(&fx, m, "snap");
-            let r = normalized(pin_once(&fakes, &p, m).await, &fx.name);
+            pin_once(&fakes, &p, m).await;
             let id = format!("{}__{}", fx.stem, m.tag());
-            insta::assert_snapshot!(format!("{id}__human"), redact(&r.render_human()));
-            insta::assert_snapshot!(format!("{id}__json"), redact(&r.to_json()));
             let edited = std::fs::read_to_string(&p).unwrap();
             insta::assert_snapshot!(format!("{id}__file"), visible(&edited));
             std::fs::remove_dir_all(p.parent().unwrap()).unwrap();

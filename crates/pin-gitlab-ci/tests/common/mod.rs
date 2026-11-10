@@ -168,10 +168,17 @@ pub struct Fixture {
     pub text: String,
 }
 
-/// Every `tests/fixtures/*.yml`, sorted by file name.
+/// The pin-gitlab-ci fixture directory, reachable from every crate that
+/// mounts this harness (pin-toolkit via `#[path]`).
+pub const FIXTURES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../pin-gitlab-ci/tests/fixtures"
+);
+
+/// Every `pin-gitlab-ci/tests/fixtures/*.yml`, sorted by file name.
 pub fn fixtures() -> Vec<Fixture> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
+    let dir = Path::new(FIXTURES);
+    let mut names: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .filter(|n| n.ends_with(".yml"))
