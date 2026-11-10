@@ -1,0 +1,8 @@
+---
+source: crates/pin-gitlab-ci/tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+﻿default:
+  image: alpine:3.20
+job:
+  image: "node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08"  # ü

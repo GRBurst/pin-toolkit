@@ -1,0 +1,12 @@
+---
+source: crates/pin-gitlab-ci/tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+# Grüße 🚀 — pipeline
+variables:
+  NOTE: "naïve café ☕"
+image: alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313  # ✓
+job:
+  image: 'node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08'  # ö
+  services: ["ü-sidecar", docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632]
+include: { project: g/ü, ref: b0b12e38e1088b4742bc0ebaa86c5c40b9ba8e7a }  # main

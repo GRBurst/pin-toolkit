@@ -1,0 +1,4 @@
+﻿default:
+  image: alpine:3.20
+job:
+  image: "node:20"  # ü

@@ -1,0 +1,9 @@
+image: "alpine:3.20" # double-quoted, comment
+job:
+  image: 'node:20'   # single-quoted, comment
+  services: [ "docker:24" , 'redis:7' ]  # flow: space before , and ]
+twice:
+  services: [docker:24, docker:24]
+include: { project: 'g/p', ref: "main" }  # flow include, quoted
+include: { project: g/q, ref }
+include: { ref, project: g/q }

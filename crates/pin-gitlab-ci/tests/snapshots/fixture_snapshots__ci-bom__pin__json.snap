@@ -1,0 +1,23 @@
+---
+source: crates/pin-gitlab-ci/tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-bom.yml",
+      "line": 4,
+      "reference": "node:20",
+      "old": "\"node:20\"",
+      "new": "\"node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08\"",
+      "status": "pinned"
+    }
+  ],
+  "summary": {
+    "pinned": 1,
+    "ok": 0,
+    "updated": 0,
+    "skipped": 0,
+    "unresolved": 0
+  }
+}

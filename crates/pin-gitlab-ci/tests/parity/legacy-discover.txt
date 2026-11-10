@@ -1,0 +1,98 @@
+# legacy discover() output, recorded in M5c-y Y1 before its deletion; never regenerate
+## ci-anchors.yml bytes=143 hash=52f2f8321e12641f
+ci-anchors.yml:1	image	7..23	"&img alpine:3.20"	value="&img alpine:3.20"
+ci-anchors.yml:6	image	85..89	"*img"	value="*img"
+ci-anchors.yml:9	image	115..129	"&redis redis:7"	value="&redis redis:7"
+ci-anchors.yml:10	image	136..142	"*redis"	value="*redis"
+## ci-bom.yml bytes=63 hash=d1ffb49a4ec38e2d
+ci-bom.yml:4	image	47..56	"\"node:20\""	value="node:20"
+## ci-components.yml bytes=292 hash=69056f28e5369250
+ci-components.yml:1	component	11..36	"gitlab.com/g/p/name@1.0.0"	value="gitlab.com/g/p/name@1.0.0" parts=gitlab.com|g/p|name|1.0.0
+ci-components.yml:4	include	72..76	"main"	value="main" project="g/p" flow=false
+ci-components.yml:6	include	103..109	"v1.2.3"	value="v1.2.3" project="g/p" flow=false
+ci-components.yml:8	include	142..146	"main"	value="main" project="g/missing" flow=false
+ci-components.yml:10	include	173..192	"$CI_COMMIT_REF_NAME"	value="$CI_COMMIT_REF_NAME" project="g/p" flow=false
+ci-components.yml:12	include	219..259	"e3262fdd0914fa823210cdb79a8c421e2cef79d8"	value="e3262fdd0914fa823210cdb79a8c421e2cef79d8" project="g/p" flow=false
+ci-components.yml:14	include	286..292	"v2.0.0"	value="v2.0.0" project="g/p" flow=false
+## ci-e2e.yml bytes=117 hash=bf124ad143e7fdf8
+ci-e2e.yml:1	image	7..18	"alpine:3.20"	value="alpine:3.20"
+ci-e2e.yml:3	image	38..56	"ghcr.io/org/img:v1"	value="ghcr.io/org/img:v1"
+ci-e2e.yml:5	image	79..90	"mystery:1.0"	value="mystery:1.0"
+ci-e2e.yml:7	image	105..116	"alpine:3.20"	value="alpine:3.20"
+## ci-images-edge.yml bytes=234 hash=b011125bc43201f6
+ci-images-edge.yml:1	image	7..13	"alpine"	value="alpine"
+ci-images-edge.yml:3	image	30..113	"alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000"	value="alpine:3.20@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+ci-images-edge.yml:5	image	134..169	"${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}"	value="${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+ci-images-edge.yml:7	image	187..196	"'redis:7'"	value="redis:7"
+ci-images-edge.yml:8	image	210..221	"\"docker:24\""	value="docker:24"
+ci-images-edge.yml:8	image	223..232	"'redis:7'"	value="redis:7"
+## ci-include.yml bytes=803 hash=b87abaaaf62ab860
+ci-include.yml:1	include	45..49	"main"	value="main" project="gitlab-org/example" flow=true
+ci-include.yml:4	include	215..221	"v1.2.3"	value="v1.2.3" project="gitlab-org/example2" flow=false
+ci-include.yml:11	include	622..629	"develop"	value="develop" project="gitlab-org/single" flow=false
+## ci-multidoc.yml bytes=143 hash=50828aba2d0c2e0f
+ci-multidoc.yml:6	image	58..75	"$[[ inputs.tag ]]"	value="$[[ inputs.tag ]]"
+ci-multidoc.yml:8	image	90..101	"alpine:3.20"	value="alpine:3.20"
+ci-multidoc.yml:13	image	135..142	"redis:7"	value="redis:7"
+## ci-pipeline.yml bytes=2436 hash=287e98096b879cd5
+ci-pipeline.yml:23	image	540..549	"docker:24"	value="docker:24"
+ci-pipeline.yml:25	image	604..615	"docker:dind"	value="docker:dind"
+ci-pipeline.yml:39	image	1015..1026	"php:8.2-cli"	value="php:8.2-cli"
+ci-pipeline.yml:47	image	1197..1208	"php:8.2-cli"	value="php:8.2-cli"
+ci-pipeline.yml:49	image	1282..1291	"mysql:8.0"	value="mysql:8.0"
+ci-pipeline.yml:54	image	1407..1414	"redis:7"	value="redis:7"
+ci-pipeline.yml:69	image	1705..1711	"alpine"	value="alpine"
+ci-pipeline.yml:77	image	1960..1995	"${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}"	value="${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+ci-pipeline.yml:79	image	2020..2031	"docker:dind"	value="docker:dind"
+ci-pipeline.yml:90	image	2319..2348	"ghcr.io/docker/buildx:v0.14.0"	value="ghcr.io/docker/buildx:v0.14.0"
+## ci-quoted-comment.yml bytes=336 hash=c02dcebfe757bb11
+ci-quoted-comment.yml:1	image	7..20	"\"alpine:3.20\""	value="alpine:3.20"
+ci-quoted-comment.yml:3	image	60..69	"'node:20'"	value="node:20"
+ci-quoted-comment.yml:4	image	111..122	"\"docker:24\""	value="docker:24"
+ci-quoted-comment.yml:4	image	125..134	"'redis:7'"	value="redis:7"
+ci-quoted-comment.yml:6	image	187..196	"docker:24"	value="docker:24"
+ci-quoted-comment.yml:6	image	198..207	"docker:24"	value="docker:24"
+ci-quoted-comment.yml:7	include	241..247	"\"main\""	value="main" project="g/p" flow=true
+## ci-r1-flow-include.yml bytes=67 hash=1c73256017a5282c
+ci-r1-flow-include.yml:1	include	31..35	"main"	value="main" project="g/a" flow=true
+ci-r1-flow-include.yml:1	include	60..63	"dev"	value="dev" project="g/b" flow=true
+## ci-r2-crlf.yml bytes=192 hash=a90dc12d3db6152c
+ci-r2-crlf.yml:1	component	11..36	"gitlab.com/g/p/name@1.0.0"	value="gitlab.com/g/p/name@1.0.0" parts=gitlab.com|g/p|name|1.0.0
+ci-r2-crlf.yml:2	image	45..56	"alpine:3.20"	value="alpine:3.20"
+ci-r2-crlf.yml:3	include	88..92	"main"	value="main" project="g/p" flow=true
+## ci-rich.yml bytes=317 hash=f09426f0f65c2aa3
+ci-rich.yml:3	image	33..44	"alpine:3.20"	value="alpine:3.20"
+ci-rich.yml:4	image	79..88	"docker:24"	value="docker:24"
+ci-rich.yml:4	image	90..97	"redis:7"	value="redis:7"
+ci-rich.yml:8	image	126..135	"\"node:20\""	value="node:20"
+ci-rich.yml:11	image	175..184	"docker:24"	value="docker:24"
+ci-rich.yml:12	image	197..204	"redis:7"	value="redis:7"
+ci-rich.yml:17	include	271..277	"v1.0.0"	value="v1.0.0" project="group/proj" flow=false
+## ci-simple.yml bytes=141 hash=8f39fe79038f55e6
+ci-simple.yml:2	image	22..33	"alpine:3.20"	value="alpine:3.20"
+ci-simple.yml:5	image	53..65	"ubuntu:24.04"	value="ubuntu:24.04"
+ci-simple.yml:8	image	83..92	"\"node:20\""	value="node:20"
+ci-simple.yml:9	image	105..112	"redis:7"	value="redis:7"
+ci-simple.yml:12	image	129..140	"alpine:3.20"	value="alpine:3.20"
+## ci-tags.yml bytes=164 hash=86b75c1d8e3559af
+ci-tags.yml:2	image	16..27	"alpine:3.20"	value="alpine:3.20"
+ci-tags.yml:3	image	41..50	"docker:24"	value="docker:24"
+ci-tags.yml:5	image	66..91	"!reference [.base, image]"	value="!reference [.base, image]"
+ci-tags.yml:6	image	104..132	"!reference [.base, services]"	value="!reference [.base, services]"
+ci-tags.yml:8	image	150..163	"!!str node:20"	value="!!str node:20"
+## ci-unicode.yml bytes=198 hash=7db4484b13c2b3d8
+ci-unicode.yml:4	image	73..84	"alpine:3.20"	value="alpine:3.20"
+ci-unicode.yml:6	image	106..115	"'node:20'"	value="node:20"
+ci-unicode.yml:7	image	135..147	"\"ü-sidecar\""	value="ü-sidecar"
+ci-unicode.yml:7	image	149..158	"docker:24"	value="docker:24"
+ci-unicode.yml:8	include	191..195	"main"	value="main" project="g/ü" flow=true
+## ci-update-clean.yml bytes=122 hash=f0cab45e96177bb5
+ci-update-clean.yml:2	image	16..27	"alpine:3.20"	value="alpine:3.20"
+ci-update-clean.yml:4	image	42..51	"docker:24"	value="docker:24"
+ci-update-clean.yml:6	image	69..81	"ubuntu:24.04"	value="ubuntu:24.04"
+ci-update-clean.yml:9	image	110..121	"alpine:3.20"	value="alpine:3.20"
+## ci-update.yml bytes=135 hash=bf0be36978b47d5e
+ci-update.yml:2	image	16..27	"alpine:3.20"	value="alpine:3.20"
+ci-update.yml:5	image	56..67	"alpine:3.20"	value="alpine:3.20"
+ci-update.yml:7	image	84..96	"nginx:stable"	value="nginx:stable"
+ci-update.yml:9	image	116..134	"ghcr.io/org/img:v1"	value="ghcr.io/org/img:v1"

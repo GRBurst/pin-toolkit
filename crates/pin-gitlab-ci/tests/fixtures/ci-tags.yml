@@ -1,0 +1,8 @@
+.base:
+  image: alpine:3.20
+  services: [docker:24]
+job:
+  image: !reference [.base, image]
+  services: !reference [.base, services]
+tagged:
+  image: !!str node:20

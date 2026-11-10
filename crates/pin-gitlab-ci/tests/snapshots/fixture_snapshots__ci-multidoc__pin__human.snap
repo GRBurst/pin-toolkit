@@ -1,0 +1,8 @@
+---
+source: crates/pin-gitlab-ci/tests/fixture_snapshots.rs
+expression: redact(&r.render_human())
+---
+ci-multidoc.yml:6  skipped (unparseable reference)  $[[ inputs.tag ]] -> -  # $[[ inputs.tag ]]
+ci-multidoc.yml:8  pinned  alpine:3.20 -> alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313  # alpine:3.20
+ci-multidoc.yml:13  pinned  redis:7 -> redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e  # redis:7
+pinned: 2, ok: 0, updated: 0, skipped: 1, unresolved: 0

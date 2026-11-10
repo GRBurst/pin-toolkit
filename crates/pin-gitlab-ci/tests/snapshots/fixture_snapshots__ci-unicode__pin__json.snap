@@ -1,0 +1,56 @@
+---
+source: crates/pin-gitlab-ci/tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-unicode.yml",
+      "line": 4,
+      "reference": "alpine:3.20",
+      "old": "alpine:3.20",
+      "new": "alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-unicode.yml",
+      "line": 6,
+      "reference": "node:20",
+      "old": "'node:20'",
+      "new": "'node:20@sha256:ae889db3db39f478f5c207310213c9502f4da32dfedacf88e39f1363e339fd08'",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-unicode.yml",
+      "line": 7,
+      "reference": "ü-sidecar",
+      "old": "\"ü-sidecar\"",
+      "new": null,
+      "status": "skipped",
+      "reason": "unparseable reference"
+    },
+    {
+      "file": "ci-unicode.yml",
+      "line": 7,
+      "reference": "docker:24",
+      "old": "docker:24",
+      "new": "docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-unicode.yml",
+      "line": 8,
+      "reference": "main",
+      "old": "main",
+      "new": "b0b12e38e1088b4742bc0ebaa86c5c40b9ba8e7a",
+      "status": "pinned"
+    }
+  ],
+  "summary": {
+    "pinned": 4,
+    "ok": 0,
+    "updated": 0,
+    "skipped": 1,
+    "unresolved": 0
+  }
+}

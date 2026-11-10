@@ -1,0 +1,13 @@
+spec:
+  inputs:
+    tag:
+      default: "3.20"
+---
+image: $[[ inputs.tag ]]
+job:
+  image: alpine:3.20
+...
+---
+other:
+  services:
+    - redis:7

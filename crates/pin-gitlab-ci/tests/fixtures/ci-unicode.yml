@@ -1,0 +1,8 @@
+# Grüße 🚀 — pipeline
+variables:
+  NOTE: "naïve café ☕"
+image: alpine:3.20  # ✓
+job:
+  image: 'node:20'  # ö
+  services: ["ü-sidecar", docker:24]
+include: { project: g/ü, ref: main }

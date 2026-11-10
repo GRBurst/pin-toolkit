@@ -1,0 +1,96 @@
+---
+source: crates/pin-gitlab-ci/tests/fixture_snapshots.rs
+expression: redact(&r.to_json())
+---
+{
+  "results": [
+    {
+      "file": "ci-pipeline.yml",
+      "line": 23,
+      "reference": "docker:24",
+      "old": "docker:24",
+      "new": "docker:24@sha256:5ecf2386da29ddf4ef406618941d1eaf932ddc889171ffc2efd0bcf866041632",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-pipeline.yml",
+      "line": 25,
+      "reference": "docker:dind",
+      "old": "docker:dind",
+      "new": "docker:dind@sha256:09598440d4ea63ce9a92aa4c9ad934ac1def0c8328bb78d7c2e22213f94bcd4d",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-pipeline.yml",
+      "line": 39,
+      "reference": "php:8.2-cli",
+      "old": "php:8.2-cli",
+      "new": "php:8.2-cli@sha256:bc7d158ce52acfbaec53ea3276374f6fdb7129f33ae121252a48543e6f767195",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-pipeline.yml",
+      "line": 47,
+      "reference": "php:8.2-cli",
+      "old": "php:8.2-cli",
+      "new": "php:8.2-cli@sha256:bc7d158ce52acfbaec53ea3276374f6fdb7129f33ae121252a48543e6f767195",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-pipeline.yml",
+      "line": 49,
+      "reference": "mysql:8.0",
+      "old": "mysql:8.0",
+      "new": "mysql:8.0@sha256:613a049308bbe05e11b12e1809655f0c260fb7cc11c4335fef0238660f5af825",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-pipeline.yml",
+      "line": 54,
+      "reference": "redis:7",
+      "old": "redis:7",
+      "new": "redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-pipeline.yml",
+      "line": 69,
+      "reference": "alpine",
+      "old": "alpine",
+      "new": "alpine@sha256:ad64e3823df30f61db46f16ddc2c99dd4ddc3fc343ecad26304007c4bfb9d0f9",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-pipeline.yml",
+      "line": 77,
+      "reference": "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}",
+      "old": "${APP_IMAGE}:${CI_COMMIT_SHORT_SHA}",
+      "new": null,
+      "status": "skipped",
+      "reason": "unparseable reference"
+    },
+    {
+      "file": "ci-pipeline.yml",
+      "line": 79,
+      "reference": "docker:dind",
+      "old": "docker:dind",
+      "new": "docker:dind@sha256:09598440d4ea63ce9a92aa4c9ad934ac1def0c8328bb78d7c2e22213f94bcd4d",
+      "status": "pinned"
+    },
+    {
+      "file": "ci-pipeline.yml",
+      "line": 90,
+      "reference": "ghcr.io/docker/buildx:v0.14.0",
+      "old": "ghcr.io/docker/buildx:v0.14.0",
+      "new": "ghcr.io/docker/buildx:v0.14.0@sha256:133be97dfea713edb2f839b9ab65366526778c68bfcab0484c2761647ad5daad",
+      "status": "pinned"
+    }
+  ],
+  "summary": {
+    "pinned": 9,
+    "ok": 0,
+    "updated": 0,
+    "skipped": 1,
+    "unresolved": 0
+  }
+}

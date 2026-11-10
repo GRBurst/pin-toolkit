@@ -1,0 +1,17 @@
+---
+source: crates/pin-gitlab-ci/tests/fixture_snapshots.rs
+expression: visible(&edited)
+---
+spec:
+  inputs:
+    tag:
+      default: "3.20"
+---
+image: $[[ inputs.tag ]]
+job:
+  image: alpine:3.20@sha256:988c95f237793b32fbf86591f713355d33beb86d862800051e61bc94de929313
+...
+---
+other:
+  services:
+    - redis:7@sha256:7cb373721361c0f69081d459007586bc0b715da5c94249fa55e92dec6c18260e
