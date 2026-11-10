@@ -57,9 +57,10 @@ pub enum PinTarget {
         /// See [`PinTarget::comment_ok`].
         comment_ok: bool,
     },
-    /// A classic top-level (indent 0) `include:` mapping with explicit
-    /// `project` and `ref` keys: the span points at the `ref` VALUE token
-    /// (the value to be replaced with a commit SHA), not the mapping.
+    /// A classic `include:` mapping (the root key `include` of a document)
+    /// with explicit `project` and `ref` keys: the span points at the `ref`
+    /// VALUE token (the value to be replaced with a commit SHA), not the
+    /// mapping.
     IncludeRef {
         /// 0-based line index of the `ref` value token in the file text.
         line: usize,
@@ -572,7 +573,7 @@ mod tests {
 
     #[test]
     fn include_indented_not_a_target() {
-        // Job-internal includes (indented) are out of scope: indent-0 only
+        // Job-internal includes are out of scope: the root key of a document only
         let text = "job:\n  include: { project: gitlab-org/indented, ref: main }\n";
         assert!(discover(text).unwrap().is_empty());
     }

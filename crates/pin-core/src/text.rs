@@ -5,8 +5,7 @@
 /// before it, so CRLF lines end before `\r\n`. A final line without a
 /// newline ends at `text.len()`.
 ///
-/// Shared line model for edits and (M5c-y) `core::yaml`; `discover.rs`
-/// keeps its own split until M5c-y.
+/// Shared line model for edits, `core::yaml` and plugin discovery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LineIndex {
     starts: Vec<usize>,

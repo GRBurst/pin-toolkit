@@ -625,7 +625,7 @@ fn bare_cr(text: &str) -> Option<ScanError> {
 /// A tab after `key:` is separator whitespace in YAML but an error for the
 /// parser: it is blanked (tab → space, offsets unchanged) in the scan copy
 /// and the parse retried, once per flagged tab at most and within
-/// [`RETRY_BUDGET`]. The spans index the original text; block indentation
+/// `RETRY_BUDGET`. The spans index the original text; block indentation
 /// tabs stay errors.
 pub fn scan(text: &str, opts: ScanOpts) -> Result<Vec<Node>, ScanError> {
     scan_within(text, opts, RETRY_BUDGET)
