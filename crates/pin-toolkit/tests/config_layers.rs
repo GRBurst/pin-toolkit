@@ -168,6 +168,15 @@ fn no_config_skips_repo_file() {
             ".pin-toolkit.toml: unsupported version 2 (expected 1)".into()
         ))
     );
+    // Review-2 N1: from a subdirectory the root file is shown like walked
+    // files, relative to the cwd.
+    std::fs::create_dir_all(root.join("ci/deep")).unwrap();
+    assert_eq!(
+        load_in(&root, &root.join("ci/deep"), &["pin-toolkit"], &[]),
+        Err(Fatal(
+            "../../.pin-toolkit.toml: unsupported version 2 (expected 1)".into()
+        ))
+    );
 }
 
 #[cfg(feature = "gitlab-ci")]

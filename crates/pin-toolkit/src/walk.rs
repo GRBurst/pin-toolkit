@@ -61,6 +61,16 @@ fn relative(from: &Path, to: &Path) -> String {
     up.chain(down).collect::<Vec<_>>().join("/")
 }
 
+/// `path` as shown to the user: relative to `cwd` (both normalised), `.`
+/// for the cwd itself. Walked files, walk errors and the root config file
+/// share this rule (review-2 N1).
+pub fn shown(cwd: &Path, path: &Path) -> String {
+    match relative(&normalize(cwd), &normalize(path)) {
+        d if d.is_empty() => ".".to_string(),
+        d => d,
+    }
+}
+
 /// One input file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
@@ -167,10 +177,6 @@ fn inputs_with(
 ) -> Inputs {
     let (cwd, root) = (normalize(cwd), normalize(root));
     let rel_to = |base: &Path, path: &Path| path.strip_prefix(base).ok().map(slashed);
-    let shown = |path: &Path| match relative(&cwd, &normalize(path)) {
-        d if d.is_empty() => ".".to_string(),
-        d => d,
-    };
     let mut found = Inputs::default();
     let mut walked = |dir: &Path| {
         let base = if dir.starts_with(&root) {
@@ -180,7 +186,7 @@ fn inputs_with(
         };
         let (files, issues) = walk(dir);
         for i in issues {
-            let file = shown(i.path.as_deref().unwrap_or(dir));
+            let file = shown(&cwd, i.path.as_deref().unwrap_or(dir));
             if i.ignore_file {
                 found.warnings.push(match i.line {
                     Some(line) => format!("{file}:{line}: {}", i.message),

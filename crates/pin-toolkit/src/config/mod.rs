@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pin_core::run::{AgePolicy, UpdatePolicy};
 
@@ -196,9 +196,7 @@ fn repo_layer(p: &Process, root: &Path, cli: &Cli) -> Result<Option<Layer>, Fata
             if !path.exists() {
                 return Ok(None);
             }
-            let display = path
-                .strip_prefix(&p.cwd)
-                .map_or_else(|_| path.clone(), Path::to_path_buf);
+            let display = PathBuf::from(crate::walk::shown(&p.cwd, &path));
             (path, display)
         }
     };
