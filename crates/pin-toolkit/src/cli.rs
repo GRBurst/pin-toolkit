@@ -1,5 +1,5 @@
 //! Command line (spec §6.6): `pin-toolkit [OPTIONS] [PATHS]…`, one
-//! subcommand per known plugin, `plugins`; argv[0] aliases `pin-<plugin>`
+//! subcommand per known plugin, `plugins`; `argv[0]` aliases `pin-<plugin>`
 //! and `pin-ci` (D33) insert the subcommand.
 
 use std::ffi::OsString;
@@ -76,7 +76,7 @@ pub struct Opts {
     /// Turn one kind on or off (repeatable)
     #[arg(long, global = true, value_name = "P:K=on|off")]
     pub kind: Vec<String>,
-    /// Repository config file (default: <git root>/.pin-toolkit.toml)
+    /// Repository config file (default: .pin-toolkit.toml at the git root)
     #[arg(long, global = true, value_name = "FILE")]
     pub config: Option<PathBuf>,
     /// Do not read a config file
@@ -117,7 +117,7 @@ impl Cli {
     }
 }
 
-/// argv[0] dispatch (T-D9): when the program name (basename, minus
+/// `argv[0]` dispatch (T-D9): when the program name (basename, minus
 /// `.exe`) is an alias (`pin-ci`) or `pin-<id>` for a known plugin id,
 /// insert the plugin subcommand after it.
 pub fn dispatch_argv0(mut args: Vec<OsString>) -> Vec<OsString> {
@@ -143,7 +143,7 @@ pub fn dispatch_argv0(mut args: Vec<OsString>) -> Vec<OsString> {
     args
 }
 
-/// Parse `args` (argv[0] first, after [`dispatch_argv0`]).
+/// Parse `args` (`argv[0]` first, after [`dispatch_argv0`]).
 pub fn parse(args: &[OsString]) -> Result<(Cli, Mode), clap::Error> {
     let cli = Cli::try_parse_from(args)?;
     let mode = cli.mode();

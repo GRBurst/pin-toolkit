@@ -29,7 +29,7 @@ pub const KNOWN: [Known; 3] = [
     },
 ];
 
-/// argv[0] names that are not `pin-<id>` but dispatch to a plugin (D33:
+/// `argv[0]` names that are not `pin-<id>` but dispatch to a plugin (D33:
 /// `pin-ci` is the one entry).
 pub const ALIASES: [(&str, &str); 1] = [("pin-ci", "gitlab-ci")];
 
