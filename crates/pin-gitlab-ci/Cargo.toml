@@ -13,6 +13,7 @@ clap = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
+pin-core = { workspace = true, features = ["test-support"] }
 serde_json = { workspace = true }
 wiremock = { workspace = true }
 insta = { workspace = true }

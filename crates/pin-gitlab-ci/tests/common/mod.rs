@@ -433,10 +433,7 @@ pub async fn plan_once(f: &Fakes, name: &str, text: &str, mode: Mode) -> Vec<Fin
         enabled: matches!(mode, Mode::Update),
         ..Default::default()
     };
-    let env = ResolverEnv {
-        gitlab_host: "gitlab.com".into(),
-        ..Default::default()
-    };
+    let env = ResolverEnv::default();
     let ctx = Ctx::new(update, now_unix(), env)
         .with_oci(Ok(registry_client(f)))
         .with_gitlab("gitlab.com", Ok(gitlab_client(f)));

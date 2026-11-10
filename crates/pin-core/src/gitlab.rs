@@ -97,8 +97,9 @@ fn classify_ref(ref_name: &str) -> RefKind<'_> {
 }
 
 /// GitLab REST v4 client: ref → commit SHA (M3 pinning). The cache sits
-/// behind `Arc`, so clones share it (M5c, P11).
-#[derive(Debug, Clone)]
+/// behind `Arc`, so clones share it (M5c, P11). `Debug` redacts the token
+/// (T-D29).
+#[derive(Clone)]
 pub struct GitLabClient {
     base_url: String,
     token: Option<String>,
@@ -109,6 +110,18 @@ pub struct GitLabClient {
     /// Resolved commit SHAs keyed by `(project, ref)`; successful
     /// resolutions only.
     cache: Arc<Mutex<HashMap<(String, String), String>>>,
+}
+
+impl fmt::Debug for GitLabClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GitLabClient")
+            .field("base_url", &self.base_url)
+            .field("token", &crate::run::redact(&self.token))
+            .field("job_token", &self.job_token)
+            .field("http", &self.http)
+            .field("cache", &self.cache)
+            .finish()
+    }
 }
 
 impl GitLabClient {
@@ -138,24 +151,6 @@ impl GitLabClient {
             http,
             cache: Arc::new(Mutex::new(HashMap::new())),
         })
-    }
-
-    /// Client from the environment: `GITLAB_TOKEN` (sent as `PRIVATE-TOKEN`)
-    /// takes precedence over `CI_JOB_TOKEN` (sent as `JOB-TOKEN`); neither
-    /// set (or empty) → anonymous (public projects work).
-    pub fn from_env(base_url: String) -> Self {
-        Self::try_from_env(base_url).expect("reqwest client builds")
-    }
-
-    /// [`GitLabClient::from_env`] without the panic: the `Ctx` path (L5).
-    pub(crate) fn try_from_env(base_url: String) -> Result<Self, String> {
-        if let Some(t) = std::env::var("GITLAB_TOKEN").ok().filter(|t| !t.is_empty()) {
-            return Self::try_new(base_url, Some(t), false);
-        }
-        if let Some(t) = std::env::var("CI_JOB_TOKEN").ok().filter(|t| !t.is_empty()) {
-            return Self::try_new(base_url, Some(t), true);
-        }
-        Self::try_new(base_url, None, false)
     }
 
     /// Resolve `ref_name` in `project` to a full 40-hex commit SHA.
@@ -343,6 +338,15 @@ pub(crate) struct GitLabHosts {
 }
 
 impl GitLabHosts {
+    /// `clients` keyed by host; `primary` must be one of them.
+    pub(crate) fn new(primary: &str, clients: BTreeMap<String, GitLabClient>) -> Self {
+        debug_assert!(clients.contains_key(primary), "primary has a client");
+        Self {
+            primary: primary.to_string(),
+            clients,
+        }
+    }
+
     /// One host, which is also the primary.
     pub(crate) fn single(host: &str, client: GitLabClient) -> Self {
         Self {
@@ -404,54 +408,5 @@ mod tests {
                 .is_empty(),
             "SHA resolution must not hit the network"
         );
-    }
-
-    #[test]
-    fn env_precedence() {
-        // Save/restore so the test is deterministic even in a CI job where
-        // CI_JOB_TOKEN is set.
-        let saved_gitlab = std::env::var("GITLAB_TOKEN").ok();
-        let saved_job = std::env::var("CI_JOB_TOKEN").ok();
-        struct Restore {
-            gitlab: Option<String>,
-            job: Option<String>,
-        }
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                // SAFETY: this test is the only reader/writer of these two
-                // variables in the whole crate's test binaries, so no other
-                // thread observes a torn value.
-                match &self.gitlab {
-                    Some(v) => unsafe { std::env::set_var("GITLAB_TOKEN", v) },
-                    None => unsafe { std::env::remove_var("GITLAB_TOKEN") },
-                }
-                match &self.job {
-                    Some(v) => unsafe { std::env::set_var("CI_JOB_TOKEN", v) },
-                    None => unsafe { std::env::remove_var("CI_JOB_TOKEN") },
-                }
-            }
-        }
-        let _r = Restore {
-            gitlab: saved_gitlab.clone(),
-            job: saved_job.clone(),
-        };
-
-        // SAFETY: as above — only this test touches these variables.
-        unsafe {
-            std::env::remove_var("GITLAB_TOKEN");
-            std::env::remove_var("CI_JOB_TOKEN");
-        }
-        let c = GitLabClient::from_env("https://gitlab.com/api/v4".to_string());
-        assert!(c.token.is_none() && !c.job_token);
-
-        unsafe { std::env::set_var("CI_JOB_TOKEN", "jtok") };
-        let c = GitLabClient::from_env("https://gitlab.com/api/v4".to_string());
-        assert_eq!(c.token.as_deref(), Some("jtok"));
-        assert!(c.job_token, "CI_JOB_TOKEN must select the JOB-TOKEN path");
-
-        unsafe { std::env::set_var("GITLAB_TOKEN", "ptok") };
-        let c = GitLabClient::from_env("https://gitlab.com/api/v4".to_string());
-        assert_eq!(c.token.as_deref(), Some("ptok"));
-        assert!(!c.job_token, "GITLAB_TOKEN takes precedence");
     }
 }

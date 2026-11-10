@@ -8,6 +8,8 @@ default = []
 oci = ["dep:reqwest", "dep:sha2"]
 gitlab = ["dep:reqwest"]
 yaml = ["dep:saphyr-parser"]
+# Test hooks (base-URL overrides); enabled only by dev-dependencies (D38).
+test-support = []
 
 [dependencies]
 serde = { workspace = true }
@@ -48,3 +50,7 @@ required-features = ["oci"]
 [[test]]
 name = "memo"
 required-features = ["oci", "gitlab"]
+
+[[test]]
+name = "gitlab_hosts"
+required-features = ["gitlab", "test-support"]

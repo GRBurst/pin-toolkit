@@ -63,10 +63,16 @@ pub fn client_from_env() -> RegistryClient {
 }
 
 /// Build the GitLab client for instance `host` from the environment
-/// (base `https://{host}/api/v4`); `GITLAB_TOKEN` takes precedence over
-/// `CI_JOB_TOKEN` (M3 Task 3).
+/// (base `https://{host}/api/v4`) with the credential bound to it: with
+/// `host` as the primary, `GITLAB_TOKEN`; else `CI_JOB_TOKEN` only when
+/// `CI_SERVER_HOST` is `host` (D31, D37).
 pub fn gitlab_from_env(host: &str) -> GitLabClient {
-    GitLabClient::from_env(format!("https://{host}/api/v4"))
+    let (token, job) = ResolverEnv::from_process(host)
+        .gitlab
+        .auth_for(host)
+        .into_parts();
+    GitLabClient::try_new(format!("https://{host}/api/v4"), token, job)
+        .expect("reqwest client builds")
 }
 
 /// A file error that stopped the run (the first one aborts it until M5d):

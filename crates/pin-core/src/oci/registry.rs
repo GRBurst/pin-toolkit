@@ -53,14 +53,29 @@ impl fmt::Display for RegError {
     }
 }
 
-/// Per-host registry credentials (M4a).
-#[derive(Debug, Clone, PartialEq)]
+/// Per-host registry credentials (M4a). `Debug` redacts the secret
+/// (T-D29).
+#[derive(Clone, PartialEq)]
 pub enum HostCreds {
     /// HTTP Basic (registry token endpoint), e.g. Docker Hub.
     Basic { user: String, password: String },
     /// Pre-issued token sent as `Authorization: Bearer`, e.g. GitHub
     /// Packages.
     Bearer { token: String },
+}
+
+impl fmt::Debug for HostCreds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let secret = crate::run::Redacted;
+        match self {
+            HostCreds::Basic { user, .. } => f
+                .debug_struct("Basic")
+                .field("user", user)
+                .field("password", &secret)
+                .finish(),
+            HostCreds::Bearer { .. } => f.debug_struct("Bearer").field("token", &secret).finish(),
+        }
+    }
 }
 
 /// Registry credentials keyed by registry host (e.g. `"docker.io"`,
@@ -86,8 +101,8 @@ impl Creds {
     }
 
     /// Same as [`Creds::load_from`] but env vars are read through `env`
-    /// (production passes `std::env::var`; unit tests inject).
-    fn load_from_env<F>(home: Option<&Path>, env: F) -> Self
+    /// (`Ctx` passes the env map, PR-M2; unit tests inject).
+    pub(crate) fn load_from_env<F>(home: Option<&Path>, env: F) -> Self
     where
         F: Fn(&str) -> Option<String>,
     {

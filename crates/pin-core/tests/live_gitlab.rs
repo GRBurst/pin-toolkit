@@ -98,7 +98,13 @@ async fn live_gitlab_resolves_tag() {
         return;
     }
     let want = git_ls_remote_sha(TAG_OUT_REF).expect("git ls-remote oracle");
-    let client = pin_core::gitlab::GitLabClient::from_env(GITLAB_API.to_string());
+    let client = {
+        let (t, j) = pin_core::run::ResolverEnv::from_process("gitlab.com")
+            .gitlab
+            .auth_for("gitlab.com")
+            .into_parts();
+        pin_core::gitlab::GitLabClient::try_new(GITLAB_API.into(), t, j).unwrap()
+    };
     let got = client
         .resolve(PROJECT, TAG)
         .await
@@ -119,7 +125,13 @@ async fn live_gitlab_resolves_branch() {
     let mut last = (String::new(), String::new());
     for attempt in 1..=2 {
         let want = git_ls_remote_sha(BRANCH).expect("git ls-remote oracle");
-        let client = pin_core::gitlab::GitLabClient::from_env(GITLAB_API.to_string());
+        let client = {
+            let (t, j) = pin_core::run::ResolverEnv::from_process("gitlab.com")
+                .gitlab
+                .auth_for("gitlab.com")
+                .into_parts();
+            pin_core::gitlab::GitLabClient::try_new(GITLAB_API.into(), t, j).unwrap()
+        };
         let got = client
             .resolve(PROJECT, BRANCH)
             .await
@@ -144,7 +156,13 @@ async fn live_gitlab_pinned_sha_short_circuit() {
     if skip_unless_live() {
         return;
     }
-    let client = pin_core::gitlab::GitLabClient::from_env(GITLAB_API.to_string());
+    let client = {
+        let (t, j) = pin_core::run::ResolverEnv::from_process("gitlab.com")
+            .gitlab
+            .auth_for("gitlab.com")
+            .into_parts();
+        pin_core::gitlab::GitLabClient::try_new(GITLAB_API.into(), t, j).unwrap()
+    };
     let got = client
         .resolve(PROJECT, PINNED_SHA)
         .await

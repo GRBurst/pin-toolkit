@@ -14,10 +14,7 @@ use pin_gitlab_ci::discover::PinTarget;
 use pin_gitlab_ci::{DEFAULT_FILES, GitlabCi, KINDS};
 
 fn env() -> ResolverEnv {
-    ResolverEnv {
-        gitlab_host: "gitlab.com".into(),
-        ..Default::default()
-    }
+    ResolverEnv::default()
 }
 
 #[test]

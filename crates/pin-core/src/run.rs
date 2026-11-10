@@ -3,10 +3,9 @@
 
 #[cfg(any(feature = "oci", feature = "gitlab"))]
 use std::cell::{OnceCell, RefCell};
-#[cfg(feature = "oci")]
-use std::collections::BTreeMap;
-#[cfg(any(feature = "oci", feature = "gitlab"))]
+#[cfg(any(feature = "oci", feature = "gitlab", feature = "test-support"))]
 use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 #[cfg(any(feature = "oci", feature = "gitlab"))]
 use std::hash::Hash;
@@ -33,22 +32,237 @@ pub struct UpdatePolicy {
     pub min_age_days: u32,
 }
 
-/// What resolvers are built from: read once per run.
+/// Prints as `<redacted>` (T-D29: tokens never reach `Debug` output).
+pub(crate) struct Redacted;
+
+impl fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
+/// `Some(<redacted>)` / `None` for an optional secret.
+pub(crate) fn redact(secret: &Option<String>) -> Option<impl fmt::Debug> {
+    secret.as_ref().map(|_| Redacted)
+}
+
+/// The credential one GitLab host gets (D31, D37). Pure data, no client.
+#[derive(Clone, PartialEq, Eq)]
+pub enum GitlabAuth {
+    Anonymous,
+    /// `GITLAB_TOKEN`, sent as `PRIVATE-TOKEN`.
+    Private(String),
+    /// `CI_JOB_TOKEN`, sent as `JOB-TOKEN`.
+    Job(String),
+}
+
+impl GitlabAuth {
+    /// `(token, is_job_token)`, the `GitLabClient::try_new` arguments.
+    pub fn into_parts(self) -> (Option<String>, bool) {
+        match self {
+            GitlabAuth::Anonymous => (None, false),
+            GitlabAuth::Private(t) => (Some(t), false),
+            GitlabAuth::Job(t) => (Some(t), true),
+        }
+    }
+}
+
+impl fmt::Debug for GitlabAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GitlabAuth::Anonymous => f.write_str("Anonymous"),
+            GitlabAuth::Private(_) => f.debug_tuple("Private").field(&Redacted).finish(),
+            GitlabAuth::Job(_) => f.debug_tuple("Job").field(&Redacted).finish(),
+        }
+    }
+}
+
+/// The GitLab side of [`ResolverEnv`]: the primary host, the other hosts
+/// that resolve, and the tokens with the host they bind to (T-D12).
+#[derive(Clone, PartialEq, Eq)]
+pub struct GitlabEnv {
+    /// Includes resolve here; `GITLAB_TOKEN` is sent only here (D31).
+    pub primary: String,
+    /// More hosts that resolve (anonymously unless bound below).
+    pub hosts: BTreeSet<String>,
+    pub gitlab_token: Option<String>,
+    pub ci_job_token: Option<String>,
+    /// `CI_JOB_TOKEN` is sent only to this host (D37).
+    pub ci_server_host: Option<String>,
+}
+
+impl Default for GitlabEnv {
+    /// Primary `gitlab.com`, no other host, no token.
+    fn default() -> Self {
+        Self {
+            primary: "gitlab.com".to_string(),
+            hosts: BTreeSet::new(),
+            gitlab_token: None,
+            ci_job_token: None,
+            ci_server_host: None,
+        }
+    }
+}
+
+impl fmt::Debug for GitlabEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GitlabEnv")
+            .field("primary", &self.primary)
+            .field("hosts", &self.hosts)
+            .field("gitlab_token", &redact(&self.gitlab_token))
+            .field("ci_job_token", &redact(&self.ci_job_token))
+            .field("ci_server_host", &self.ci_server_host)
+            .finish()
+    }
+}
+
+/// `vars[name]` unless missing or empty.
+fn non_empty(vars: &BTreeMap<String, String>, name: &str) -> Option<String> {
+    vars.get(name).filter(|v| !v.is_empty()).cloned()
+}
+
+impl GitlabEnv {
+    /// `primary` (the toolkit passes CLI > `PIN_TOOLKIT_GITLAB_HOST`), else
+    /// `CI_SERVER_HOST`, else `gitlab.com`; tokens from `GITLAB_TOKEN` and
+    /// `CI_JOB_TOKEN`. Empty values count as unset.
+    pub fn from_vars(
+        vars: &BTreeMap<String, String>,
+        primary: Option<String>,
+        hosts: BTreeSet<String>,
+    ) -> Self {
+        let ci_server_host = non_empty(vars, "CI_SERVER_HOST");
+        let primary = primary
+            .filter(|p| !p.is_empty())
+            .or_else(|| ci_server_host.clone())
+            .unwrap_or_else(|| "gitlab.com".to_string());
+        Self {
+            primary,
+            hosts,
+            gitlab_token: non_empty(vars, "GITLAB_TOKEN"),
+            ci_job_token: non_empty(vars, "CI_JOB_TOKEN"),
+            ci_server_host,
+        }
+    }
+
+    /// `host` resolves: the primary or one of `hosts`.
+    pub fn enabled(&self, host: &str) -> bool {
+        host == self.primary || self.hosts.contains(host)
+    }
+
+    /// Every host that gets a client: `{primary} ∪ hosts`.
+    pub fn resolve_set(&self) -> BTreeSet<String> {
+        let mut set = self.hosts.clone();
+        set.insert(self.primary.clone());
+        set
+    }
+
+    /// `GITLAB_TOKEN` for the primary; else `CI_JOB_TOKEN` for
+    /// `CI_SERVER_HOST`; else anonymous (T-D12).
+    pub fn auth_for(&self, host: &str) -> GitlabAuth {
+        if host == self.primary
+            && let Some(t) = &self.gitlab_token
+        {
+            return GitlabAuth::Private(t.clone());
+        }
+        if self.ci_server_host.as_deref() == Some(host)
+            && let Some(t) = &self.ci_job_token
+        {
+            return GitlabAuth::Job(t.clone());
+        }
+        GitlabAuth::Anonymous
+    }
+}
+
+/// The registry credential variables read from the env map (PR-M2).
+pub const REGISTRY_VARS: [&str; 3] = ["DOCKERHUB_USER", "DOCKERHUB_TOKEN", "GITHUB_TOKEN"];
+
+/// [`REGISTRY_VARS`] present in the env map (empty values dropped).
+/// `Debug` prints the names only (T-D29).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct RegistryEnv(BTreeMap<String, String>);
+
+impl RegistryEnv {
+    fn from_vars(vars: &BTreeMap<String, String>) -> Self {
+        Self(
+            REGISTRY_VARS
+                .iter()
+                .filter_map(|v| non_empty(vars, v).map(|val| (v.to_string(), val)))
+                .collect(),
+        )
+    }
+
+    #[cfg_attr(not(feature = "oci"), allow(dead_code))]
+    fn get(&self, var: &str) -> Option<String> {
+        self.0.get(var).cloned()
+    }
+}
+
+impl fmt::Debug for RegistryEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map()
+            .entries(self.0.keys().map(|k| (k, Redacted)))
+            .finish()
+    }
+}
+
+/// Test hook: base-URL overrides of the resolvers (`test-support`, D38).
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub struct BaseUrls {
+    /// Registry host → base URL (`RegistryClient` `base_urls`).
+    pub registry: HashMap<String, String>,
+    /// Docker Hub API base (`RegistryClient::with_hub_base`).
+    pub hub: Option<String>,
+    /// GitLab host → API base (default `https://{host}/api/v4`).
+    pub gitlab: BTreeMap<String, String>,
+}
+
+/// What resolvers are built from: read once per run, from the env map the
+/// front-end passes (no process-env reads below the binary edge).
 #[derive(Debug, Clone, Default)]
 pub struct ResolverEnv {
     /// Home directory (`~/.docker/config.json` credentials).
     pub home: Option<PathBuf>,
-    /// The primary GitLab instance (`--gitlab-host`).
-    pub gitlab_host: String,
+    pub gitlab: GitlabEnv,
+    pub registry: RegistryEnv,
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub base_urls: BaseUrls,
 }
 
 impl ResolverEnv {
-    /// `home` from `$HOME`; tokens are read by the client builders.
-    pub fn from_process(gitlab_host: &str) -> Self {
+    /// `home` = `HOME`, `gitlab` = [`GitlabEnv::from_vars`], `registry` =
+    /// [`REGISTRY_VARS`] from `vars`.
+    pub fn from_vars(
+        vars: &BTreeMap<String, String>,
+        primary: Option<String>,
+        hosts: BTreeSet<String>,
+    ) -> Self {
         Self {
-            home: std::env::var("HOME").ok().map(PathBuf::from),
-            gitlab_host: gitlab_host.to_string(),
+            home: vars.get("HOME").map(PathBuf::from),
+            gitlab: GitlabEnv::from_vars(vars, primary, hosts),
+            registry: RegistryEnv::from_vars(vars),
+            #[cfg(feature = "test-support")]
+            base_urls: BaseUrls::default(),
         }
+    }
+
+    /// Registry credentials: env-map variables over `~/.docker/config.json`
+    /// under `home`; never the process env (PR-M2).
+    #[cfg(feature = "oci")]
+    pub(crate) fn creds(&self) -> Creds {
+        Creds::load_from_env(self.home.as_deref(), |v| self.registry.get(v))
+    }
+
+    /// [`ResolverEnv::from_vars`] over the process environment (UTF-8
+    /// variables only) with `primary` and no other GitLab host: for the
+    /// pin-ci driver and the live/oracle tests.
+    pub fn from_process(primary: &str) -> Self {
+        let vars: BTreeMap<String, String> = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .collect();
+        Self::from_vars(&vars, Some(primary.to_string()), BTreeSet::new())
     }
 }
 
@@ -145,13 +359,24 @@ impl Ctx {
         v
     }
 
-    /// The registry client, built from `env` on first use; a construction
-    /// error is cached.
+    /// The registry client, built from `env` on first use (credentials from
+    /// the env map, PR-M2); a construction error is cached.
     #[cfg(feature = "oci")]
     pub(crate) fn oci(&self) -> Result<&RegistryClient, &str> {
         self.oci
             .get_or_init(|| {
-                RegistryClient::try_new(Creds::load_from(self.env.home.as_deref()), HashMap::new())
+                #[cfg(feature = "test-support")]
+                let (bases, hub) = (
+                    self.env.base_urls.registry.clone(),
+                    self.env.base_urls.hub.clone(),
+                );
+                #[cfg(not(feature = "test-support"))]
+                let (bases, hub) = (HashMap::new(), None::<String>);
+                let client = RegistryClient::try_new(self.env.creds(), bases)?;
+                Ok(match hub {
+                    Some(h) => client.with_hub_base(&h),
+                    None => client,
+                })
             })
             .as_ref()
             .map_err(String::as_str)
@@ -166,24 +391,44 @@ impl Ctx {
         }
     }
 
-    /// The GitLab clients, built from `env` on first use; a construction
-    /// error is cached.
+    /// The GitLab clients, one per `env.gitlab.resolve_set()` host, each
+    /// with the credential [`GitlabEnv::auth_for`] binds to it (D31, D37);
+    /// built on first use, a construction error (`gitlab: {host}: {e}`) is
+    /// cached.
     #[cfg(feature = "gitlab")]
     pub(crate) fn gitlab(&self) -> Result<&GitLabHosts, &str> {
         self.gitlab
             .get_or_init(|| {
-                let host = &self.env.gitlab_host;
-                GitLabClient::try_from_env(format!("https://{host}/api/v4"))
-                    .map(|c| GitLabHosts::single(host, c))
+                let g = &self.env.gitlab;
+                let mut clients = BTreeMap::new();
+                for host in g.resolve_set() {
+                    let (token, job) = g.auth_for(&host).into_parts();
+                    let client = GitLabClient::try_new(self.gitlab_base(&host), token, job)
+                        .map_err(|e| format!("gitlab: {host}: {e}"))?;
+                    clients.insert(host, client);
+                }
+                Ok(GitLabHosts::new(&g.primary, clients))
             })
             .as_ref()
             .map_err(String::as_str)
     }
 
-    /// Preset the client of the primary GitLab host (or its construction
-    /// error).
+    /// The API base of GitLab `host`: the `test-support` override, else
+    /// `https://{host}/api/v4`.
     #[cfg(feature = "gitlab")]
-    pub fn with_gitlab(self, primary_host: &str, c: Result<GitLabClient, String>) -> Self {
+    fn gitlab_base(&self, host: &str) -> String {
+        #[cfg(feature = "test-support")]
+        if let Some(base) = self.env.base_urls.gitlab.get(host) {
+            return base.clone();
+        }
+        format!("https://{host}/api/v4")
+    }
+
+    /// Preset the client of the primary GitLab host (or its construction
+    /// error); `primary_host` also becomes `env.gitlab.primary`.
+    #[cfg(feature = "gitlab")]
+    pub fn with_gitlab(mut self, primary_host: &str, c: Result<GitLabClient, String>) -> Self {
+        self.env.gitlab.primary = primary_host.to_string();
         Self {
             gitlab: OnceCell::from(c.map(|c| GitLabHosts::single(primary_host, c))),
             ..self
@@ -505,10 +750,7 @@ mod resolver_tests {
     }
 
     fn env() -> ResolverEnv {
-        ResolverEnv {
-            gitlab_host: "gitlab.com".into(),
-            ..Default::default()
-        }
+        ResolverEnv::default()
     }
 
     async fn run_fake(test: &str, fake: &Fake, ctx: &Ctx) {
@@ -598,6 +840,153 @@ mod resolver_tests {
         assert_eq!(
             ctx.gitlab_resolve(None, "g/p", "main").await,
             Err("ca: x".to_string())
+        );
+    }
+
+    /// PR-M2: registry credentials come from the env map, never the process.
+    /// No `HOME` in the map ⇒ no docker config is read (deterministic).
+    #[test]
+    fn registry_creds_from_vars() {
+        use crate::oci::registry::HostCreds;
+        let vars = |kv: &[(&str, &str)]| -> BTreeMap<String, String> {
+            kv.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let env = ResolverEnv::from_vars(&vars(&[("GITHUB_TOKEN", "x")]), None, BTreeSet::new());
+        assert_eq!(
+            env.creds().for_host("ghcr.io"),
+            Some(&HostCreds::Bearer { token: "x".into() })
+        );
+        let env = ResolverEnv::from_vars(
+            &vars(&[("DOCKERHUB_USER", "u"), ("DOCKERHUB_TOKEN", "t")]),
+            None,
+            BTreeSet::new(),
+        );
+        assert_eq!(
+            env.creds().for_host("docker.io"),
+            Some(&HostCreds::Basic {
+                user: "u".into(),
+                password: "t".into()
+            })
+        );
+        let env = ResolverEnv::from_vars(&BTreeMap::new(), None, BTreeSet::new());
+        assert_eq!(env.creds().for_host("ghcr.io"), None);
+    }
+
+    /// PR-M5 (P-redact): no token-holding value prints its secret in `Debug`.
+    #[test]
+    fn debug_redacts_tokens() {
+        use crate::oci::registry::HostCreds;
+        const S: &str = "s3cr3t";
+        let vars: BTreeMap<String, String> = [
+            "GITLAB_TOKEN",
+            "CI_JOB_TOKEN",
+            "DOCKERHUB_USER",
+            "DOCKERHUB_TOKEN",
+            "GITHUB_TOKEN",
+        ]
+        .into_iter()
+        .map(|k| (k.to_string(), S.to_string()))
+        .chain([("CI_SERVER_HOST".to_string(), "gitlab.com".to_string())])
+        .collect();
+        let env = ResolverEnv::from_vars(&vars, None, BTreeSet::new());
+        assert!(env.gitlab.gitlab_token.is_some() && env.gitlab.ci_job_token.is_some());
+        let client =
+            GitLabClient::try_new("http://127.0.0.1:9".into(), Some(S.into()), true).unwrap();
+        let printed = [
+            format!("{:?}", env.gitlab),
+            format!("{:?}", GitlabAuth::Private(S.into())),
+            format!("{:?}", GitlabAuth::Job(S.into())),
+            format!("{:?}", env),
+            format!("{:?}", client),
+            format!(
+                "{:?}",
+                HostCreds::Basic {
+                    user: "u".into(),
+                    password: S.into()
+                }
+            ),
+            format!("{:?}", HostCreds::Bearer { token: S.into() }),
+        ];
+        for p in printed {
+            assert!(!p.contains(S), "secret leaked: {p}");
+            assert!(p.contains("<redacted>"), "{p}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gitlab_env(
+        primary: &str,
+        ci_server_host: Option<&str>,
+        gitlab_token: Option<&str>,
+        ci_job_token: Option<&str>,
+    ) -> GitlabEnv {
+        let vars: BTreeMap<String, String> = [
+            ("CI_SERVER_HOST", ci_server_host),
+            ("GITLAB_TOKEN", gitlab_token),
+            ("CI_JOB_TOKEN", ci_job_token),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|v| (k.to_string(), v.to_string())))
+        .collect();
+        GitlabEnv::from_vars(&vars, Some(primary.to_string()), BTreeSet::new())
+    }
+
+    /// D31 + D37 (T-D12): `GITLAB_TOKEN` only to the primary, `CI_JOB_TOKEN`
+    /// only to `CI_SERVER_HOST`, `GITLAB_TOKEN` wins when both apply.
+    #[test]
+    fn auth_for_binds_tokens() {
+        use GitlabAuth::{Anonymous, Job, Private};
+        let (com, ex) = ("gitlab.com", "gitlab.example.com");
+        let pt = || Private("pt".into());
+        let table = [
+            ((com, None, Some("pt"), None, com), pt()),
+            ((com, None, Some("pt"), None, ex), Anonymous),
+            ((ex, Some(ex), None, Some("jt"), ex), Job("jt".into())),
+            ((com, Some(ex), None, Some("jt"), com), Anonymous),
+            ((com, None, None, Some("jt"), com), Anonymous), // the pre-M5d leak
+            ((ex, Some(ex), Some("pt"), Some("jt"), ex), pt()),
+        ];
+        for ((primary, server, token, job, host), want) in table {
+            let env = gitlab_env(primary, server, token, job);
+            assert_eq!(
+                env.auth_for(host),
+                want,
+                "{primary} {server:?} {token:?} {job:?} → {host}"
+            );
+        }
+
+        // Primary: explicit > CI_SERVER_HOST > gitlab.com; empty = unset.
+        let vars = |kv: &[(&str, &str)]| -> BTreeMap<String, String> {
+            kv.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let primary = |vars: &BTreeMap<String, String>, p: Option<&str>| {
+            GitlabEnv::from_vars(vars, p.map(str::to_string), BTreeSet::new()).primary
+        };
+        let server = vars(&[("CI_SERVER_HOST", ex)]);
+        assert_eq!(primary(&server, Some("h.example")), "h.example");
+        assert_eq!(primary(&server, None), ex);
+        assert_eq!(primary(&server, Some("")), ex);
+        assert_eq!(primary(&BTreeMap::new(), None), com);
+        assert_eq!(primary(&vars(&[("CI_SERVER_HOST", "")]), None), com);
+        let empty = vars(&[("GITLAB_TOKEN", ""), ("CI_JOB_TOKEN", "")]);
+        let env = GitlabEnv::from_vars(&empty, None, BTreeSet::new());
+        assert_eq!(env.auth_for(com), Anonymous);
+        assert_eq!(env.ci_server_host, None);
+
+        // Enabled hosts and the resolve set: {primary} ∪ hosts.
+        let env = GitlabEnv::from_vars(&BTreeMap::new(), None, BTreeSet::from([ex.to_string()]));
+        assert!(env.enabled(com) && env.enabled(ex) && !env.enabled("other.example"));
+        assert_eq!(
+            env.resolve_set(),
+            BTreeSet::from([com.to_string(), ex.to_string()])
         );
     }
 }
