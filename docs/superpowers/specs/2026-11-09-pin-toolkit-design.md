@@ -684,3 +684,10 @@ Open for the owner: retiring the oracle, decided after DF1 (D29).
 - Filing the saphyr-parser quoted-span bug upstream; drop the re-scan once a fixed release is pinned.
 - Whether `devShells.default` replaces devenv. Do not remove devenv without asking.
 - Hub API rate-limit handling (backoff or a clear `unresolved`).
+
+### 14.1 Carry-overs from the M5a–c code review (`.superpowers/sdd/2026-11-10-m5abc/code-review.md`)
+
+- **Before M8 (M1):** `run::pin_file` checks overlap only between findings. Validate each finding's own splices (start ≤ end, no self-overlap) and mark the finding `unresolved` instead of panicking in `edit::apply` or corrupting the file.
+- **In M5d (M3):** enforce D38. The raw `RegistryClient`/`GitLabHosts` and their constructors are still `pub`; make them crate-private (or `#[doc(hidden)]` behind a test-support feature) so plugins cannot bypass the memo and token binding. `RegError: Clone` for the memo (L4).
+- **M5c-y or M5d (low):** R1 combined comment in byte order, not scan order (L1); skip writing edits of non-pinned findings (L2); one `LineIndex` per file in `trailing_comment` (L3); unreachable `.expect` in the resolver construction (L5); `PartialEq<&str>` on `Status` out of the public API (L6); missing tests and the span-based byte-exact check in `tests/common/mod.rs` (L7); single GitLab host set, kind-id constants (L8–L10).
+- Done before merge (M2): public `Ctx::env()` removed (89f7ffe).
