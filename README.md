@@ -147,6 +147,11 @@ M3 resolves and pins, in the same run as image pinning:
   include: { project: gitlab-org/example, ref: 0d7a3b1c2e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b }  # main
   ```
 
+  Several refs pinned on one line (e.g. a flow `include:` sequence) get
+  **one** trailing comment with the originals in source order:
+  `include: [{…, ref: <sha>}, {…, ref: <sha>}]  # main, dev` (fixed in
+  M5c, R1; before: one comment per ref in reverse order).
+
   A line that already has a trailing comment is left as-is (no second
   comment is added). Edits are byte-exact and idempotent — a second run
   reports everything `ok` and writes nothing.

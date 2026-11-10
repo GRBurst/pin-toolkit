@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::edit::{Splice, apply};
+use crate::edit::{Splice, apply, coalesce_comments};
 #[cfg(feature = "gitlab")]
 use crate::gitlab::{GitLabClient, GitLabHosts};
 #[cfg(feature = "oci")]
@@ -256,6 +256,7 @@ const OVERLAP: &str = "internal: overlapping edits";
 /// one splice. Rows are sorted by line (stable). Findings whose splices
 /// overlap another finding's become `unresolved (internal: overlapping
 /// edits)` without edits; other findings' edits are still written.
+/// Trailing comments at one offset merge into one (R1, `coalesce_comments`).
 pub async fn pin_file(
     p: &dyn DynPlugin,
     ctx: &Ctx,
@@ -279,7 +280,8 @@ pub async fn pin_file(
     findings.sort_by_key(|f| f.line);
     mark_overlaps(&mut findings);
 
-    let splices: Vec<Splice> = findings.iter().flat_map(|f| f.edits.clone()).collect();
+    let splices: Vec<Splice> =
+        coalesce_comments(findings.iter().flat_map(|f| f.edits.clone()).collect());
     if !o.dry_run && !o.check && !splices.is_empty() {
         std::fs::write(path, apply(&text, &splices)).map_err(|e| FileError::Write {
             path: file.clone(),

@@ -2,7 +2,8 @@
 //! test (new fixtures are picked up by the glob in `common::fixtures`):
 //! - byte-exact: an edit changes only reference bytes (plus one inserted
 //!   trailing comment per line);
-//! - idempotent: a second run edits nothing.
+//! - idempotent: a second run edits nothing;
+//! - one comment per line (R1, C11): that inserted comment has one `#`.
 mod common;
 
 use common::*;
@@ -57,6 +58,38 @@ async fn idempotent_over_all_fixtures() {
             let e2 = read(&p);
             if let Err(msg) = check_idempotent(&r1, &e1, &r2, &e2) {
                 failures.push(format!("{}/{}: {msg}", fx.name, m.tag()));
+            }
+            std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// R1 (C11): several refs pinned on one line share one trailing comment.
+#[tokio::test]
+async fn one_comment_per_line_over_all_fixtures() {
+    let fakes = start_fakes().await;
+    let mut failures = Vec::new();
+    for fx in fixtures() {
+        for m in modes(&fx.name) {
+            let p = scratch_copy(&fx, m, "onecomment");
+            let r1 = pin_once(&fakes, &p, m).await;
+            match check_byte_exact(&fx.text, &read(&p), &r1) {
+                Err(msg) => failures.push(format!("{}/{}: {msg}", fx.name, m.tag())),
+                Ok(lines) => {
+                    for (i, ins) in lines.iter().enumerate() {
+                        if let Some(ins) = ins.as_ref().filter(|s| s.text.matches('#').count() != 1)
+                        {
+                            failures.push(format!(
+                                "{}/{} line {}: inserted {:?}",
+                                fx.name,
+                                m.tag(),
+                                i + 1,
+                                ins.text
+                            ));
+                        }
+                    }
+                }
             }
             std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
         }

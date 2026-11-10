@@ -1,5 +1,6 @@
 //! Splice-based text edits: byte-exact replacements and insertions applied
-//! end-first, quote-preserving re-quoting and trailing-comment placement.
+//! in one forward pass, quote-preserving re-quoting, trailing-comment
+//! placement and merging.
 
 /// One edit: replace `start..end` with `text` (`start == end` inserts).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,14 +24,50 @@ impl Splice {
     }
 }
 
-/// Apply splices in **end-first** order (descending `start`, stable for equal
-/// starts), so earlier splices' offsets stay valid for later ones.
+/// Apply non-overlapping splices (offsets into the original `text`) in one
+/// forward pass: stable sort by `(start, end)`, so equal-offset insertions
+/// keep their given order (R1) and an insertion at a replacement's start
+/// goes before it.
 pub fn apply(text: &str, s: &[Splice]) -> String {
-    let mut splices = s.to_vec();
-    splices.sort_by_key(|sp| std::cmp::Reverse(sp.start));
-    let mut out = text.to_string();
+    let mut splices: Vec<&Splice> = s.iter().collect();
+    splices.sort_by_key(|sp| (sp.start, sp.end));
+    let mut out =
+        String::with_capacity(text.len() + s.iter().map(|sp| sp.text.len()).sum::<usize>());
+    let mut cursor = 0;
     for sp in splices {
-        out.replace_range(sp.start..sp.end, &sp.text);
+        debug_assert!(sp.start >= cursor, "overlapping splices: {sp:?}");
+        out.push_str(&text[cursor..sp.start]);
+        out.push_str(&sp.text);
+        cursor = sp.end;
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
+/// Prefix of a trailing-comment insertion (see [`trailing_comment`]).
+const COMMENT: &str = "  # ";
+
+fn is_comment(s: &Splice) -> bool {
+    s.start == s.end && s.text.starts_with(COMMENT)
+}
+
+/// Merge trailing-comment insertions at the same offset into one
+/// `"  # a, b"` at the first one's place, originals in given order (R1:
+/// several refs pinned on one line get one comment). Other splices keep
+/// their order.
+pub fn coalesce_comments(s: Vec<Splice>) -> Vec<Splice> {
+    let mut out: Vec<Splice> = Vec::with_capacity(s.len());
+    for sp in s {
+        if is_comment(&sp)
+            && let Some(first) = out
+                .iter_mut()
+                .find(|o| is_comment(o) && o.start == sp.start)
+        {
+            first.text.push_str(", ");
+            first.text.push_str(&sp.text[COMMENT.len()..]);
+            continue;
+        }
+        out.push(sp);
     }
     out
 }
@@ -126,16 +163,36 @@ mod tests {
     }
 
     #[test]
-    fn apply_equal_start_insertions_reverse_today() {
-        // R1 characterised: equal-offset insertions come out in reverse
-        // order. Flipped (and fixed) in C11.
+    fn apply_equal_start_insertions_keep_source_order() {
+        // R1 (fixed in C11): equal-offset insertions keep their given order.
         assert_eq!(
             apply(
                 "x\n",
                 &[Splice::insert(1, "  # a"), Splice::insert(1, "  # b")]
             ),
-            "x  # b  # a\n"
+            "x  # a  # b\n"
         );
+    }
+
+    #[test]
+    fn coalesce_merges_same_offset_comments() {
+        let merged = coalesce_comments(vec![
+            Splice::insert(36, "  # main"),
+            Splice::replace(0, 3, "abc"),
+            Splice::insert(36, "  # dev"),
+            Splice::insert(40, "  # x"),
+        ]);
+        assert_eq!(
+            merged,
+            vec![
+                Splice::insert(36, "  # main, dev"),
+                Splice::replace(0, 3, "abc"),
+                Splice::insert(40, "  # x"),
+            ]
+        );
+        // A same-offset insertion that is not a trailing comment stays.
+        let other = vec![Splice::insert(36, "  # main"), Splice::insert(36, "!")];
+        assert_eq!(coalesce_comments(other.clone()), other);
     }
 
     #[test]
