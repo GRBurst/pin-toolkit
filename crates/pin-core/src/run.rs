@@ -246,15 +246,16 @@ pub struct ResolverEnv {
 }
 
 impl ResolverEnv {
-    /// `home` = `HOME`, `gitlab` = [`GitlabEnv::from_vars`], `registry` =
-    /// [`REGISTRY_VARS`] from `vars`.
+    /// `home` = `HOME` (empty = unset: never a cwd-relative
+    /// `.docker/config.json`), `gitlab` = [`GitlabEnv::from_vars`],
+    /// `registry` = [`REGISTRY_VARS`] from `vars`.
     pub fn from_vars(
         vars: &BTreeMap<String, String>,
         primary: Option<String>,
         hosts: BTreeSet<String>,
     ) -> Self {
         Self {
-            home: vars.get("HOME").map(PathBuf::from),
+            home: non_empty(vars, "HOME").map(PathBuf::from),
             gitlab: GitlabEnv::from_vars(vars, primary, hosts),
             registry: RegistryEnv::from_vars(vars),
             #[cfg(feature = "test-support")]
@@ -647,8 +648,9 @@ const OVERLAP: &str = "internal: overlapping edits";
 /// edits unless `o.dry_run`/`o.check`, and write only if there is at least
 /// one splice. Rows are sorted by line (stable). Findings whose splices
 /// overlap another finding's become `unresolved (internal: overlapping
-/// edits)` without edits; other findings' edits are still written. Edits of
-/// findings that are neither pinned nor updated are dropped (review L2).
+/// edits)` without edits or follow-up; other findings' edits are still
+/// written. Edits of findings that are neither pinned nor updated are
+/// dropped (review L2).
 /// Trailing comments at one offset merge into one (R1, `coalesce_comments`).
 pub async fn pin_file(
     p: &dyn DynPlugin,
@@ -734,7 +736,8 @@ fn overlaps(a: &Splice, b: &Splice) -> bool {
     }
 }
 
-/// Mark every finding whose splices overlap another finding's.
+/// Mark every finding whose splices overlap another finding's (its edits
+/// and follow-up are dropped).
 fn mark_overlaps(findings: &mut [Finding]) {
     let mut hit = vec![false; findings.len()];
     for i in 0..findings.len() {
@@ -755,6 +758,7 @@ fn mark_overlaps(findings: &mut [Finding]) {
             f.reason = Some(OVERLAP.to_string());
             f.new = None;
             f.edits.clear();
+            f.follow_up = None;
         }
     }
 }
@@ -943,6 +947,12 @@ mod resolver_tests {
         );
         let env = ResolverEnv::from_vars(&BTreeMap::new(), None, BTreeSet::new());
         assert_eq!(env.creds().for_host("ghcr.io"), None);
+        // An empty HOME is unset, never a cwd-relative `.docker/config.json`
+        // (M5d review-1 L4).
+        let home =
+            |h: &str| ResolverEnv::from_vars(&vars(&[("HOME", h)]), None, BTreeSet::new()).home;
+        assert_eq!(home(""), None);
+        assert_eq!(home("/h"), Some(PathBuf::from("/h")));
     }
 
     /// PR-M5 (P-redact): no token-holding value prints its secret in `Debug`.
@@ -979,6 +989,13 @@ mod resolver_tests {
                 }
             ),
             format!("{:?}", HostCreds::Bearer { token: S.into() }),
+            format!(
+                "{:?}",
+                RegistryClient::new(
+                    Creds::none().with_host("ghcr.io", HostCreds::Bearer { token: S.into() }),
+                    HashMap::new()
+                )
+            ),
         ];
         for p in printed {
             assert!(!p.contains(S), "secret leaked: {p}");

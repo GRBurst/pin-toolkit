@@ -231,6 +231,24 @@ async fn overlapping_edits_mark_both_unresolved() {
     cleanup(&p);
 }
 
+/// M5d review-1 L6: an overlapping finding loses its follow-up with its
+/// edits (nothing was written for it to follow up).
+#[tokio::test]
+async fn overlap_drops_follow_up() {
+    let p = scratch("overlap-follow-up", TEXT);
+    let mut a = finding(0, Status::Pinned, vec![Splice::replace(5, 10, "aaaaa")]);
+    a.follow_up = Some("helm dependency update".into());
+    let b = finding(0, Status::Pinned, vec![Splice::replace(8, 12, "bbbb")]);
+    let rows = pin_file(&Fake::new(vec![a, b]), &ctx(), &p, &on(), &opts(4))
+        .await
+        .unwrap();
+    for r in &rows {
+        assert_eq!(r.status, Status::Unresolved);
+        assert_eq!(r.follow_up, None);
+    }
+    cleanup(&p);
+}
+
 #[tokio::test]
 async fn read_error_is_file_error_with_path() {
     let p = PathBuf::from(format!(

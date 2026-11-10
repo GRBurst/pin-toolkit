@@ -228,6 +228,19 @@ fn entry_to_creds(entry: &serde_json::Value) -> Option<HostCreds> {
 /// Token cache key: `[host, realm, service, scope]`.
 type TokenKey = [String; 4];
 
+impl fmt::Debug for RegistryClient {
+    /// `creds` print redacted; cached bearer tokens are never printed
+    /// (M5d review-1 L5).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegistryClient")
+            .field("creds", &self.creds)
+            .field("base_urls", &self.base_urls)
+            .field("hub_base", &self.hub_base)
+            .field("tokens", &crate::run::Redacted)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Client for the registry HTTP v2 API (M4a: per-host credentials; every
 /// host resolves — `base_urls` override, Docker Hub default, else
 /// `https://{host}`).
@@ -235,8 +248,8 @@ type TokenKey = [String; 4];
 /// The token cache is a `tokio::sync::Mutex` so `digest` is concurrency-safe
 /// (M1's orchestrator calls it from concurrent tasks). The cache sits behind
 /// `Arc`, so clones share it (M5c, P11). Lookups are memoised per run in
-/// `Ctx`, not here (D19).
-#[derive(Debug, Clone)]
+/// `Ctx`, not here (D19). `Debug` prints no secret (P-redact).
+#[derive(Clone)]
 pub struct RegistryClient {
     http: reqwest::Client,
     creds: Creds,
@@ -842,6 +855,28 @@ mod tests {
         assert!(parse_www_authenticate(r#"Basic realm="x""#).is_none());
         assert!(parse_www_authenticate(r#"Bearer realm="x",service="s""#).is_none());
         assert!(parse_www_authenticate(r#"Bearer realm=x,service="s",scope="t""#).is_none());
+    }
+
+    /// P-redact (M5d review-1 L5): neither the credentials nor a cached
+    /// bearer token reach `Debug` output.
+    #[test]
+    fn debug_hides_cached_tokens() {
+        let c = RegistryClient::new(
+            Creds::none().with_host(
+                "ghcr.io",
+                HostCreds::Bearer {
+                    token: "pat-s3cr3t".into(),
+                },
+            ),
+            HashMap::new(),
+        );
+        c.tokens.try_lock().unwrap().insert(
+            ["h", "r", "s", "sc"].map(str::to_string),
+            "tok-s3cr3t".into(),
+        );
+        let printed = format!("{c:?}");
+        assert!(!printed.contains("s3cr3t"), "secret leaked: {printed}");
+        assert!(printed.contains("<redacted>"), "{printed}");
     }
 
     #[test]
