@@ -1,3 +1,4 @@
+pub mod edit;
 pub mod git;
 #[cfg(feature = "gitlab")]
 pub mod gitlab;

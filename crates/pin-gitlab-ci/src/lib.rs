@@ -1,5 +1,4 @@
 pub mod discover;
-pub mod edit;
 pub use pin_core::oci::{image_ref, registry};
 pub use pin_core::ver::docker as versioning;
 pub use pin_core::{gitlab, report};
@@ -17,6 +16,8 @@ use crate::discover::{PinTarget, discover};
 use crate::gitlab::GitLabClient;
 use crate::registry::{Creds, RegError};
 use crate::report::{Report, Row, Status};
+use pin_core::edit::{Splice, apply, requote, trailing_comment};
+use pin_core::oci::{splice_update, splice_value};
 use pin_core::ver::age::is_old_enough;
 
 pub use pin_core::oci::{ImageRef, RegistryClient};
@@ -132,7 +133,7 @@ fn is_catalog_managed(version: &str) -> bool {
 /// room for a trailing comment; `None` when a `#` already occurs after the
 /// token on the same line (no double comment).
 fn comment_splice(text: &str, t: &PinTarget, orig: &str) -> Option<(usize, String)> {
-    edit::comment_insert_offset(text, t.line(), t.end()).map(|pos| (pos, format!("  # {orig}")))
+    trailing_comment(text, t.line(), t.end(), orig).map(|s| (s.start, s.text))
 }
 
 /// Current unix time in seconds from the system clock (M4b-1 release-age
@@ -320,7 +321,7 @@ async fn resolve_image(
                         };
                     }
                 };
-                let new_token = edit::splice_update(token, &new_tag, &new_digest);
+                let new_token = splice_update(token, &new_tag, &new_digest);
                 result.status = Status::Updated;
                 result.new = Some(new_token.clone());
                 return Resolved {
@@ -331,7 +332,7 @@ async fn resolve_image(
             }
         }
     }
-    let new_token = edit::splice_value(token, &r, &digest);
+    let new_token = splice_value(token, &r, &digest);
     result.status = Status::Pinned;
     result.new = Some(new_token.clone());
     Resolved {
@@ -405,7 +406,7 @@ async fn resolve_component(
     };
     let token = &text[t.start()..t.end()];
     let new_value = format!("{}/{}/{}@{}", parts.host, parts.project, parts.name, sha);
-    let new_token = edit::splice_replace(token, &new_value);
+    let new_token = requote(token, &new_value);
     result.status = Status::Pinned;
     result.new = Some(new_token.clone());
     Resolved {
@@ -452,7 +453,7 @@ async fn resolve_include(gitlab: &GitLabClient, text: &str, t: &PinTarget, file:
         }
     };
     let token = &text[t.start()..t.end()];
-    let new_token = edit::splice_replace(token, &sha);
+    let new_token = requote(token, &sha);
     result.status = Status::Pinned;
     result.new = Some(new_token.clone());
     Resolved {
@@ -551,7 +552,11 @@ pub async fn pin_file(
         }
     }
     if !opts.dry_run && !splices.is_empty() {
-        let (new_text, _) = edit::apply_splices(&text, &splices);
+        let splices: Vec<Splice> = splices
+            .into_iter()
+            .map(|(s, e, t)| Splice::replace(s, e, t))
+            .collect();
+        let new_text = apply(&text, &splices);
         std::fs::write(path, new_text).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(resolved.into_iter().map(|r| r.result).collect())
