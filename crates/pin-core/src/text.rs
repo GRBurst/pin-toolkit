@@ -43,6 +43,14 @@ impl LineIndex {
     pub fn line_end(&self, line: usize) -> Option<usize> {
         self.ends.get(line).copied()
     }
+
+    /// 0-based line containing `byte`; past the last line start → the last
+    /// line; 0 for `""`.
+    pub fn line_of(&self, byte: usize) -> usize {
+        self.starts
+            .partition_point(|&s| s <= byte)
+            .saturating_sub(1)
+    }
 }
 
 #[cfg(test)]
@@ -61,5 +69,13 @@ mod tests {
         assert_eq!(ix.line_start(3), None);
         assert_eq!(ix.line_end(3), None);
         assert!(LineIndex::new("").is_empty());
+    }
+
+    #[test]
+    fn line_of_maps_bytes_to_lines() {
+        let ix = LineIndex::new("a\r\nbb\nc");
+        let lines: Vec<_> = [0, 2, 3, 6, 7].iter().map(|&b| ix.line_of(b)).collect();
+        assert_eq!(lines, [0, 0, 1, 2, 2]);
+        assert_eq!(LineIndex::new("").line_of(0), 0);
     }
 }

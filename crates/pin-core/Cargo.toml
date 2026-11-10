@@ -7,6 +7,7 @@ edition.workspace = true
 default = []
 oci = ["dep:reqwest", "dep:sha2"]
 gitlab = ["dep:reqwest"]
+yaml = ["dep:saphyr-parser"]
 
 [dependencies]
 serde = { workspace = true }
@@ -14,6 +15,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 reqwest = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+saphyr-parser = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

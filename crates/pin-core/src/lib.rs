@@ -8,3 +8,5 @@ pub mod report;
 pub mod run;
 pub mod text;
 pub mod ver;
+#[cfg(feature = "yaml")]
+pub mod yaml;
