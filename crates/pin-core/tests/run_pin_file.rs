@@ -367,3 +367,22 @@ async fn independent_finding_written_next_to_overlap() {
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "abcdefgCj\n");
     cleanup(&p);
 }
+
+/// Review L2: only edits of `pinned`/`updated` findings are written; a
+/// stray edit on a skipped finding is dropped (and cannot mark a real pin
+/// as overlapping).
+#[tokio::test]
+async fn non_pinned_edits_are_not_written() {
+    let p = scratch("non-pinned", TEXT);
+    let pin = vec![Splice::replace(7, 15, "pinned")];
+    let fake = Fake::new(vec![
+        finding(0, Status::Skipped, vec![Splice::replace(0, 1, "Z")]),
+        finding(1, Status::Pinned, pin.clone()),
+    ]);
+    let rows = pin_file(&fake, &ctx(), &p, &on(), &opts(4)).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), apply(TEXT, &pin));
+    assert_eq!(rows[0].status, Status::Skipped);
+    assert_eq!(rows[0].old, "old");
+    assert_eq!(rows[1].status, Status::Pinned);
+    cleanup(&p);
+}

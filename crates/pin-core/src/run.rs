@@ -248,7 +248,8 @@ const OVERLAP: &str = "internal: overlapping edits";
 /// edits unless `o.dry_run`/`o.check`, and write only if there is at least
 /// one splice. Rows are sorted by line (stable). Findings whose splices
 /// overlap another finding's become `unresolved (internal: overlapping
-/// edits)` without edits; other findings' edits are still written.
+/// edits)` without edits; other findings' edits are still written. Edits of
+/// findings that are neither pinned nor updated are dropped (review L2).
 /// Trailing comments at one offset merge into one (R1, `coalesce_comments`).
 pub async fn pin_file(
     p: &dyn DynPlugin,
@@ -271,6 +272,13 @@ pub async fn pin_file(
             msg: e.msg,
         })?;
     findings.sort_by_key(|f| f.line);
+    // Only pinned/updated findings edit the file (review L2); dropped before
+    // the overlap check so a stray edit cannot mark a real pin.
+    for f in &mut findings {
+        if !matches!(f.status, Status::Pinned | Status::Updated) {
+            f.edits.clear();
+        }
+    }
     mark_overlaps(&mut findings);
 
     let splices = ordered_splices(&findings);
