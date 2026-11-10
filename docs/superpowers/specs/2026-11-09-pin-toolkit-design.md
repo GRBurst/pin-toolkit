@@ -554,6 +554,7 @@ deliberately updates its snapshot and gets a README note.
 | R3 | (not a bug) partial-write semantics and one semaphore per file shared by registry and GitLab calls | keep in `run` |
 | R6 | new kinds (`helm-oci`, C3b) change output for existing CI files | intended; README note per kind; per-kind toggles (`kinds`) in config. C3b counts as the `component` kind |
 | R7 | `discover()` keeps `&img` in an anchored value and treats the alias `*img` as a target (found by S2) | M5c-y: fixed by parser discovery (§6.9) |
+| R8 | `discover()` misses block children in two cases (found by the M5a fixture run): under CRLF a `key:\r` line counts as a key with a value, so `include:`/`services:` blocks and every job-nested `image:` are not targets; children of an anchored key (`.base: &base`) are never targets | not fixed in M5c (the hand-rolled code is deleted by M5c-y); recorded in the M5a snapshots (`ci-r2-crlf`, `ci-anchors`); M5c-y: fixed by parser discovery, listed with R7 as a documented parity exception |
 
 ## 10. Milestones
 
