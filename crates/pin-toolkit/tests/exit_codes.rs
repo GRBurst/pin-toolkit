@@ -175,7 +175,8 @@ async fn exit_code_table() {
     code("8", &out, 2);
     assert_eq!(out.stdout, "", "row 8");
 
-    // 9: `[hosts]` in the repo file → 2, nothing written.
+    // 9: `[hosts]` in the repo file → 2, nothing written, stdout empty
+    // also with --json (T-D22, review-2 L5).
     let hosts = [
         (".gitlab-ci.yml", NEEDS_PIN),
         (
@@ -183,7 +184,7 @@ async fn exit_code_table() {
             "version = 1\n[hosts.\"gitlab.example.com\"]\nkind = \"gitlab\"\n",
         ),
     ];
-    let (root, out) = row(&f, "9", &hosts, &[], &[]).await;
+    let (root, out) = row(&f, "9", &hosts, &["--json"], &[]).await;
     code("9", &out, 2);
     assert_eq!(
         read(&root, ".gitlab-ci.yml"),
@@ -192,20 +193,25 @@ async fn exit_code_table() {
     );
     assert_eq!(out.stdout, "", "row 9");
 
-    // 10: an explicit file no plugin claims → 2.
+    // 10: an explicit file no plugin claims → 2 (stdout empty with --json).
     let readme = [("docs/readme.yml", NEEDS_PIN)];
-    let (_, out) = row(&f, "10", &readme, &["docs/readme.yml"], &[]).await;
+    let (_, out) = row(&f, "10", &readme, &["--json", "docs/readme.yml"], &[]).await;
     code("10", &out, 2);
+    assert_eq!(out.stdout, "", "row 10");
     assert_eq!(
         out.stderr,
         "pin-toolkit: no plugin claims docs/readme.yml (choose one: pin-toolkit <plugin> docs/readme.yml)\n",
         "row 10"
     );
 
-    // 11, 12: a plugin not in this build → 2.
-    for (n, args) in [("11", &["helm"][..]), ("12", &["--only", "helm"][..])] {
+    // 11, 12: a plugin not in this build → 2 (12: stdout empty with --json).
+    for (n, args) in [
+        ("11", &["helm"][..]),
+        ("12", &["--only", "helm", "--json"][..]),
+    ] {
         let (_, out) = row(&f, n, &pin, args, &[]).await;
         code(n, &out, 2);
+        assert_eq!(out.stdout, "", "row {n}");
         assert_eq!(
             out.stderr, "pin-toolkit: plugin helm not in this build\n",
             "row {n}"

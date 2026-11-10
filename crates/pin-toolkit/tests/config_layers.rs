@@ -240,6 +240,9 @@ async fn run_false_disables_but_subcommand_runs() {
 #[tokio::test]
 async fn only_and_subcommand_rules() {
     let root = repo("enable-only");
+    // A templated image (skipped, no lookup): a code-0 row must show that
+    // gitlab-ci ran (review-2 L5).
+    write(&root, ".gitlab-ci.yml", "image: $CI_REGISTRY_IMAGE:1\n");
     let known = "(known: gitlab-ci, helm, github-actions)";
     let conflict = "pin-toolkit: --only/--skip cannot be combined with a plugin subcommand\n";
     // (argv, env, code, stderr)
@@ -312,6 +315,13 @@ async fn only_and_subcommand_rules() {
         );
         if code == 2 {
             assert_eq!(out.stdout, "", "{argv:?}");
+        } else {
+            assert!(
+                out.stdout.starts_with(".gitlab-ci.yml:1  ")
+                    && out.stdout.contains("skipped (unparseable reference)"),
+                "{argv:?} {vars:?}: gitlab-ci ran: {}",
+                out.stdout
+            );
         }
     }
     let eff = load_in(
