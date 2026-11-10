@@ -1,5 +1,6 @@
 //! One file through one plugin (spec §6.2/§6.3): read, plan (scan → bounded
-//! resolve), overlap check, write, rows. `Ctx` carries the run's policy.
+//! resolve), overlap check, write, rows; [`run`] = every routed file in one
+//! pass. `Ctx` carries the run's policy.
 
 #[cfg(any(feature = "oci", feature = "gitlab"))]
 use std::cell::{OnceCell, RefCell};
@@ -21,7 +22,7 @@ use crate::oci::ImageRef;
 #[cfg(feature = "oci")]
 use crate::oci::registry::{Creds, RegError, RegistryClient};
 use crate::plugin::{DynPlugin, Finding, Selection};
-use crate::report::{Row, Status};
+use crate::report::{ErrorEntry, Report, Row, Status};
 
 /// `release_age.unknown` (spec §6.8): what the release-age guard does when
 /// a registry has no timestamps.
@@ -588,6 +589,55 @@ impl fmt::Display for FileError {
             } => write!(f, "{path}: {msg}"),
         }
     }
+}
+
+impl FileError {
+    /// The report entry for this error, the file shown as `display`; the
+    /// message is the variant's text without the path (spec §6.3).
+    pub fn entry(&self, display: &str) -> ErrorEntry {
+        let (line, msg) = match self {
+            FileError::Read { msg, .. } | FileError::Write { msg, .. } => (None, msg),
+            FileError::Parse { line, msg, .. } => (*line, msg),
+        };
+        ErrorEntry {
+            file: display.to_string(),
+            line,
+            message: msg.clone(),
+        }
+    }
+}
+
+/// One file of a run: the plugin that claimed it, what that plugin plans,
+/// the path for I/O and the path as shown in the report.
+pub struct Route<'a> {
+    pub plugin: &'a dyn DynPlugin,
+    pub sel: &'a Selection,
+    pub path: PathBuf,
+    pub display: String,
+}
+
+/// One pass over `routes` (spec §6.3), sequentially in the given order:
+/// [`pin_file`] each; rows' `file` is the route's display path; a file
+/// error becomes an [`ErrorEntry`] under the route's plugin and the next
+/// file still runs. Every routed plugin has a report entry.
+pub async fn run(routes: &[Route<'_>], ctx: &Ctx, o: RunOptions) -> Report {
+    let mut rows = Vec::new();
+    let mut ran: Vec<&'static str> = Vec::new();
+    let mut errors = Vec::new();
+    for r in routes {
+        let id = r.plugin.id();
+        if !ran.contains(&id) {
+            ran.push(id);
+        }
+        match pin_file(r.plugin, ctx, &r.path, r.sel, &o).await {
+            Ok(file_rows) => rows.extend(file_rows.into_iter().map(|row| Row {
+                file: r.display.clone(),
+                ..row
+            })),
+            Err(e) => errors.push((id, e.entry(&r.display))),
+        }
+    }
+    Report::assemble(rows, &ran, errors)
 }
 
 const OVERLAP: &str = "internal: overlapping edits";
