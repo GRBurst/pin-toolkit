@@ -82,10 +82,10 @@ pub(crate) fn unsupported(
 }
 
 /// A component target → `@<sha>` (M3 Task 4 rules): unparseable, host not
-/// in `gitlab_hosts`, already a SHA, or catalog-managed → no resolve.
-/// `parts` is the field of the `Component` target `t` (review N5).
+/// enabled ([`Ctx::gitlab_enabled`], review L9), already a SHA, or
+/// catalog-managed → no resolve. `parts` is the field of the `Component`
+/// target `t` (review N5).
 pub(crate) async fn resolve_component(
-    gitlab_hosts: &[String],
     ctx: &Ctx,
     src: &Source<'_>,
     t: &PinTarget,
@@ -95,7 +95,7 @@ pub(crate) async fn resolve_component(
     let Some(parts) = parts else {
         return with(f, Status::Skipped, Some("unparseable reference".into()));
     };
-    if !gitlab_hosts.contains(&parts.host) {
+    if !ctx.gitlab_enabled(&parts.host) {
         let reason = format!("host not enabled: {}", parts.host);
         return with(f, Status::Skipped, Some(reason));
     }

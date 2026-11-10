@@ -50,20 +50,11 @@ pub const DEFAULT_FILES: [&str; 3] = [
 ];
 
 /// The gitlab-ci plugin: `.gitlab-ci.yml` images, components and includes.
-#[derive(Debug, Clone)]
-pub struct GitlabCi {
-    /// Component hosts that resolve; any other host is skipped before a
-    /// client is built (host gate, spec §6.2).
-    pub gitlab_hosts: Vec<String>,
-}
-
-impl Default for GitlabCi {
-    fn default() -> Self {
-        Self {
-            gitlab_hosts: vec!["gitlab.com".to_string()],
-        }
-    }
-}
+/// Component hosts that resolve come from the run's one GitLab host set
+/// ([`Ctx::gitlab_enabled`], review L9); any other host is skipped before a
+/// client is built (host gate, spec §6.2).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GitlabCi;
 
 impl PluginMeta for GitlabCi {
     fn id(&self) -> &'static str {
@@ -100,7 +91,7 @@ impl Plugin for GitlabCi {
                 value,
             } => pin_inline_image(ctx, src.text, *line, *start, *end, value, IMAGE).await,
             PinTarget::Component { parts, .. } => {
-                policy::resolve_component(&self.gitlab_hosts, ctx, src, t, parts.as_ref()).await
+                policy::resolve_component(ctx, src, t, parts.as_ref()).await
             }
             PinTarget::IncludeRef { project, .. } => {
                 policy::resolve_include(ctx, src, t, project).await

@@ -437,7 +437,7 @@ pub async fn plan_once(f: &Fakes, name: &str, text: &str, mode: Mode) -> Vec<Fin
     let ctx = Ctx::new(update, now_unix(), env)
         .with_oci(Ok(registry_client(f)))
         .with_gitlab("gitlab.com", Ok(gitlab_client(f)));
-    GitlabCi::default()
+    GitlabCi
         .plan(&ctx, Path::new(name), text, &KindSet::defaults(&KINDS), 4)
         .await
         .unwrap()

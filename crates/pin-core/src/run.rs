@@ -343,6 +343,12 @@ impl Ctx {
         }
     }
 
+    /// GitLab `host` resolves (the primary or one of `gitlab-hosts`): the
+    /// one host set plugins gate on (review L9).
+    pub fn gitlab_enabled(&self, host: &str) -> bool {
+        self.env.gitlab.enabled(host)
+    }
+
     /// The resolvers built so far (attempted, including construction
     /// errors), in the order `oci`, `gitlab`.
     pub fn resolvers_built(&self) -> Vec<&'static str> {

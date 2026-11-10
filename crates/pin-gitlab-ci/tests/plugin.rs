@@ -9,7 +9,7 @@ use common::*;
 use pin_core::edit::Splice;
 use pin_core::plugin::{DynPlugin, KindSet, Plugin, PluginMeta, ScanError, Source};
 use pin_core::report::Status;
-use pin_core::run::{Ctx, FileError, ResolverEnv, RunOptions, pin_file};
+use pin_core::run::{Ctx, FileError, GitlabEnv, ResolverEnv, RunOptions, pin_file};
 use pin_gitlab_ci::discover::PinTarget;
 use pin_gitlab_ci::{DEFAULT_FILES, GitlabCi, KINDS};
 
@@ -24,7 +24,7 @@ fn scan_filters_by_kind() {
         "/tests/fixtures/ci-rich.yml"
     ))
     .unwrap();
-    let p = GitlabCi::default();
+    let p = GitlabCi;
     let path = Path::new("ci-rich.yml");
 
     let on = KindSet::defaults(&KINDS);
@@ -52,7 +52,7 @@ fn ids_kinds_and_files() {
     fn as_dyn(p: &dyn DynPlugin) -> &'static str {
         p.id()
     }
-    let p = GitlabCi::default();
+    let p = GitlabCi;
     assert_eq!(p.id(), "gitlab-ci");
     assert_eq!(as_dyn(&p), "gitlab-ci");
     assert_eq!(
@@ -61,12 +61,51 @@ fn ids_kinds_and_files() {
     );
     assert!(p.kinds().iter().all(|k| k.default_on));
     assert_eq!(p.default_files(), &DEFAULT_FILES[..]);
-    assert_eq!(p.gitlab_hosts, ["gitlab.com"]);
+    let ctx = Ctx::new(Default::default(), 0, ResolverEnv::default());
+    assert!(ctx.gitlab_enabled("gitlab.com") && !ctx.gitlab_enabled("gitlab.example.com"));
+}
+
+/// Review L9: the component host gate reads the one `GitlabEnv` (primary ∪
+/// `hosts`); a host outside it is skipped without a request.
+#[tokio::test]
+async fn component_host_enabled_by_env() {
+    let fakes = start_fakes().await;
+    let mut env = ResolverEnv {
+        gitlab: GitlabEnv {
+            primary: "gitlab.com".into(),
+            hosts: ["gitlab.example.com".to_string()].into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    env.base_urls
+        .gitlab
+        .insert("gitlab.example.com".into(), fakes.gitlab.uri());
+    let ctx = Ctx::new(Default::default(), 0, env);
+    let p = GitlabCi;
+    let resolve = async |text: &str| {
+        let targets = p
+            .scan(Path::new("x.yml"), text, &KindSet::defaults(&KINDS))
+            .unwrap();
+        assert_eq!(targets.len(), 1);
+        p.resolve(&ctx, &Source::new(Path::new("x.yml"), text), &targets[0])
+            .await
+    };
+
+    let f = resolve("component: gitlab.example.com/g/p/c@main\n").await;
+    assert_eq!(f.status, Status::Pinned, "{:?}", f.reason);
+    let seen = fakes.gitlab.received_requests().await.unwrap().len();
+    assert!(seen > 0);
+
+    let f = resolve("component: other.example/g/p/c@main\n").await;
+    assert_eq!(f.status, Status::Skipped);
+    assert_eq!(f.reason.as_deref(), Some("host not enabled: other.example"));
+    assert_eq!(fakes.gitlab.received_requests().await.unwrap().len(), seen);
 }
 
 #[tokio::test]
 async fn component_other_host_builds_no_client() {
-    let p = GitlabCi::default();
+    let p = GitlabCi;
     let ctx = Ctx::new(Default::default(), 0, env());
     let text = "component: example.org/g/p/c@1.0.0\n";
     let targets = p
@@ -86,7 +125,7 @@ async fn component_other_host_builds_no_client() {
 #[tokio::test]
 async fn include_pin_has_replacement_and_comment() {
     let fakes = start_fakes().await;
-    let p = GitlabCi::default();
+    let p = GitlabCi;
     let ctx =
         Ctx::new(Default::default(), 0, env()).with_gitlab("gitlab.com", Ok(gitlab_client(&fakes)));
     let text = "include:\n  project: g/p\n  ref: main\n";
@@ -117,7 +156,7 @@ async fn include_pin_has_replacement_and_comment() {
 #[tokio::test]
 async fn include_pin_with_tab_separators() {
     let fakes = start_fakes().await;
-    let p = GitlabCi::default();
+    let p = GitlabCi;
     let ctx =
         Ctx::new(Default::default(), 0, env()).with_gitlab("gitlab.com", Ok(gitlab_client(&fakes)));
     let text = "include:\n  project:\tg/p\n  ref:\tmain\n";
@@ -171,15 +210,9 @@ async fn include_without_a_safe_comment_place_is_skipped() {
             check: false,
             concurrency: 4,
         };
-        let rows = pin_file(
-            &GitlabCi::default(),
-            &ctx,
-            &path,
-            &KindSet::defaults(&KINDS),
-            &opts,
-        )
-        .await
-        .unwrap();
+        let rows = pin_file(&GitlabCi, &ctx, &path, &KindSet::defaults(&KINDS), &opts)
+            .await
+            .unwrap();
         let got: Vec<(usize, Status, Option<&str>)> = rows
             .iter()
             .map(|r| (r.line, r.status, r.reason.as_deref()))
@@ -210,7 +243,7 @@ async fn include_without_a_safe_comment_place_is_skipped() {
 /// reported `skipped (<reason>)`; no resolver is built and nothing is edited.
 #[tokio::test]
 async fn unsupported_target_is_skipped_without_client() {
-    let p = GitlabCi::default();
+    let p = GitlabCi;
     let ctx = Ctx::new(Default::default(), 0, env());
     let text = "image: >-\n  alpine:3.20\n";
     let t = PinTarget::Unsupported {
@@ -237,7 +270,7 @@ async fn unsupported_target_is_skipped_without_client() {
 /// line (1-based) — no partial targets, no fallback to line scanning.
 #[test]
 fn scan_invalid_yaml_is_scan_error() {
-    let p = GitlabCi::default();
+    let p = GitlabCi;
     let on = KindSet::defaults(&KINDS);
     assert_eq!(
         p.scan(Path::new("x.yml"), "a: 1\nb: c: d\n", &on),
@@ -256,7 +289,7 @@ fn scan_invalid_yaml_is_scan_error() {
 /// Review L1: bare-CR line endings are a scan error, not a mangled scan.
 #[test]
 fn scan_bare_cr_is_scan_error() {
-    let p = GitlabCi::default();
+    let p = GitlabCi;
     let on = KindSet::defaults(&KINDS);
     assert_eq!(
         p.scan(Path::new("x.yml"), "image: alpine:3.20\rjob: x\r", &on),
@@ -284,15 +317,9 @@ async fn invalid_yaml_file_is_parse_error_and_untouched() {
         check: false,
         concurrency: 4,
     };
-    let err = pin_file(
-        &GitlabCi::default(),
-        &ctx,
-        &path,
-        &KindSet::defaults(&KINDS),
-        &opts,
-    )
-    .await
-    .unwrap_err();
+    let err = pin_file(&GitlabCi, &ctx, &path, &KindSet::defaults(&KINDS), &opts)
+        .await
+        .unwrap_err();
     assert_eq!(
         err,
         FileError::Parse {

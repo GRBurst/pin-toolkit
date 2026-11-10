@@ -116,9 +116,7 @@ pub async fn pin_files(
     )
     .with_oci(Ok(reg.clone()))
     .with_gitlab(&opts.gitlab_host, Ok(gitlab.clone()));
-    let plugin = GitlabCi {
-        gitlab_hosts: vec![opts.gitlab_host.clone()],
-    };
+    let plugin = GitlabCi;
     let on = KindSet::defaults(&KINDS);
     let run = RunOptions {
         dry_run: opts.dry_run,
