@@ -1,7 +1,10 @@
 //! D31 + D37 on the wire (T7): with two GitLab hosts in one run,
 //! `CI_JOB_TOKEN` reaches only `CI_SERVER_HOST`, `GITLAB_TOKEN` only the
-//! primary host and a global `[hosts]` token only its own host (spec §7.3). A = `gitlab.example.com`, B = `gitlab.com`, both wiremock
-//! servers reached through `base_urls.gitlab` (feature `test-support`).
+//! primary host and a global `[hosts]` token only its own host (spec §7.3);
+//! a failure on a non-primary host without a credential reads `not trusted
+//! for credentials` (D45). A = `gitlab.example.com`, B = `gitlab.com`, both
+//! wiremock servers reached through `base_urls.gitlab` (feature
+//! `test-support`).
 //! Mocks that must never match are mounted first with `expect(0)`; the
 //! expectations are verified when the servers drop.
 
@@ -194,4 +197,95 @@ async fn bound_token_loses_to_env_bindings() {
     let bound = [(A, "bt-a"), (B, "bt-b")];
     let ctx = ctx_bound(&vars, A, &[B], &bound, &a, &b);
     resolve_both(&ctx).await;
+}
+
+/// Every GET on `server` answers `code`.
+async fn fail_all(server: &MockServer, code: u16) {
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(code))
+        .mount(server)
+        .await;
+}
+
+const UNAUTHORIZED: &str = "gitlab api: 401 unauthorized (check GITLAB_TOKEN/CI_JOB_TOKEN)";
+const NOT_FOUND: &str = "g/p:v1 not found (no tag or branch)";
+
+/// D45: a failed lookup on a non-primary host without a credential names
+/// the global config that could bind one (here the front-end's path).
+#[tokio::test]
+async fn unbound_host_failure_401_is_not_trusted() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    fail_all(&a, 401).await;
+    allow(&b).await;
+    let mut env = env(&[("GITLAB_TOKEN", "pt")], B, &[A], &a, &b);
+    env.gitlab.global_config = Some("/xdg/pin-toolkit/config.toml".into());
+    let ctx = Ctx::new(Default::default(), 0, env);
+    assert_eq!(
+        ctx.gitlab_resolve(Some(A), "g/p", "v1").await,
+        Err(format!(
+            "{A}: not trusted for credentials — bind it in /xdg/pin-toolkit/config.toml"
+        ))
+    );
+    assert_eq!(ctx.gitlab_resolve(None, "g/p", "v1").await, Ok(SHA.into()));
+}
+
+/// A 404 (no tag, no branch) too; no path passed = the standard one. A
+/// `CI_JOB_TOKEN` without `CI_SERVER_HOST` binds nothing (D37).
+#[tokio::test]
+async fn unbound_host_failure_404_names_the_default_path() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    let ctx = ctx(&[("CI_JOB_TOKEN", "jt")], B, &[A], &a, &b);
+    assert_eq!(
+        ctx.gitlab_resolve(Some(A), "g/p", "v1").await,
+        Err(format!(
+            "{A}: not trusted for credentials — bind it in ~/.config/pin-toolkit/config.toml"
+        ))
+    );
+}
+
+/// The primary host keeps the client's texts, with or without a token.
+#[tokio::test]
+async fn unbound_host_failure_on_primary_keeps_message() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    fail_all(&a, 401).await;
+    for vars in [&[][..], &[("GITLAB_TOKEN", "pt")][..]] {
+        let c = ctx(vars, A, &[B], &a, &b);
+        assert_eq!(
+            c.gitlab_resolve(None, "g/p", "v1").await,
+            Err(UNAUTHORIZED.into())
+        );
+        assert_eq!(
+            c.gitlab_resolve(Some(A), "g/p", "v1").await,
+            Err(UNAUTHORIZED.into())
+        );
+        let c = ctx(vars, B, &[A], &a, &b);
+        assert_eq!(
+            c.gitlab_resolve(None, "g/p", "v1").await,
+            Err(NOT_FOUND.into())
+        );
+    }
+}
+
+/// A non-primary host with a credential (a `[hosts]` token, or
+/// `CI_JOB_TOKEN` as `CI_SERVER_HOST`) keeps the client's texts.
+#[tokio::test]
+async fn unbound_host_failure_bound_host_keeps_message() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    fail_all(&a, 401).await;
+    let c = ctx_bound(&[], B, &[A], &[(A, "bt")], &a, &b);
+    assert_eq!(
+        c.gitlab_resolve(Some(A), "g/p", "v1").await,
+        Err(UNAUTHORIZED.into())
+    );
+    let c = ctx_bound(&[], A, &[B], &[(B, "bt")], &a, &b);
+    assert_eq!(
+        c.gitlab_resolve(Some(B), "g/p", "v1").await,
+        Err(NOT_FOUND.into())
+    );
+    let vars = [("CI_JOB_TOKEN", "jt"), ("CI_SERVER_HOST", B)];
+    let c = ctx(&vars, A, &[B], &a, &b);
+    assert_eq!(
+        c.gitlab_resolve(Some(B), "g/p", "v1").await,
+        Err(NOT_FOUND.into())
+    );
 }

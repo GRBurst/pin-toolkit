@@ -94,7 +94,14 @@ pub struct GitlabEnv {
     /// §7.3), sent as `PRIVATE-TOKEN` only to that host, after the env
     /// bindings above. Filled by the front-end; `Debug` prints the hosts only.
     pub bound: BTreeMap<String, String>,
+    /// The global config path named by the D45 `not trusted for
+    /// credentials` reason (`None` = [`DEFAULT_GLOBAL_CONFIG`]).
+    pub global_config: Option<String>,
 }
+
+/// The global config path the D45 reason names when the front-end passes
+/// none (spec §7.3).
+pub const DEFAULT_GLOBAL_CONFIG: &str = "~/.config/pin-toolkit/config.toml";
 
 impl Default for GitlabEnv {
     /// Primary `gitlab.com`, no other host, no token.
@@ -106,6 +113,7 @@ impl Default for GitlabEnv {
             ci_job_token: None,
             ci_server_host: None,
             bound: BTreeMap::new(),
+            global_config: None,
         }
     }
 }
@@ -126,6 +134,7 @@ impl fmt::Debug for GitlabEnv {
                     .map(|h| (h, Redacted))
                     .collect::<BTreeMap<_, _>>(),
             )
+            .field("global_config", &self.global_config)
             .finish()
     }
 }
@@ -215,6 +224,7 @@ impl GitlabEnv {
             ci_job_token: non_empty(vars, "CI_JOB_TOKEN"),
             ci_server_host,
             bound: BTreeMap::new(),
+            global_config: None,
         })
     }
 
@@ -579,7 +589,9 @@ impl Ctx {
     }
 
     /// Resolve `git_ref` in `project` on GitLab `host` (`None` = the primary
-    /// host) to a commit SHA. Errors are the client's texts, the cached
+    /// host) to a commit SHA. Errors are the client's texts (on a
+    /// non-primary host without a credential: `{host}: not trusted for
+    /// credentials — bind it in {global config}`, D45), the cached
     /// construction error, or `gitlab: no client for {host}`. Memoised per
     /// `(host, project, ref)` with `None` keyed as the primary host (§6.7).
     #[cfg(feature = "gitlab")]
@@ -601,9 +613,20 @@ impl Ctx {
                 client
                     .resolve(project, git_ref)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| self.not_trusted(host).unwrap_or_else(|| e.to_string()))
             })
             .await
+    }
+
+    /// D45 (spec §7.3): the reason of a failed lookup on `host` when it is
+    /// not the primary and resolves anonymously (no credential bound to it).
+    #[cfg(feature = "gitlab")]
+    fn not_trusted(&self, host: &str) -> Option<String> {
+        let g = &self.env.gitlab;
+        (host != g.primary && g.auth_for(host) == GitlabAuth::Anonymous).then(|| {
+            let path = g.global_config.as_deref().unwrap_or(DEFAULT_GLOBAL_CONFIG);
+            format!("{host}: not trusted for credentials — bind it in {path}")
+        })
     }
 }
 
