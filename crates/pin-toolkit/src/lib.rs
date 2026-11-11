@@ -112,8 +112,8 @@ async fn run_mode(
     let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(eff))
         .map_err(Fatal)?;
     // `config show` reads no file and builds no resolver: configuration only.
-    if let Mode::Config { .. } = mode {
-        out.stdout = show::render(&loaded, &renv.gitlab.primary);
+    if let Mode::Config { origin } = mode {
+        out.stdout = show::render(&loaded, &renv.gitlab.primary, origin);
         return Ok(());
     }
     renv.gitlab.bound = bound_tokens(eff, &p.env);
