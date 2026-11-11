@@ -384,3 +384,242 @@ async fn config_show_prints_config_only_no_run() {
         "image: alpine:3.20\n"
     );
 }
+
+// ---- `config show --origin` (M5e', design S5) ------------------------------
+
+/// Nothing configured: every line says `default`, and the plain output is
+/// the origin output without its suffixes.
+#[tokio::test]
+async fn config_show_origin_defaults() {
+    let root = repo("cli-config-show-origin-defaults");
+    let plain = run_in(&root, &["pin-toolkit", "config", "show"], &[]).await;
+    let out = run_in(&root, &["pin-toolkit", "config", "show", "--origin"], &[]).await;
+    assert_eq!((out.code, out.stderr.as_str()), (0, ""));
+    assert!(
+        out.stdout.lines().count() >= 9 && out.stdout.lines().all(|l| l.ends_with("  # default")),
+        "{}",
+        out.stdout
+    );
+    let stripped: String = out
+        .stdout
+        .lines()
+        .map(|l| format!("{}\n", l.strip_suffix("  # default").unwrap()))
+        .collect();
+    assert_eq!(stripped, plain.stdout, "the suffix is the only difference");
+}
+
+/// Every layer end to end: json and `[hosts]` from the global file, update
+/// and `ignore` from the repo file, concurrency and the primary host
+/// (`GITLAB_URI`) from the env, `--update-major` and `--kind` from the CLI.
+/// (`ignore` cannot come from the global file; `global+repo` is pinned by
+/// `show::tests::origin_plugin_lists_and_kinds`.)
+#[tokio::test]
+async fn config_show_origin_global_repo_env_cli() {
+    let root = repo("cli-config-show-origin-layers");
+    write(
+        &root,
+        "xdg/pin-toolkit/config.toml",
+        "version = 1\njson = true\n\
+         [hosts.\"gitlab.example.com\"]\nkind = \"gitlab\"\ntoken-env = \"GITLAB_EXAMPLE_TOKEN\"\n",
+    );
+    write(
+        &root,
+        ".pin-toolkit.toml",
+        "version = 1\n[update]\nenabled = true\n[release_age]\nmin_days = 7\n\
+         [plugins.gitlab-ci]\nignore = [\"registry.example.com/legacy/*\"]\n",
+    );
+    let xdg = root.join("xdg").display().to_string();
+    let vars = [
+        ("XDG_CONFIG_HOME", xdg.as_str()),
+        ("PIN_TOOLKIT_CONCURRENCY", "3"),
+        ("GITLAB_URI", "https://uri.example.com/"),
+        ("GITLAB_EXAMPLE_TOKEN", "glpat-SECRET-VALUE"),
+    ];
+    let argv = [
+        "pin-toolkit",
+        "--update-major",
+        "--kind",
+        "gitlab-ci:image=off",
+        "config",
+        "show",
+        "--origin",
+    ];
+    let out = run_in(&root, &argv, &vars).await;
+    assert_eq!((out.code, out.stderr.as_str()), (0, ""));
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(
+        lines[..9],
+        [
+            "config.global-file = xdg/pin-toolkit/config.toml  # global",
+            "config.repo-file = .pin-toolkit.toml  # repo",
+            "update.enabled = true  # repo",
+            "update.major = true  # cli",
+            "release-age.min-days = 7  # repo",
+            "release-age.unknown = allow  # default",
+            "concurrency = 3  # env",
+            "json = true  # global",
+            "gitlab-host = uri.example.com  # env",
+        ],
+        "{}",
+        out.stdout
+    );
+    let plugin_lines: Vec<&str> = lines[9..]
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with("plugins."))
+        .collect();
+    for want in [
+        r#"plugins.gitlab-ci.ignore = ["registry.example.com/legacy/*"]  # repo"#,
+        "plugins.gitlab-ci.kinds.image = false  # cli",
+    ] {
+        assert!(plugin_lines.contains(&want), "{want}\n{}", out.stdout);
+    }
+    #[cfg(feature = "gitlab-ci")]
+    for want in [
+        "plugins.gitlab-ci.run = true  # default",
+        "plugins.gitlab-ci.kinds.service = true  # default",
+        "plugins.gitlab-ci.gitlab-hosts = []  # default",
+    ] {
+        assert!(plugin_lines.contains(&want), "{want}\n{}", out.stdout);
+    }
+    assert_eq!(
+        lines[lines.len() - 2..],
+        [
+            "hosts.gitlab.example.com.kind = gitlab  # global",
+            "hosts.gitlab.example.com.token-env = GITLAB_EXAMPLE_TOKEN  # global",
+        ]
+    );
+    assert!(!out.stdout.contains("SECRET-VALUE"), "a token value leaked");
+}
+
+/// The CLI beats env, repo and global.
+#[tokio::test]
+async fn config_show_origin_cli_over_env_repo_global() {
+    let root = repo("cli-config-show-origin-cli");
+    write(
+        &root,
+        "xdg/pin-toolkit/config.toml",
+        "version = 1\njson = false\nconcurrency = 2\n",
+    );
+    write(
+        &root,
+        ".pin-toolkit.toml",
+        "version = 1\n[update]\nenabled = false\n[release_age]\nmin_days = 7\n",
+    );
+    let xdg = root.join("xdg").display().to_string();
+    let vars = [
+        ("XDG_CONFIG_HOME", xdg.as_str()),
+        ("PIN_TOOLKIT_JSON", "0"),
+        ("PIN_TOOLKIT_MIN_AGE_DAYS", "9"),
+        ("PIN_TOOLKIT_CONCURRENCY", "3"),
+    ];
+    let argv = [
+        "pin-toolkit",
+        "config",
+        "show",
+        "--origin",
+        "--update",
+        "--json",
+        "--concurrency",
+        "4",
+        "--min-age-days",
+        "30",
+    ];
+    let out = run_in(&root, &argv, &vars).await;
+    assert_eq!((out.code, out.stderr.as_str()), (0, ""));
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(
+        lines[2..8],
+        [
+            "update.enabled = true  # cli",
+            "update.major = false  # default",
+            "release-age.min-days = 30  # cli",
+            "release-age.unknown = allow  # default",
+            "concurrency = 4  # cli",
+            "json = true  # cli",
+        ],
+        "{}",
+        out.stdout
+    );
+    // Without the CLI the env wins over the files.
+    let out = run_in(&root, &["pin-toolkit", "config", "show", "--origin"], &vars).await;
+    let lines: Vec<&str> = out.stdout.lines().collect();
+    assert_eq!(
+        (lines[2], lines[4], lines[6], lines[7]),
+        (
+            "update.enabled = false  # repo",
+            "release-age.min-days = 9  # env",
+            "concurrency = 3  # env",
+            "json = false  # env"
+        )
+    );
+}
+
+/// `gitlab-host` says where the primary comes from: `env` for
+/// `GITLAB_URI`/`CI_SERVER_HOST`/`PIN_TOOLKIT_GITLAB_HOST`, `cli` for
+/// `--gitlab-host`, else `default`.
+#[tokio::test]
+async fn config_show_origin_gitlab_host() {
+    let root = repo("cli-config-show-origin-host");
+    let line = |argv: &'static [&'static str], vars: &'static [(&'static str, &'static str)]| {
+        let root = root.clone();
+        async move {
+            let argv: Vec<&str> = ["pin-toolkit", "config", "show", "--origin"]
+                .iter()
+                .chain(argv)
+                .copied()
+                .collect();
+            let out = run_in(&root, &argv, vars).await;
+            assert_eq!(out.code, 0, "{argv:?} stderr: {}", out.stderr);
+            out.stdout
+                .lines()
+                .find(|l| l.starts_with("gitlab-host = "))
+                .map(String::from)
+                .unwrap()
+        }
+    };
+    assert_eq!(line(&[], &[]).await, "gitlab-host = gitlab.com  # default");
+    assert_eq!(
+        line(&[], &[("GITLAB_URI", "https://uri.example.com:8443/x")]).await,
+        "gitlab-host = uri.example.com:8443  # env"
+    );
+    assert_eq!(
+        line(&[], &[("CI_SERVER_HOST", "ci.example.com")]).await,
+        "gitlab-host = ci.example.com  # env"
+    );
+    assert_eq!(
+        line(&[], &[("GITLAB_URI", "https://gitlab.com/")]).await,
+        "gitlab-host = gitlab.com  # env",
+        "an env value, even if it names the default"
+    );
+    assert_eq!(
+        line(&[], &[("PIN_TOOLKIT_GITLAB_HOST", "pt.example.com")]).await,
+        "gitlab-host = pt.example.com  # env"
+    );
+    assert_eq!(
+        line(
+            &["--gitlab-host", "cli.example.com"],
+            &[("GITLAB_URI", "https://uri.example.com/")]
+        )
+        .await,
+        "gitlab-host = cli.example.com  # cli"
+    );
+}
+
+/// `--origin` is a `config show` flag and the rest of the rules hold: bad
+/// config exits 2 with nothing on stdout.
+#[tokio::test]
+async fn config_show_origin_bad_config_exits_2() {
+    let root = repo("cli-config-show-origin-bad");
+    write(&root, ".pin-toolkit.toml", "version = 2\n");
+    let out = run_in(&root, &["pin-toolkit", "config", "show", "--origin"], &[]).await;
+    assert_eq!((out.code, out.stdout.as_str()), (2, ""));
+    assert!(
+        out.stderr.starts_with("pin-toolkit: .pin-toolkit.toml: "),
+        "stderr: {}",
+        out.stderr
+    );
+    let out = run_in(&root, &["pin-toolkit", "--origin", "config", "show"], &[]).await;
+    assert_eq!((out.code, out.stdout.as_str()), (2, ""));
+    assert!(out.stderr.starts_with("error:"), "stderr: {}", out.stderr);
+}
