@@ -349,7 +349,9 @@ impl GitLabHosts {
         }
     }
 
-    /// One host, which is also the primary.
+    /// One host, which is also the primary. Only the `test`/`test-support`
+    /// preset (`Ctx::with_gitlab`) builds a single-host set.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub(crate) fn single(host: &str, client: GitLabClient) -> Self {
         Self {
             primary: host.to_string(),

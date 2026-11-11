@@ -5,7 +5,6 @@ pub mod git;
 #[doc(hidden)]
 pub mod gitlab;
 #[cfg(all(feature = "gitlab", not(feature = "test-support")))]
-#[allow(dead_code)] // items only tests (test-support) use
 pub(crate) mod gitlab;
 pub mod oci;
 pub mod plugin;
