@@ -189,8 +189,10 @@ impl GitlabEnv {
     /// and path cut off) that is not a [`valid_gitlab_host`] is an error,
     /// never a fallback: either would be the default primary,
     /// `CI_SERVER_HOST` also the job token's host (M5d final M1).
-    /// `GITLAB_URI` never binds `CI_JOB_TOKEN` (D37); its error hides a
-    /// URL's userinfo (`<redacted>@`).
+    /// `GITLAB_URI` never binds `CI_JOB_TOKEN` (D37). A `GITLAB_URI` with an
+    /// `@` (userinfo, review H1) is an error that echoes none of the value;
+    /// any other invalid one echoes only the host part, never a path, query
+    /// or fragment.
     pub fn from_vars(
         vars: &BTreeMap<String, String>,
         primary: Option<String>,
@@ -203,14 +205,14 @@ impl GitlabEnv {
             return Err(format!("CI_SERVER_HOST: invalid GitLab host `{h}`"));
         }
         let uri = non_empty(vars, "GITLAB_URI");
+        if uri.as_deref().is_some_and(|v| v.contains('@')) {
+            return Err("GITLAB_URI: a GitLab URL must not contain credentials".to_string());
+        }
         let uri_host = uri.as_deref().map(gitlab_uri_host);
         if let Some(h) = uri_host
             && !valid_gitlab_host(h)
         {
-            let shown = h
-                .rsplit_once('@')
-                .map_or(h.to_string(), |(_, h)| format!("<redacted>@{h}"));
-            return Err(format!("GITLAB_URI: invalid GitLab host `{shown}`"));
+            return Err(format!("GITLAB_URI: invalid GitLab host `{h}`"));
         }
         let primary = primary
             .filter(|p| !p.is_empty())
@@ -1274,33 +1276,48 @@ mod tests {
     /// to `gitlab.com`; a URL's userinfo never reaches the message.
     #[test]
     fn gitlab_uri_invalid_is_an_error() {
+        // The error of `uri`: the same with or without an explicit primary.
+        let err = |uri: &str| {
+            let kv = vars(&[("GITLAB_URI", uri), ("GITLAB_TOKEN", "pt")]);
+            let e = GitlabEnv::from_vars(&kv, None, BTreeSet::new()).unwrap_err();
+            assert_eq!(
+                GitlabEnv::from_vars(&kv, Some("gitlab.com".into()), BTreeSet::new()),
+                Err(e.clone())
+            );
+            assert_eq!(
+                ResolverEnv::from_vars(&kv, None, BTreeSet::new()).map(|e| e.gitlab),
+                Err(e.clone())
+            );
+            e
+        };
         let table = [
             ("ftp://gitlab.example.com", "ftp:"),
             ("https://", ""),
             ("https://gitlab.example.com:0/", "gitlab.example.com:0"),
             ("gitlab.example.com:99999", "gitlab.example.com:99999"),
             ("https://-x.example/p", "-x.example"),
-            (
-                "https://gitlab.com@evil.example/",
-                "<redacted>@evil.example",
-            ),
-            (
-                "https://oauth2:s3cr3t@gitlab.example.com",
-                "<redacted>@gitlab.example.com",
-            ),
         ];
         for (uri, shown) in table {
-            let kv = vars(&[("GITLAB_URI", uri), ("GITLAB_TOKEN", "pt")]);
-            let want = Err(format!("GITLAB_URI: invalid GitLab host `{shown}`"));
-            assert_eq!(GitlabEnv::from_vars(&kv, None, BTreeSet::new()), want);
             assert_eq!(
-                GitlabEnv::from_vars(&kv, Some("gitlab.com".into()), BTreeSet::new()),
-                want
+                err(uri),
+                format!("GITLAB_URI: invalid GitLab host `{shown}`")
             );
-            assert_eq!(
-                ResolverEnv::from_vars(&kv, None, BTreeSet::new()).map(|e| e.gitlab),
-                want
-            );
+        }
+        // Review H1: any `@` is a credential, even where the host cut would
+        // land inside the userinfo (`oauth2:1234` would be a valid host).
+        let creds = [
+            ("https://gitlab.com@evil.example/", "evil"),
+            ("https://oauth2:s3cr3t@gitlab.example.com", "s3cr3t"),
+            ("oauth2:t0k@gitlab.example.com", "t0k"),
+            ("https://oauth2:p/ss@h", "ss"),
+            ("https://oauth2:p?ss@h", "ss"),
+            ("https://oauth2:p#ss@h", "ss"),
+            ("https://oauth2:1234/x@h", "1234"),
+        ];
+        for (uri, secret) in creds {
+            let e = err(uri);
+            assert_eq!(e, "GITLAB_URI: a GitLab URL must not contain credentials");
+            assert!(!e.contains(secret) && !e.contains("oauth2"), "{uri}: {e}");
         }
     }
 
