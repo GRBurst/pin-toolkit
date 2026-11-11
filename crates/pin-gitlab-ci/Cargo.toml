@@ -2,6 +2,7 @@
 name = "pin-gitlab-ci"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 pin-core = { workspace = true, features = ["oci", "gitlab", "yaml"] }
