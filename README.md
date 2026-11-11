@@ -3,11 +3,10 @@
 Pin CI references to immutable ids: container images in GitLab CI files to
 digests, GitLab components and includes to commit SHAs.
 
-`pin-toolkit` is one multi-call binary with one plugin per file format. This
-build has the `gitlab-ci` plugin; `helm` and `github-actions` are known
-plugin ids that are not built yet (`pin-toolkit plugins` shows the state).
-It replaces the former `pin-ci` binary, which no longer exists: `pin-ci` is
-now only an argv[0] alias of `pin-toolkit gitlab-ci` (see [Aliases](#aliases)).
+`pin-toolkit` is one multi-call binary with one plugin per file format
+(see [Plugins](#plugins)). It replaces the former `pin-ci` binary, which
+no longer exists: `pin-ci` is now only an argv[0] alias of
+`pin-toolkit gitlab-ci` (see [Aliases](#aliases)).
 
 ## What it does
 
@@ -23,6 +22,18 @@ reference's tag is first bumped to the latest eligible stable tag (see
 
 Edits are byte-exact and idempotent: bytes outside a reference are never
 touched, and a second run reports everything `ok` and writes nothing.
+
+## Plugins
+
+One plugin per file format, selected by subcommand or alias. This build
+ships `gitlab-ci`; `helm` and `github-actions` are known plugin ids that
+are not built yet (`pin-toolkit plugins` shows the state of each).
+
+| Plugin | State | Pins |
+|---|---|---|
+| [gitlab-ci](#plugin-gitlab-ci) | built | images and services to digests, components and includes to commit SHAs |
+| [helm](#plugin-helm) | known, not built | Chart.yaml dependencies, values images, helmfile releases (planned) |
+| [github-actions](#plugin-github-actions) | known, not built | actions, docker-action, container (planned) |
 
 ## Usage
 
@@ -311,7 +322,9 @@ Credentials are read from the environment too, see
 [Per-host logins](#per-host-logins). Nothing secret is written to files or
 logs.
 
-## Tag updates (`--update`)
+## Plugin: gitlab-ci
+
+### Tag updates (`--update`)
 
 For every image reference (any registry host), the tag list is fetched
 from its registry and the tag is bumped to the **highest stable tag
@@ -333,7 +346,7 @@ If the tag list cannot be fetched, the reference is reported as
 `unresolved (tag list: <reason>)`, the tool exits `1`, and all other
 references in the file are still written.
 
-### Differences from the old pipeline
+#### Differences from the old pipeline
 
 Two deliberate divergences from `pin-ci-images.sh` (renovate + crane):
 
@@ -347,7 +360,7 @@ Two deliberate divergences from `pin-ci-images.sh` (renovate + crane):
   only as a versioning-policy difference (both tags crane-verified; e.g.
   renovate's `ubuntu` versioning treats odd-minor interludes as unstable).
 
-## Release age guard
+### Release age guard
 
 `--min-age-days <N>` (default `0` = off) makes `--update` wait for newly
 published tags: a bump candidate must have been pushed at least N days
@@ -379,7 +392,7 @@ fallback `last_updated`).
   (→ the skip above); other Hub errors (network, 429, malformed page) make
   the reference `unresolved (hub api: …)`, exit `1`.
 
-## Components & includes
+### Components & includes
 
 The same run resolves and pins:
 
@@ -440,7 +453,7 @@ The same run resolves and pins:
   A line that already has a trailing comment is left as-is (no second
   comment is added).
 
-### What gets skipped
+#### What gets skipped
 
 Skipped targets are left untouched and keep the exit code `0`:
 
@@ -484,7 +497,7 @@ Never targets at all (not even reported): include mappings with
 local templates (`"local-template.yml"`), `remote:` URLs, or `template:`
 names; indented (job-level) `component:` / `include:`.
 
-### GitLab hosts and auth
+#### GitLab hosts and auth
 
 - **Primary host:** `--gitlab-host` > `PIN_TOOLKIT_GITLAB_HOST` >
   `CI_SERVER_HOST` > `gitlab.com`. Includes resolve there. A repository
@@ -525,13 +538,13 @@ other targets in the file are still written:
   **no retry**; run again later
 - other API/network failures: `unresolved (gitlab api: …)`
 
-## Multi-registry support
+### Multi-registry support
 
 Image pinning works on **every docker-v2 registry host** — `docker.io`,
 `ghcr.io`, GCP Artifact Registry, ECR (public and private), JFrog
 Artifactory, and any self-hosted registry.
 
-### Per-host logins
+#### Per-host logins
 
 | Registry host | How to authenticate |
 |---|---|
@@ -552,7 +565,7 @@ first, then config.json. A missing or malformed config.json is never
 fatal — the host simply has no credentials. A registry token is only ever
 sent to the host it was issued for.
 
-### Fail loud (no silent skips)
+#### Fail loud (no silent skips)
 
 When a registry demands auth — anonymous 401 with the token request
 denied, or a `Basic` challenge — and no credentials are configured for
@@ -564,6 +577,21 @@ code is `1`:
 
 Everything else in the file is still resolved and written (partial-write
 semantics).
+
+## Plugin: helm
+
+Known plugin id, **not built yet**: `pin-toolkit helm` (and the
+`pin-helm` alias) exit `2` with `plugin helm not in this build`. Its
+config table in `.pin-toolkit.toml` is accepted and validated; planned
+kinds: `chart-dependency` (Chart.yaml dependencies), `values-image`
+(values files), `helmfile-release` (helmfile).
+
+## Plugin: github-actions
+
+Known plugin id, **not built yet**: `pin-toolkit github-actions` exits
+`2` with `plugin github-actions not in this build`. Its config table is
+accepted and validated; planned kinds: `action`, `docker-action`,
+`container`.
 
 ## Tests
 
@@ -634,3 +662,7 @@ driver), not through the binary.
 `pin-ci-images.sh`, `extract-docker-pins.py`, and `config.js` are kept
 unmodified at the repo root and serve as the correctness oracle (see
 `PIN_CI_ORACLE=1` above). Their retirement is a later decision.
+
+## License
+
+MIT OR Apache-2.0 — see [LICENSE](LICENSE).
