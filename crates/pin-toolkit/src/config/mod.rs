@@ -179,30 +179,88 @@ pub fn global_path(env: &BTreeMap<String, String>) -> Option<PathBuf> {
     Some(dir.join("pin-toolkit").join("config.toml"))
 }
 
+/// Where a configuration value comes from (`config show --origin`): the
+/// layer order of [`Effective::fold`], lowest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    Default,
+    Global,
+    Repo,
+    Env,
+    Cli,
+}
+
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Origin::Default => "default",
+            Origin::Global => "global",
+            Origin::Repo => "repo",
+            Origin::Env => "env",
+            Origin::Cli => "cli",
+        })
+    }
+}
+
+/// One run's configuration with its sources (`config show`, M5e').
+#[derive(Debug, Clone, PartialEq)]
+pub struct Loaded {
+    pub eff: Effective,
+    /// The global file that was read, as shown in messages (`None` = none).
+    pub global_file: Option<String>,
+    /// The repo file that was read, as shown in messages (`None` = none).
+    pub repo_file: Option<String>,
+    /// The layers that were folded, lowest precedence first (global and
+    /// repo only when their file applies; env and CLI always).
+    pub layers: Vec<(Origin, Layer)>,
+}
+
 /// The effective configuration of one run: defaults < global file < repo
-/// file < env < CLI. `--no-config` skips the global and the repo file.
+/// file < env < CLI. See [`load_sources`] for the file rules.
+pub fn load(p: &Process, root: &Path, cli: &Cli) -> Result<Effective, Fatal> {
+    load_sources(p, root, cli).map(|l| l.eff)
+}
+
+/// [`load`] with the layers it folded and the config files it read.
+/// `--no-config` skips the global and the repo file.
 /// Global file = [`global_path`] if it exists (a missing file is no layer).
 /// Repo file = `--config` (must exist) : `PIN_TOOLKIT_CONFIG` (must exist)
 /// : `<root>/.pin-toolkit.toml` if it exists; these override only the repo
 /// file, the global file still applies. Relative paths are relative to
 /// the cwd.
-pub fn load(p: &Process, root: &Path, cli: &Cli) -> Result<Effective, Fatal> {
+pub fn load_sources(p: &Process, root: &Path, cli: &Cli) -> Result<Loaded, Fatal> {
+    let mut origins = Vec::with_capacity(4);
     let mut layers = Vec::with_capacity(4);
-    if let Some(global) = global_layer(p, cli)? {
-        layers.push(global);
+    let global = global_layer(p, cli)?;
+    let global_file = global.as_ref().map(|(_, shown)| shown.clone());
+    if let Some((layer, _)) = global {
+        origins.push(Origin::Global);
+        layers.push(layer);
     }
-    if let Some(repo) = repo_layer(p, root, cli)? {
-        layers.push(repo);
+    let repo = repo_layer(p, root, cli)?;
+    let repo_file = repo.as_ref().map(|(_, shown)| shown.clone());
+    if let Some((layer, _)) = repo {
+        origins.push(Origin::Repo);
+        layers.push(layer);
     }
+    origins.push(Origin::Env);
     layers.push(env::layer(&p.env)?);
+    origins.push(Origin::Cli);
     layers.push(cli::layer(cli)?);
-    Ok(Effective::fold(&layers))
+    let eff = Effective::fold(&layers);
+    Ok(Loaded {
+        eff,
+        global_file,
+        repo_file,
+        layers: origins.into_iter().zip(layers).collect(),
+    })
 }
 
-/// The global layer, if a global file applies: not with `--no-config`, and
-/// only when [`global_path`] names a file that exists. An unreadable file
-/// or one that does not parse is fatal, named relative to the cwd.
-fn global_layer(p: &Process, cli: &Cli) -> Result<Option<Layer>, Fatal> {
+/// The global layer and its file as shown in messages, if a global file
+/// applies: not with `--no-config`, and only when [`global_path`] names a
+/// file that exists. An unreadable file or one that does not parse is
+/// fatal, named relative to the cwd.
+fn global_layer(p: &Process, cli: &Cli) -> Result<Option<(Layer, String)>, Fatal> {
     if cli.opts.no_config {
         return Ok(None);
     }
@@ -215,11 +273,13 @@ fn global_layer(p: &Process, cli: &Cli) -> Result<Option<Layer>, Fatal> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(Fatal(format!("{}: {e}", display.display()))),
     };
-    global::parse(&display, &text).map(Some)
+    let layer = global::parse(&display, &text)?;
+    Ok(Some((layer, display.display().to_string())))
 }
 
-/// The repo layer, if a repo file applies.
-fn repo_layer(p: &Process, root: &Path, cli: &Cli) -> Result<Option<Layer>, Fatal> {
+/// The repo layer and its file as shown in messages, if a repo file
+/// applies.
+fn repo_layer(p: &Process, root: &Path, cli: &Cli) -> Result<Option<(Layer, String)>, Fatal> {
     if cli.opts.no_config {
         return Ok(None);
     }
@@ -242,7 +302,8 @@ fn repo_layer(p: &Process, root: &Path, cli: &Cli) -> Result<Option<Layer>, Fata
             Fatal(format!("{}: {e}", display.display()))
         }
     })?;
-    repo::parse(&display, &text).map(Some)
+    let layer = repo::parse(&display, &text)?;
+    Ok(Some((layer, display.display().to_string())))
 }
 
 /// A fatal error (exit 2 before the run, T-D22).
@@ -258,6 +319,7 @@ impl fmt::Display for Fatal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
 
     /// One field under test: set layer `k`'s value, read the folded value,
     /// and the expected value for "highest layer that set it" (`None` =
@@ -546,6 +608,172 @@ mod tests {
             global_path(&env_of(&[("XDG_CONFIG_HOME", "rel"), ("HOME", "")])),
             None,
             "relative XDG and empty HOME"
+        );
+    }
+
+    /// A fresh `$CARGO_MANIFEST_DIR/.tmp/<name>-<pid>/` with a `.git/`.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".tmp")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        dir
+    }
+
+    fn write(root: &Path, rel: &str, text: &str) {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+
+    /// `load_sources` for `argv` in `root` (also the cwd) with `vars`; the
+    /// global file is read from `<root>/xdg`.
+    fn sources(root: &Path, argv: &[&str], vars: &[(&str, &str)]) -> Result<Loaded, Fatal> {
+        let xdg = root.join("xdg").display().to_string();
+        let mut env = env_of(vars);
+        env.insert("XDG_CONFIG_HOME".into(), xdg);
+        let mut args = vec![OsString::from("pin-toolkit")];
+        args.extend(argv.iter().map(OsString::from));
+        let (cli, _) = cli::parse(&args).unwrap();
+        let p = Process {
+            args,
+            env,
+            cwd: root.to_path_buf(),
+        };
+        load_sources(&p, root, &cli)
+    }
+
+    fn origins(l: &Loaded) -> Vec<Origin> {
+        l.layers.iter().map(|(o, _)| *o).collect()
+    }
+
+    #[test]
+    fn load_sources_origin_displays_lowercase() {
+        let shown: Vec<String> = [
+            Origin::Default,
+            Origin::Global,
+            Origin::Repo,
+            Origin::Env,
+            Origin::Cli,
+        ]
+        .iter()
+        .map(Origin::to_string)
+        .collect();
+        assert_eq!(shown, ["default", "global", "repo", "env", "cli"]);
+    }
+
+    #[test]
+    fn load_sources_without_files_has_env_and_cli_layers() {
+        let root = scratch("sources-none");
+        let l = sources(&root, &[], &[]).unwrap();
+        assert_eq!((l.global_file.clone(), l.repo_file.clone()), (None, None));
+        assert_eq!(origins(&l), [Origin::Env, Origin::Cli]);
+        assert_eq!(
+            l.eff,
+            Effective::fold(&[Layer::default(), Layer::default()])
+        );
+    }
+
+    #[test]
+    fn load_sources_names_files_and_orders_layers() {
+        let root = scratch("sources-all");
+        write(
+            &root,
+            "xdg/pin-toolkit/config.toml",
+            "version = 1\njson = true\n",
+        );
+        write(&root, REPO_FILE, "version = 1\n[update]\nenabled = true\n");
+        let vars = [("PIN_TOOLKIT_CONCURRENCY", "3")];
+        let l = sources(&root, &["--min-age-days", "7"], &vars).unwrap();
+        assert_eq!(
+            l.global_file.as_deref(),
+            Some("xdg/pin-toolkit/config.toml")
+        );
+        assert_eq!(l.repo_file.as_deref(), Some(".pin-toolkit.toml"));
+        assert_eq!(
+            origins(&l),
+            [Origin::Global, Origin::Repo, Origin::Env, Origin::Cli]
+        );
+        let set = |o: Origin| {
+            let (_, layer) = l.layers.iter().find(|(x, _)| *x == o).unwrap();
+            (
+                layer.json,
+                layer.update,
+                layer.concurrency,
+                layer.min_age_days,
+            )
+        };
+        assert_eq!(set(Origin::Global), (Some(true), None, None, None));
+        assert_eq!(set(Origin::Repo), (None, Some(true), None, None));
+        assert_eq!(set(Origin::Env), (None, None, Some(3), None));
+        assert_eq!(set(Origin::Cli), (None, None, None, Some(7)));
+        assert!(l.eff.json && l.eff.update.enabled);
+        assert_eq!((l.eff.concurrency, l.eff.update.min_age_days), (3, 7));
+    }
+
+    /// `load` is `load_sources(..).eff`.
+    #[test]
+    fn load_sources_agrees_with_load() {
+        let root = scratch("sources-load");
+        write(
+            &root,
+            "xdg/pin-toolkit/config.toml",
+            "version = 1\nconcurrency = 2\n",
+        );
+        write(
+            &root,
+            REPO_FILE,
+            "version = 1\n[release_age]\nmin_days = 4\n",
+        );
+        let xdg = root.join("xdg").display().to_string();
+        let args = vec![OsString::from("pin-toolkit"), OsString::from("--json")];
+        let (cli, _) = cli::parse(&args).unwrap();
+        let p = Process {
+            args,
+            env: env_of(&[("XDG_CONFIG_HOME", xdg.as_str())]),
+            cwd: root.clone(),
+        };
+        let loaded = load_sources(&p, &root, &cli).unwrap();
+        assert_eq!(load(&p, &root, &cli), Ok(loaded.eff));
+    }
+
+    #[test]
+    fn load_sources_no_config_and_explicit_repo_file() {
+        let root = scratch("sources-flags");
+        write(
+            &root,
+            "xdg/pin-toolkit/config.toml",
+            "version = 1\njson = true\n",
+        );
+        write(&root, REPO_FILE, "version = 1\n");
+        write(&root, "other.toml", "version = 1\n");
+
+        let l = sources(&root, &["--no-config"], &[]).unwrap();
+        assert_eq!((l.global_file.clone(), l.repo_file.clone()), (None, None));
+        assert_eq!(origins(&l), [Origin::Env, Origin::Cli]);
+        assert!(!l.eff.json, "the global file is skipped");
+
+        // `--config` and PIN_TOOLKIT_CONFIG replace only the repo file, shown as given.
+        let l = sources(&root, &["--config", "other.toml"], &[]).unwrap();
+        assert_eq!(l.repo_file.as_deref(), Some("other.toml"));
+        assert_eq!(
+            l.global_file.as_deref(),
+            Some("xdg/pin-toolkit/config.toml")
+        );
+        let l = sources(&root, &[], &[("PIN_TOOLKIT_CONFIG", "other.toml")]).unwrap();
+        assert_eq!(l.repo_file.as_deref(), Some("other.toml"));
+    }
+
+    #[test]
+    fn load_sources_bad_file_is_fatal() {
+        let root = scratch("sources-bad");
+        write(&root, "xdg/pin-toolkit/config.toml", "version = 2\n");
+        assert_eq!(
+            sources(&root, &[], &[]),
+            Err(Fatal(
+                "xdg/pin-toolkit/config.toml: unsupported version 2 (expected 1)".into()
+            ))
         );
     }
 }
