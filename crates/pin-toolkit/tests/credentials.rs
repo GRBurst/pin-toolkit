@@ -281,9 +281,16 @@ async fn bound_token_host_is_not_added_to_the_resolve_set() {
     let vars = [("XDG_CONFIG_HOME", xdg.as_str()), ("A_TOK", "bt")];
     let argv = ["pin-toolkit", "--gitlab-host", B];
     let out = run_tuned(&root, &argv, &vars, |env| env.base_urls.gitlab = bases).await;
+    assert_eq!(out.code, 0, "the run completed: stderr: {}", out.stderr);
     assert!(
         a.received_requests().await.unwrap().is_empty(),
         "no request to the bound host: {}",
+        out.stdout
+    );
+    assert!(
+        out.stdout
+            .contains(&format!("skipped (host not enabled: {A})")),
+        "the component was skipped, not fetched: {}",
         out.stdout
     );
 }

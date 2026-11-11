@@ -195,8 +195,6 @@ fn finish_report(report: &mut Report, enabled: &[&'static str]) {
     }
 }
 
-/// The GitLab hosts to resolve besides the primary
-/// (`plugins.gitlab-ci.gitlab-hosts`).
 /// Spec §7.3: host → token for every `[hosts]` GitLab binding whose named
 /// env var is set and non-empty. Other binding kinds are not GitLab's. These
 /// hosts are not added to the resolve set (D45: a binding grants a
@@ -214,6 +212,8 @@ fn bound_tokens(eff: &Effective, env: &BTreeMap<String, String>) -> BTreeMap<Str
         .collect()
 }
 
+/// The GitLab hosts to resolve besides the primary
+/// (`plugins.gitlab-ci.gitlab-hosts`).
 fn gitlab_hosts(eff: &Effective) -> BTreeSet<String> {
     eff.plugins
         .get("gitlab-ci")
