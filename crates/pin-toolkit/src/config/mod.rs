@@ -213,6 +213,31 @@ pub struct Loaded {
     /// The layers that were folded, lowest precedence first (global and
     /// repo only when their file applies; env and CLI always).
     pub layers: Vec<(Origin, Layer)>,
+    /// `GITLAB_URI` or `CI_SERVER_HOST` is set: where the primary GitLab
+    /// host comes from when no layer sets `gitlab_host` (pin-core's
+    /// `GitlabEnv::from_vars`, which reads them from the env map).
+    pub env_primary: bool,
+}
+
+/// The highest layer in `layers` (lowest first) where `set` holds, or
+/// [`Origin::Default`] when no layer sets the value.
+pub fn origin_of(layers: &[(Origin, Layer)], set: impl Fn(&Layer) -> bool) -> Origin {
+    layers
+        .iter()
+        .rev()
+        .find(|(_, l)| set(l))
+        .map_or(Origin::Default, |(o, _)| *o)
+}
+
+/// Every layer where `set` holds, highest first: the origins of a value
+/// that concatenates across layers (`ignore`).
+pub fn origins_of(layers: &[(Origin, Layer)], set: impl Fn(&Layer) -> bool) -> Vec<Origin> {
+    layers
+        .iter()
+        .rev()
+        .filter(|(_, l)| set(l))
+        .map(|(o, _)| *o)
+        .collect()
 }
 
 /// The effective configuration of one run: defaults < global file < repo
@@ -253,6 +278,9 @@ pub fn load_sources(p: &Process, root: &Path, cli: &Cli) -> Result<Loaded, Fatal
         global_file,
         repo_file,
         layers: origins.into_iter().zip(layers).collect(),
+        env_primary: ["GITLAB_URI", "CI_SERVER_HOST"]
+            .iter()
+            .any(|var| p.env.get(*var).is_some_and(|v| !v.is_empty())),
     })
 }
 
@@ -775,5 +803,93 @@ mod tests {
                 "xdg/pin-toolkit/config.toml: unsupported version 2 (expected 1)".into()
             ))
         );
+    }
+
+    /// A layer with `json` set by `Layer`s in `pattern` (bit k = layer k).
+    fn json_layers(pattern: u8) -> Vec<(Origin, Layer)> {
+        [Origin::Global, Origin::Repo, Origin::Env, Origin::Cli]
+            .into_iter()
+            .enumerate()
+            .map(|(k, o)| {
+                let json = (pattern & (1 << k) != 0).then_some(true);
+                (
+                    o,
+                    Layer {
+                        json,
+                        ..Layer::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The origin of a scalar is the highest layer that sets it, else
+    /// `default`; checked over every presence pattern of the 4 layers.
+    #[test]
+    fn origin_of_is_the_highest_setting_layer() {
+        let all = [Origin::Global, Origin::Repo, Origin::Env, Origin::Cli];
+        for pattern in 0u8..16 {
+            let layers = json_layers(pattern);
+            let highest = (0..4).rev().find(|k| pattern & (1 << k) != 0);
+            assert_eq!(
+                origin_of(&layers, |l| l.json.is_some()),
+                highest.map_or(Origin::Default, |k| all[k]),
+                "layers {pattern:04b}"
+            );
+        }
+    }
+
+    /// The origins of a concatenating value: every setting layer, highest
+    /// first; none = empty.
+    #[test]
+    fn origins_of_lists_setting_layers_highest_first() {
+        let all = [Origin::Global, Origin::Repo, Origin::Env, Origin::Cli];
+        for pattern in 0u8..16 {
+            let want: Vec<Origin> = (0..4)
+                .rev()
+                .filter(|k| pattern & (1 << k) != 0)
+                .map(|k| all[k])
+                .collect();
+            assert_eq!(
+                origins_of(&json_layers(pattern), |l| l.json.is_some()),
+                want,
+                "layers {pattern:04b}"
+            );
+        }
+        let ignoring = |layers: &[(Origin, Layer)]| {
+            origins_of(layers, |l| {
+                l.plugins.get("x").is_some_and(|p| !p.ignore.is_empty())
+            })
+        };
+        let mut global = Layer::default();
+        plugin(&mut global).ignore = strings(&["a"]);
+        let mut repo = Layer::default();
+        plugin(&mut repo).ignore = strings(&["b"]);
+        let layers = [
+            (Origin::Global, global),
+            (Origin::Repo, repo),
+            (Origin::Env, Layer::default()),
+        ];
+        assert_eq!(ignoring(&layers), [Origin::Repo, Origin::Global]);
+        assert_eq!(ignoring(&layers[2..]), [], "no layer sets it");
+    }
+
+    /// The primary host's env fallback: `GITLAB_URI` or `CI_SERVER_HOST`,
+    /// non-empty, in the env map.
+    #[test]
+    fn origin_env_primary_follows_the_host_env_vars() {
+        let root = scratch("origin-env-primary");
+        let primary = |vars: &[(&str, &str)]| sources(&root, &[], vars).unwrap().env_primary;
+        assert!(!primary(&[]));
+        assert!(
+            !primary(&[("GITLAB_URI", ""), ("CI_SERVER_HOST", "")]),
+            "empty is unset"
+        );
+        assert!(!primary(&[
+            ("GITLAB_TOKEN", "x"),
+            ("PIN_TOOLKIT_GITLAB_HOST", "h.example")
+        ]));
+        assert!(primary(&[("GITLAB_URI", "https://h.example/")]));
+        assert!(primary(&[("CI_SERVER_HOST", "h.example")]));
     }
 }

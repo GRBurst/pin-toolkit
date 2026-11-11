@@ -178,6 +178,7 @@ mod tests {
             global_file: global.map(String::from),
             repo_file: repo.map(String::from),
             layers,
+            env_primary: false,
         }
     }
 
