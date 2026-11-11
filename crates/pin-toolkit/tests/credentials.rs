@@ -196,3 +196,94 @@ async fn invalid_ci_server_host_is_fatal_before_any_request() {
         "file untouched"
     );
 }
+
+/// A global config under its own scratch dir binding `A` to `A_TOK` and `B`
+/// to `B_TOK`; returns `XDG_CONFIG_HOME` (the file is
+/// `<xdg>/pin-toolkit/config.toml`).
+fn global_binding(name: &str) -> String {
+    let xdg = repo(&format!("{name}-xdg"));
+    let toml = format!(
+        "version = 1\n[hosts.\"{A}\"]\nkind = \"gitlab\"\ntoken-env = \"A_TOK\"\n\
+         [hosts.\"{B}\"]\nkind = \"gitlab\"\ntoken-env = \"B_TOK\"\n"
+    );
+    write(&xdg, "pin-toolkit/config.toml", &toml);
+    xdg.to_str().unwrap().to_string()
+}
+
+/// Spec §7.3: a bound token goes as `PRIVATE-TOKEN` to its own host only; a
+/// binding whose env var is empty stays anonymous. A is bound (`A_TOK=bt`),
+/// B is bound to an empty variable and is the primary (no `GITLAB_TOKEN`).
+#[tokio::test]
+async fn bound_token_sent_only_to_bound_host() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    require(&a, "PRIVATE-TOKEN", "bt").await;
+    forbid(&b, "PRIVATE-TOKEN").await;
+    allow(&b).await;
+    let xdg = global_binding("cred-bound");
+    let vars = [
+        ("XDG_CONFIG_HOME", xdg.as_str()),
+        ("A_TOK", "bt"),
+        ("B_TOK", ""),
+    ];
+    // Primary B (anonymous); the component lives on A, which resolves.
+    pin("cred-bound", A, A, &["--gitlab-host", B], &vars, &a, &b).await;
+}
+
+/// The env binding wins over the bound token: `GITLAB_TOKEN` goes to the
+/// primary even when the primary is bound too; the other bound host keeps
+/// its own token.
+#[tokio::test]
+async fn bound_token_env_primary_token_wins() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    require(&a, "PRIVATE-TOKEN", "bt").await;
+    require(&b, "PRIVATE-TOKEN", "pt").await;
+    let xdg = global_binding("cred-bound-wins");
+    let vars = [
+        ("XDG_CONFIG_HOME", xdg.as_str()),
+        ("GITLAB_TOKEN", "pt"),
+        ("A_TOK", "bt"),
+        ("B_TOK", "wrong"),
+    ];
+    pin(
+        "cred-bound-wins",
+        A,
+        A,
+        &["--gitlab-host", B],
+        &vars,
+        &a,
+        &b,
+    )
+    .await;
+}
+
+/// A binding grants a credential, not a lookup (D45): a bound host that is
+/// neither the primary nor in `gitlab-hosts` gets no request at all.
+#[tokio::test]
+async fn bound_token_host_is_not_added_to_the_resolve_set() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    for server in [&a, &b] {
+        Mock::given(method("GET"))
+            .and(header_exists("PRIVATE-TOKEN"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(server)
+            .await;
+    }
+    allow(&b).await;
+    let xdg = global_binding("cred-bound-set");
+    let root = repo("cred-bound-set");
+    write(
+        &root,
+        ".gitlab-ci.yml",
+        &format!("component: {A}/g/q/c@main\n"),
+    );
+    let bases = BTreeMap::from([(A.to_string(), a.uri()), (B.to_string(), b.uri())]);
+    let vars = [("XDG_CONFIG_HOME", xdg.as_str()), ("A_TOK", "bt")];
+    let argv = ["pin-toolkit", "--gitlab-host", B];
+    let out = run_tuned(&root, &argv, &vars, |env| env.base_urls.gitlab = bases).await;
+    assert!(
+        a.received_requests().await.unwrap().is_empty(),
+        "no request to the bound host: {}",
+        out.stdout
+    );
+}

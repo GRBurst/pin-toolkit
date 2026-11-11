@@ -19,6 +19,7 @@ use pin_core::report::{ErrorEntry, Report};
 use pin_core::run::{Ctx, ResolverEnv, Route, RunOptions, now_unix, run};
 
 use crate::cli::{Cli, Mode};
+use crate::config::global::HostBinding;
 use crate::config::{Effective, Fatal, env};
 use crate::enable::{Plan, enable, selection};
 use crate::known::{KNOWN, compiled_plugin};
@@ -97,6 +98,7 @@ async fn run_mode(
     // Before any work: an invalid `CI_SERVER_HOST` is fatal (M5d final M1).
     let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(&eff))
         .map_err(Fatal)?;
+    renv.gitlab.bound = bound_tokens(&eff, &p.env);
     if mode == Mode::Plugins {
         let (listing, notices) = plugins_listing(&eff)?;
         out.stdout = listing;
@@ -192,6 +194,23 @@ fn finish_report(report: &mut Report, enabled: &[&'static str]) {
 
 /// The GitLab hosts to resolve besides the primary
 /// (`plugins.gitlab-ci.gitlab-hosts`).
+/// Spec §7.3: host → token for every `[hosts]` GitLab binding whose named
+/// env var is set and non-empty. Other binding kinds are not GitLab's. These
+/// hosts are not added to the resolve set (D45: a binding grants a
+/// credential, not a lookup).
+fn bound_tokens(eff: &Effective, env: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    eff.hosts
+        .iter()
+        .filter_map(|(host, binding)| match binding {
+            HostBinding::Gitlab { token_env } => env
+                .get(token_env)
+                .filter(|t| !t.is_empty())
+                .map(|t| (host.clone(), t.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 fn gitlab_hosts(eff: &Effective) -> BTreeSet<String> {
     eff.plugins
         .get("gitlab-ci")
