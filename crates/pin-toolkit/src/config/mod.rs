@@ -164,6 +164,21 @@ impl PluginLayer {
 /// The repo config file name at the git root.
 pub const REPO_FILE: &str = ".pin-toolkit.toml";
 
+/// The global config file: `<config dir>/pin-toolkit/config.toml`, where
+/// the config dir is `$XDG_CONFIG_HOME` when it is non-empty and absolute
+/// (the XDG rule: a relative value is invalid and ignored), else
+/// `$HOME/.config` (the same on macOS, §7.1). `None` when neither gives a
+/// directory. Pure: `env` is the process env map read at the edge.
+pub fn global_path(env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    let non_empty = |k: &str| env.get(k).map(String::as_str).filter(|v| !v.is_empty());
+    let dir = non_empty("XDG_CONFIG_HOME")
+        .map(Path::new)
+        .filter(|p| p.is_absolute())
+        .map(Path::to_path_buf)
+        .or_else(|| non_empty("HOME").map(|h| Path::new(h).join(".config")))?;
+    Some(dir.join("pin-toolkit").join("config.toml"))
+}
+
 /// The effective configuration of one run: defaults < repo file < env <
 /// CLI. Repo file = `--no-config` ? none : `--config` (must exist) :
 /// `PIN_TOOLKIT_CONFIG` (must exist) : `<root>/.pin-toolkit.toml` if it
@@ -321,6 +336,36 @@ mod tests {
                 want: |k| format!("{:?}", k.map(|k| format!("h{k}.example"))),
             },
             Field {
+                name: "hosts",
+                set: |l, k| {
+                    l.hosts = Some(
+                        [(
+                            format!("h{k}.example"),
+                            HostBinding::Gitlab {
+                                token_env: format!("T{k}"),
+                            },
+                        )]
+                        .into(),
+                    )
+                },
+                get: |e| format!("{:?}", e.hosts),
+                // Replace-merge: only the highest layer's map survives.
+                want: |k| {
+                    let map: BTreeMap<String, HostBinding> = k
+                        .map(|k| {
+                            (
+                                format!("h{k}.example"),
+                                HostBinding::Gitlab {
+                                    token_env: format!("T{k}"),
+                                },
+                            )
+                        })
+                        .into_iter()
+                        .collect();
+                    format!("{map:?}")
+                },
+            },
+            Field {
                 name: "plugins.x.run",
                 set: |l, k| plugin(l).run = Some(b(k)),
                 get: |e| format!("{:?}", e.plugins.get("x").and_then(|p| p.run)),
@@ -361,22 +406,23 @@ mod tests {
         ]
     }
 
-    /// P-prec over every presence pattern of L = [defaults, repo, env, cli].
+    /// P-prec over every presence pattern of
+    /// L = [defaults, global, repo, env, cli].
     #[test]
     fn fold_scalars_last_wins() {
         for f in fields() {
-            for pattern in 0u8..16 {
-                let mut layers = vec![Layer::default(); 4];
+            for pattern in 0u8..32 {
+                let mut layers = vec![Layer::default(); 5];
                 for (k, l) in layers.iter_mut().enumerate() {
                     if pattern & (1 << k) != 0 {
                         (f.set)(l, k);
                     }
                 }
-                let highest = (0..4).rev().find(|k| pattern & (1 << k) != 0);
+                let highest = (0..5).rev().find(|k| pattern & (1 << k) != 0);
                 assert_eq!(
                     (f.get)(&Effective::fold(&layers)),
                     (f.want)(highest),
-                    "{} with layers {pattern:04b} set",
+                    "{} with layers {pattern:05b} set",
                     f.name
                 );
             }
@@ -434,5 +480,47 @@ mod tests {
         assert!(!d.json && !d.dry_run && !d.check);
         assert_eq!((d.only, d.skip, d.gitlab_host), (None, vec![], None));
         assert!(d.hosts.is_empty() && d.plugins.is_empty());
+    }
+
+    fn env_of(vars: &[(&str, &str)]) -> BTreeMap<String, String> {
+        vars.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn global_path_xdg_over_home() {
+        let env = env_of(&[("XDG_CONFIG_HOME", "/xdg"), ("HOME", "/home/u")]);
+        assert_eq!(
+            global_path(&env),
+            Some(PathBuf::from("/xdg/pin-toolkit/config.toml"))
+        );
+    }
+
+    #[test]
+    fn global_path_home_fallback() {
+        let home = ("HOME", "/home/u");
+        let want = Some(PathBuf::from("/home/u/.config/pin-toolkit/config.toml"));
+        assert_eq!(global_path(&env_of(&[home])), want, "XDG unset");
+        assert_eq!(
+            global_path(&env_of(&[("XDG_CONFIG_HOME", ""), home])),
+            want,
+            "empty XDG ignored"
+        );
+        assert_eq!(
+            global_path(&env_of(&[("XDG_CONFIG_HOME", "rel/xdg"), home])),
+            want,
+            "relative XDG ignored"
+        );
+    }
+
+    #[test]
+    fn global_path_none_without_a_config_dir() {
+        assert_eq!(global_path(&env_of(&[])), None, "neither set");
+        assert_eq!(
+            global_path(&env_of(&[("XDG_CONFIG_HOME", "rel"), ("HOME", "")])),
+            None,
+            "relative XDG and empty HOME"
+        );
     }
 }
