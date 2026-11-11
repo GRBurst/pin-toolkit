@@ -114,14 +114,17 @@ pub fn file_glob(id: &str, g: &str) -> Result<Glob, String> {
         .map_err(|e| format!("invalid glob `{g}` in plugins.{id}.files: {}", e.kind()))
 }
 
-/// `plugins.<id>.files`, else `p`'s default globs, matched against the
-/// path relative to the git root (`*` does not cross `/`).
-fn globs(eff: &Effective, p: &dyn DynPlugin) -> Result<GlobSet, Fatal> {
+/// `plugins.<id>.files`, else `p`'s default globs.
+pub fn files(eff: &Effective, p: &dyn DynPlugin) -> Vec<String> {
     let configured = eff.plugins.get(p.id()).and_then(|pl| pl.files.clone());
-    let files =
-        configured.unwrap_or_else(|| p.default_files().iter().map(|g| g.to_string()).collect());
+    configured.unwrap_or_else(|| p.default_files().iter().map(|g| g.to_string()).collect())
+}
+
+/// [`files`] as globs, matched against the path relative to the git root
+/// (`*` does not cross `/`).
+fn globs(eff: &Effective, p: &dyn DynPlugin) -> Result<GlobSet, Fatal> {
     let mut set = GlobSetBuilder::new();
-    for g in &files {
+    for g in &files(eff, p) {
         set.add(file_glob(p.id(), g).map_err(Fatal)?);
     }
     set.build()
