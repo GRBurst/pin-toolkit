@@ -80,7 +80,7 @@ pub struct Opts {
     /// Repository config file (default: .pin-toolkit.toml at the git root)
     #[arg(long, global = true, value_name = "FILE")]
     pub config: Option<PathBuf>,
-    /// Do not read a config file
+    /// Do not read the global or repo config file
     #[arg(long, global = true)]
     pub no_config: bool,
     /// Primary GitLab host (default: GITLAB_URI, else CI_SERVER_HOST, else

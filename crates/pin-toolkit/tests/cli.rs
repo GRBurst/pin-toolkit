@@ -93,6 +93,12 @@ async fn usage_error_exits_2() {
         "stdout: {}",
         out.stdout
     );
+    assert!(
+        out.stdout
+            .contains("Do not read the global or repo config file"),
+        "stdout: {}",
+        out.stdout
+    );
     assert_eq!(out.stderr, "");
 
     let out = run_in(&root, &["pin-toolkit", "--version"], &[]).await;
