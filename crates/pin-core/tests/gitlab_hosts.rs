@@ -243,6 +243,22 @@ async fn unbound_host_failure_404_names_the_default_path() {
     );
 }
 
+/// Review L2: `CI_SERVER_HOST` without `CI_JOB_TOKEN` binds nothing, so a
+/// failure there is D45 too.
+#[tokio::test]
+async fn unbound_host_failure_ci_server_host_without_job_token() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    fail_all(&a, 401).await;
+    let vars = [("CI_SERVER_HOST", A), ("GITLAB_TOKEN", "pt")];
+    let ctx = ctx(&vars, B, &[A], &a, &b);
+    assert_eq!(
+        ctx.gitlab_resolve(Some(A), "g/p", "v1").await,
+        Err(format!(
+            "{A}: not trusted for credentials — bind it in ~/.config/pin-toolkit/config.toml"
+        ))
+    );
+}
+
 /// The primary host keeps the client's texts, with or without a token.
 #[tokio::test]
 async fn unbound_host_failure_on_primary_keeps_message() {

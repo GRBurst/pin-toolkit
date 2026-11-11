@@ -1306,6 +1306,11 @@ mod tests {
                 format!("GITLAB_URI: invalid GitLab host `{shown}`")
             );
         }
+        // Review L2: the host is cut before it is echoed, so a secret in the
+        // query of an invalid URL never reaches the message.
+        let e = err("https://bad_host/?private_token=SECRET");
+        assert_eq!(e, "GITLAB_URI: invalid GitLab host `bad_host`");
+        assert!(!e.contains("SECRET"), "{e}");
         // Review H1: any `@` is a credential, even where the host cut would
         // land inside the userinfo (`oauth2:1234` would be a valid host).
         let creds = [
