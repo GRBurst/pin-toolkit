@@ -88,30 +88,47 @@ async fn run_mode(
     out: &mut Output,
     tune: impl FnOnce(&mut ResolverEnv),
 ) -> Result<(), Fatal> {
-    // CLI values only: env ONLY/SKIP are ignored in this mode (T-D28).
-    if matches!(mode, Mode::Plugin(_)) && (cli.opts.only.is_some() || cli.opts.skip.is_some()) {
-        return Err(Fatal(
-            "--only/--skip cannot be combined with a plugin subcommand".into(),
-        ));
+    // CLI values only: env ONLY/SKIP are ignored in these modes (T-D28).
+    if cli.opts.only.is_some() || cli.opts.skip.is_some() {
+        match mode {
+            Mode::Plugin(_) => {
+                return Err(Fatal(
+                    "--only/--skip cannot be combined with a plugin subcommand".into(),
+                ));
+            }
+            Mode::Config { .. } => {
+                return Err(Fatal(
+                    "--only/--skip cannot be combined with `config show`".into(),
+                ));
+            }
+            Mode::All | Mode::Plugins => {}
+        }
     }
     let root = walk::git_root(&p.cwd).unwrap_or_else(|| p.cwd.clone());
-    let eff = config::load(p, &root, cli)?;
-    // Before any work: an invalid `CI_SERVER_HOST` is fatal (M5d final M1).
-    let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(&eff))
+    let loaded = config::load_sources(p, &root, cli)?;
+    let eff = &loaded.eff;
+    // Before any work: an invalid `CI_SERVER_HOST`/`GITLAB_URI` is fatal
+    // (M5d final M1).
+    let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(eff))
         .map_err(Fatal)?;
-    renv.gitlab.bound = bound_tokens(&eff, &p.env);
+    // `config show` reads no file and builds no resolver: configuration only.
+    if let Mode::Config { .. } = mode {
+        out.stdout = show::render(&loaded, &renv.gitlab.primary);
+        return Ok(());
+    }
+    renv.gitlab.bound = bound_tokens(eff, &p.env);
     // The path D45 names in its hint (composed in pin-core): set even with
     // `--no-config`, which only skips reading the file.
     renv.gitlab.global_config = config::global_path(&p.env).map(|g| g.display().to_string());
     if mode == Mode::Plugins {
-        let (listing, notices) = plugins_listing(&eff)?;
+        let (listing, notices) = plugins_listing(eff)?;
         out.stdout = listing;
         for n in &notices {
             out.stderr.push_str(&format!("pin-toolkit: {n}\n"));
         }
         return Ok(());
     }
-    let plan = enable(&eff, &mode)?;
+    let plan = enable(eff, &mode)?;
     for n in &plan.notices {
         out.stderr.push_str(&format!("pin-toolkit: {n}\n"));
     }
