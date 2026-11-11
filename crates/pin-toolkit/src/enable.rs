@@ -44,7 +44,9 @@ pub fn enable(eff: &Effective, mode: &Mode) -> Result<Plan, Fatal> {
             compiled_plugin(id).ok_or_else(|| not_in_build(id))?;
             vec![id]
         }
-        Mode::All | Mode::Plugins => {
+        // `config show` never enables plugins (`run_mode` returns before):
+        // it would explain a run like `Mode::Plugins`.
+        Mode::All | Mode::Plugins | Mode::Config { .. } => {
             let only = eff.only.as_deref();
             for id in only.into_iter().flatten().chain(&eff.skip) {
                 if known(id).is_none() {

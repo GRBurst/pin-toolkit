@@ -1,6 +1,6 @@
 //! Command line (spec §6.6): `pin-toolkit [OPTIONS] [PATHS]…`, one
-//! subcommand per known plugin, `plugins`; `argv[0]` aliases `pin-<plugin>`
-//! and `pin-ci` (D33) insert the subcommand.
+//! subcommand per known plugin, `plugins`, `config show`; `argv[0]` aliases
+//! `pin-<plugin>` and `pin-ci` (D33) insert the subcommand.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -41,6 +41,22 @@ pub enum Cmd {
     GithubActions { paths: Vec<PathBuf> },
     /// List compiled-in plugins, their kinds and enable state
     Plugins,
+    /// Inspect the effective configuration
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCmd {
+    /// Print every effective setting as `key = value`, one per line
+    Show {
+        /// Append `# <origin>` (default, global, repo, env or cli) to each
+        /// line
+        #[arg(long)]
+        origin: bool,
+    },
 }
 
 /// The §6.6 options; each is one config field (or a CLI-only switch).
@@ -89,12 +105,14 @@ pub struct Opts {
     pub gitlab_host: Option<String>,
 }
 
-/// What a run does: every enabled plugin, one plugin, or the listing.
+/// What a run does: every enabled plugin, one plugin, the plugin listing,
+/// or `config show` (`origin`: with `--origin`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     All,
     Plugin(&'static str),
     Plugins,
+    Config { origin: bool },
 }
 
 impl Cli {
@@ -104,7 +122,7 @@ impl Cli {
             Some(Cmd::GitlabCi { paths })
             | Some(Cmd::Helm { paths })
             | Some(Cmd::GithubActions { paths }) => paths,
-            Some(Cmd::Plugins) | None => &self.paths,
+            Some(Cmd::Plugins) | Some(Cmd::Config { .. }) | None => &self.paths,
         }
     }
 
@@ -115,6 +133,9 @@ impl Cli {
             Some(Cmd::Helm { .. }) => Mode::Plugin("helm"),
             Some(Cmd::GithubActions { .. }) => Mode::Plugin("github-actions"),
             Some(Cmd::Plugins) => Mode::Plugins,
+            Some(Cmd::Config {
+                cmd: ConfigCmd::Show { origin },
+            }) => Mode::Config { origin },
         }
     }
 }
@@ -515,6 +536,73 @@ mod tests {
         assert!(
             text.contains("Usage: pin-toolkit gitlab-ci [OPTIONS] [PATHS]..."),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn config_show_mode_parses() {
+        let (cli, mode) = parsed(&["config", "show"]);
+        assert_eq!(
+            (mode, paths(&cli)),
+            (Mode::Config { origin: false }, vec![])
+        );
+
+        let (cli, mode) = parsed(&["config", "show", "--origin"]);
+        assert_eq!((mode, paths(&cli)), (Mode::Config { origin: true }, vec![]));
+
+        // Global options before and after the subcommand.
+        let (cli, mode) = parsed(&["--json", "config", "show", "--update", "--origin"]);
+        assert_eq!(mode, Mode::Config { origin: true });
+        assert!(cli.opts.json && cli.opts.update);
+        let (cli, mode) = parsed(&["--no-config", "config", "show"]);
+        assert_eq!(mode, Mode::Config { origin: false });
+        assert!(cli.opts.no_config);
+
+        // `--only`/`--skip` parse (the run rejects them, like `plugins`).
+        let (cli, mode) = parsed(&["config", "show", "--only", "gitlab-ci"]);
+        assert_eq!(mode, Mode::Config { origin: false });
+        assert_eq!(cli.opts.only, Some(vec!["gitlab-ci".to_string()]));
+    }
+
+    #[test]
+    fn config_show_takes_show_and_no_paths() {
+        for argv in [
+            &["config"][..],
+            &["config", "bogus"],
+            &["config", "show", "x.yml"],
+            &["config", "show", "--bogus"],
+            &["--origin", "config", "show"],
+        ] {
+            let mut a = os(&["pin-toolkit"]);
+            a.extend(os(argv));
+            assert!(parse(&a).is_err(), "{argv:?}");
+        }
+    }
+
+    /// Like `plugins`: a subcommand only before the first path, so a path
+    /// named `config` needs `./config`.
+    #[test]
+    fn config_show_is_a_path_unless_first() {
+        let (cli, mode) = parsed(&["./config"]);
+        assert_eq!((mode, paths(&cli)), (Mode::All, vec!["./config".into()]));
+
+        let (cli, mode) = parsed(&["a.yml", "config", "show"]);
+        assert_eq!(
+            (mode, paths(&cli)),
+            (
+                Mode::All,
+                vec!["a.yml".into(), "config".into(), "show".into()]
+            ),
+            "a `config` after a path is a path"
+        );
+
+        let (cli, mode) = parsed(&["./config", "config", "show"]);
+        assert_eq!(
+            (mode, paths(&cli)),
+            (
+                Mode::All,
+                vec!["./config".into(), "config".into(), "show".into()]
+            )
         );
     }
 }
