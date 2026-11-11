@@ -108,8 +108,10 @@ fn wildcard(p: &[char], s: &[char]) -> bool {
 }
 
 /// What one plugin plans in a file: the enabled kinds and the `ignore`
-/// patterns.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// patterns. No `Default` (review-1 N1): the default would be an empty
+/// `KindSet` that scans nothing, so a `..Default::default()` would silently
+/// disable every kind. Build one with [`From<KindSet>`] instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
     pub kinds: KindSet,
     pub ignore: RefPatterns,
