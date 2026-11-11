@@ -99,6 +99,9 @@ async fn run_mode(
     let mut renv = ResolverEnv::from_vars(&p.env, eff.gitlab_host.clone(), gitlab_hosts(&eff))
         .map_err(Fatal)?;
     renv.gitlab.bound = bound_tokens(&eff, &p.env);
+    // The path D45 names in its hint (composed in pin-core): set even with
+    // `--no-config`, which only skips reading the file.
+    renv.gitlab.global_config = config::global_path(&p.env).map(|g| g.display().to_string());
     if mode == Mode::Plugins {
         let (listing, notices) = plugins_listing(&eff)?;
         out.stdout = listing;

@@ -368,3 +368,72 @@ async fn gitlab_uri_invalid_is_fatal_before_any_request() {
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 }
+
+/// Run the one-component repo `.gitlab-ci.yml` (`component` on `host`),
+/// `gitlab-hosts = [host]`, primary A, with every lookup on `host` a 404;
+/// returns (stdout, the `XDG_CONFIG_HOME` used).
+async fn failing_component(name: &str, host: &str, args: &[&str]) -> (String, String) {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    for server in [&a, &b] {
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(server)
+            .await;
+    }
+    let xdg = repo(&format!("{name}-xdg"));
+    let xdg = xdg.to_str().unwrap().to_string();
+    let root = repo(name);
+    write(
+        &root,
+        ".pin-toolkit.toml",
+        &format!("version = 1\n[plugins.gitlab-ci]\ngitlab-hosts = [\"{host}\"]\n"),
+    );
+    write(
+        &root,
+        ".gitlab-ci.yml",
+        &format!("component: {host}/g/q/c@main\n"),
+    );
+    let argv: Vec<&str> = ["pin-toolkit", "--gitlab-host", A]
+        .into_iter()
+        .chain(args.iter().copied())
+        .collect();
+    let bases = BTreeMap::from([(A.to_string(), a.uri()), (B.to_string(), b.uri())]);
+    let out = run_tuned(&root, &argv, &[("XDG_CONFIG_HOME", &xdg)], |env| {
+        env.base_urls.gitlab = bases;
+        // `--no-config` skips the repo file, so the host is added here.
+        env.gitlab.hosts.insert(host.to_string());
+    })
+    .await;
+    (out.stdout, xdg)
+}
+
+/// D45 (spec §7.3): an unbound non-primary host's failed lookup names the
+/// global config path (pin-core composes it; the toolkit passes the path).
+#[tokio::test]
+async fn untrusted_host_failure_names_the_global_config() {
+    let (stdout, xdg) = failing_component("cred-untrusted", B, &[]).await;
+    let want = format!(
+        "unresolved ({B}: not trusted for credentials — bind it in {xdg}/pin-toolkit/config.toml)"
+    );
+    assert!(stdout.contains(&want), "want `{want}` in: {stdout}");
+}
+
+/// The hint's path is not a file the run reads: `--no-config` keeps it.
+#[tokio::test]
+async fn untrusted_host_hint_survives_no_config() {
+    let (stdout, xdg) = failing_component("cred-untrusted-nc", B, &["--no-config"]).await;
+    let want = format!(
+        "unresolved ({B}: not trusted for credentials — bind it in {xdg}/pin-toolkit/config.toml)"
+    );
+    assert!(stdout.contains(&want), "want `{want}` in: {stdout}");
+}
+
+/// A failure on the primary host is never rewritten (no D45 text).
+#[tokio::test]
+async fn untrusted_host_primary_failure_keeps_its_text() {
+    let (stdout, _) = failing_component("cred-untrusted-primary", A, &[]).await;
+    assert!(
+        stdout.contains("unresolved (") && !stdout.contains("not trusted"),
+        "stdout: {stdout}"
+    );
+}
