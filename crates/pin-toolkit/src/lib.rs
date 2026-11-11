@@ -7,6 +7,7 @@ pub mod cli;
 pub mod config;
 pub mod enable;
 pub mod known;
+pub mod show;
 pub mod walk;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -116,9 +117,10 @@ async fn run_mode(
     }
     let claims: Vec<(&'static str, &GlobSet)> =
         plan.plugins.iter().map(|(p, _, g)| (p.id(), g)).collect();
-    let forced = match mode {
-        Mode::Plugin(id) => Some(id),
-        Mode::All | Mode::Plugins => None,
+    let forced = if let Mode::Plugin(id) = mode {
+        Some(id)
+    } else {
+        None
     };
     let found = walk::inputs(&p.cwd, &root, cli.paths());
     for w in &found.warnings {
