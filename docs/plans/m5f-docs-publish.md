@@ -27,9 +27,9 @@ Acceptance: ## Plugins overview (after What it does) lists gitlab-ci (built) and
 
 ## M3: Spec bookkeeping: old pin-ci spec marked superseded by the toolkit spec; toolkit spec M5f marked done and O3 GitHub handle filled in (GRBurst, owner-confirmed 2026-11-11). (branch: milestone; depends: M2)
 Acceptance: 2026-11-01-pin-ci-design.md has a superseded-by banner near the top linking 2026-11-09-pin-toolkit-design.md; toolkit spec §9 M5f row and §10 M5f row marked done; O3 names github.com/GRBurst/pin-toolkit (owner-confirmed 2026-11-11); 'to be filled in at M5f' gone; bash scripts/gate.sh passes on the branch
-- [ ] M3.T1: Add a superseded-by banner (blockquote, ≤ 4 lines) right below the title of docs/superpowers/specs/2026-11-01-pin-ci-design.md, linking ./2026-11-09-pin-toolkit-design.md.
+- [x] M3.T1: Add a superseded-by banner (blockquote, ≤ 4 lines) right below the title of docs/superpowers/specs/2026-11-01-pin-ci-design.md, linking ./2026-11-09-pin-toolkit-design.md.
   files: docs/superpowers/specs/2026-11-01-pin-ci-design.md · forbidden: editing the old spec body · check: `head -8 docs/superpowers/specs/2026-11-01-pin-ci-design.md | grep -i 'superseded' | grep -q '2026-11-09-pin-toolkit-design.md'` · depends: —
-- [ ] M3.T2: Toolkit spec: §9 M5f row starts '**Done** 2026-11-11 (...)' like M5d; §10 M5f row starts 'done (2026-11-11): '; O3: replace '<owner>'/'to be filled in at M5f' with github.com/GRBurst/pin-toolkit (owner-confirmed 2026-11-11); M5f ✓ in D34 order line.
+- [x] M3.T2: Toolkit spec: §9 M5f row starts '**Done** 2026-11-11 (...)' like M5d; §10 M5f row starts 'done (2026-11-11): '; O3: replace '<owner>'/'to be filled in at M5f' with github.com/GRBurst/pin-toolkit (owner-confirmed 2026-11-11); M5f ✓ in D34 order line.
   files: docs/superpowers/specs/2026-11-09-pin-toolkit-design.md · forbidden: changing other milestone rows or decisions; claiming the GitHub push already happened · check: `f=docs/superpowers/specs/2026-11-09-pin-toolkit-design.md; grep -qE '^\| M5f \| \*\*Done\*\*' $f && grep -qE '^\| M5f \| done' $f && grep -q 'github.com/GRBurst/pin-toolkit' $f && ! grep -q 'to be filled in at M5f' $f` · depends: —
 
 <details><summary>skeleton</summary>

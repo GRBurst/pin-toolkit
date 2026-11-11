@@ -1,6 +1,10 @@
 # pin-ci — GitLab CI image & component pinning CLI
 
-Status: draft — builder check pending, owner approval pending
+> **Superseded** by [2026-11-09-pin-toolkit-design.md](./2026-11-09-pin-toolkit-design.md)
+> (pin-toolkit). Kept as a historical record of the original `pin-ci`
+> design; the tool it describes has been replaced by pin-toolkit.
+
+Status: draft — superseded, see banner above
 Date: 2026-11-01
 
 ## Intent and why
