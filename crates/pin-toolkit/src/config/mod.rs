@@ -12,6 +12,7 @@ use crate::Process;
 use crate::cli::{self, Cli};
 
 pub mod env;
+pub mod global;
 pub mod repo;
 
 /// The default `--concurrency`.
