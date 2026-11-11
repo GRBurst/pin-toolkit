@@ -51,7 +51,8 @@ pub struct UpdatePolicy {
 #[derive(Clone, PartialEq, Eq)]
 pub enum GitlabAuth {
     Anonymous,
-    /// `GITLAB_TOKEN`, sent as `PRIVATE-TOKEN`.
+    /// `GITLAB_TOKEN` or a global `[hosts]` token (spec §7.3), sent as
+    /// `PRIVATE-TOKEN`.
     Private(String),
     /// `CI_JOB_TOKEN`, sent as `JOB-TOKEN`.
     Job(String),
@@ -185,14 +186,14 @@ impl GitlabEnv {
     /// `primary` (the toolkit passes CLI > `PIN_TOOLKIT_GITLAB_HOST`), else
     /// the `GITLAB_URI` host, else `CI_SERVER_HOST`, else `gitlab.com`;
     /// tokens from `GITLAB_TOKEN` and `CI_JOB_TOKEN`. Empty values count as
-    /// unset. A `CI_SERVER_HOST` or `GITLAB_URI` host (a URL's `http(s)://`
-    /// and path cut off) that is not a [`valid_gitlab_host`] is an error,
-    /// never a fallback: either would be the default primary,
-    /// `CI_SERVER_HOST` also the job token's host (M5d final M1).
-    /// `GITLAB_URI` never binds `CI_JOB_TOKEN` (D37). A `GITLAB_URI` with an
-    /// `@` (userinfo, review H1) is an error that echoes none of the value;
-    /// any other invalid one echoes only the host part, never a path, query
-    /// or fragment.
+    /// unset. A `CI_SERVER_HOST` or `GITLAB_URI` host (an `http(s)://`
+    /// scheme stripped, cut before `/`, `?` or `#`) that is not a
+    /// [`valid_gitlab_host`] is an error, never a fallback: either would be
+    /// the default primary, `CI_SERVER_HOST` also the job token's host (M5d
+    /// final M1). `GITLAB_URI` never binds `CI_JOB_TOKEN` (D37). A
+    /// `GITLAB_URI` with an `@` (userinfo, review H1) is rejected with an
+    /// error that echoes none of the value; any other invalid one echoes only
+    /// the host part, never a path, query or fragment.
     pub fn from_vars(
         vars: &BTreeMap<String, String>,
         primary: Option<String>,
@@ -495,9 +496,9 @@ impl Ctx {
     }
 
     /// The GitLab clients, one per `env.gitlab.resolve_set()` host, each
-    /// with the credential [`GitlabEnv::auth_for`] binds to it (D31, D37);
-    /// built on first use, a construction error (`gitlab: {host}: {e}`) is
-    /// cached.
+    /// with the credential [`GitlabEnv::auth_for`] binds to it (D31, D37,
+    /// spec §7.3 `[hosts]`); built on first use, a construction error
+    /// (`gitlab: {host}: {e}`) is cached.
     #[cfg(feature = "gitlab")]
     pub(crate) fn gitlab(&self) -> Result<&GitLabHosts, &str> {
         self.gitlab
@@ -625,7 +626,7 @@ impl Ctx {
     #[cfg(feature = "gitlab")]
     fn not_trusted(&self, host: &str) -> Option<String> {
         let g = &self.env.gitlab;
-        (host != g.primary && g.auth_for(host) == GitlabAuth::Anonymous).then(|| {
+        (host != g.primary && matches!(g.auth_for(host), GitlabAuth::Anonymous)).then(|| {
             let path = g.global_config.as_deref().unwrap_or(DEFAULT_GLOBAL_CONFIG);
             format!("{host}: not trusted for credentials — bind it in {path}")
         })
