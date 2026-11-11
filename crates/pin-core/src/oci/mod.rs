@@ -8,7 +8,6 @@ pub mod image_ref;
 #[doc(hidden)]
 pub mod registry;
 #[cfg(all(feature = "oci", not(feature = "test-support")))]
-#[allow(dead_code)] // items only tests (test-support) use
 pub(crate) mod registry;
 pub mod splice;
 

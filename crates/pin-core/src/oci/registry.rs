@@ -86,7 +86,10 @@ pub struct Creds {
 }
 
 impl Creds {
-    /// No credentials: every request is anonymous.
+    /// No credentials: every request is anonymous. Only test and
+    /// `test-support` code build a `Creds` directly; production reads it
+    /// through `ResolverEnv`.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub fn none() -> Self {
         Self::default()
     }
@@ -96,6 +99,7 @@ impl Creds {
     /// `DOCKERHUB_TOKEN` -> `docker.io` Basic, `GITHUB_TOKEN` -> `ghcr.io`
     /// Bearer. A missing or malformed config.json yields no entry for that
     /// host, never fatal.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub fn load_from(home: Option<&Path>) -> Self {
         Self::load_from_env(home, |var| std::env::var(var).ok())
     }
@@ -131,6 +135,7 @@ impl Creds {
     }
 
     /// Test hook: add/replace the credentials for one host.
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
     pub fn with_host(mut self, host: &str, creds: HostCreds) -> Self {
         self.hosts.insert(host.to_string(), creds);
         self
