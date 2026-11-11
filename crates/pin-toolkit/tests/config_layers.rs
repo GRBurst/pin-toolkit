@@ -3,12 +3,14 @@
 
 mod support;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use pin_toolkit::Process;
 #[cfg(feature = "gitlab-ci")]
 use pin_toolkit::cli::Mode;
 use pin_toolkit::cli::parse;
+use pin_toolkit::config::global::HostBinding;
 use pin_toolkit::config::{Effective, Fatal, load};
 #[cfg(feature = "gitlab-ci")]
 use pin_toolkit::enable::enable;
@@ -389,4 +391,212 @@ async fn gitlab_ci_subcommand_not_in_build() {
         "pin-toolkit: plugin gitlab-ci not in this build\n"
     );
     assert_eq!(out.stdout, "");
+}
+
+// ---- the global layer (M5e', spec §7.1) ----------------------------------
+
+/// `<root>/xdg/pin-toolkit/config.toml` written, `$XDG_CONFIG_HOME` value.
+fn global_file(root: &Path, text: &str) -> String {
+    write(root, "xdg/pin-toolkit/config.toml", text);
+    root.join("xdg").to_str().unwrap().to_string()
+}
+
+#[test]
+fn global_precedence_global_repo_env_cli() {
+    let root = repo("global-precedence");
+    let xdg = global_file(
+        &root,
+        "version = 1\njson = true\nconcurrency = 2\n\
+         [hosts.\"gitlab.example.com\"]\nkind = \"gitlab\"\ntoken-env = \"EXAMPLE_TOKEN\"\n",
+    );
+    write(
+        &root,
+        ".pin-toolkit.toml",
+        "version = 1\n[update]\nenabled = true\n",
+    );
+    let load = |argv: &[&str], extra: &[(&str, &str)]| {
+        let mut vars = vec![("XDG_CONFIG_HOME", xdg.as_str())];
+        vars.extend_from_slice(extra);
+        load_in(&root, &root, argv, &vars).unwrap()
+    };
+
+    let none = load_in(&root, &root, &["pin-toolkit"], &[]).unwrap();
+    assert_eq!((none.concurrency, none.json), (8, false), "no global file");
+    assert!(none.hosts.is_empty() && none.update.enabled);
+
+    // No key is allowed in both files (a repo `concurrency`/`hosts` is exit
+    // 2), so global < repo is pinned by the fold test; here both apply.
+    let e = load(&["pin-toolkit"], &[]);
+    assert_eq!((e.concurrency, e.json), (2, true), "global over defaults");
+    assert!(e.update.enabled, "the repo layer applies on the global one");
+    assert_eq!(
+        e.hosts,
+        BTreeMap::from([(
+            "gitlab.example.com".to_string(),
+            HostBinding::Gitlab {
+                token_env: "EXAMPLE_TOKEN".into()
+            }
+        )])
+    );
+
+    let env_over = [("PIN_TOOLKIT_CONCURRENCY", "3"), ("PIN_TOOLKIT_JSON", "0")];
+    let e = load(&["pin-toolkit"], &env_over);
+    assert_eq!((e.concurrency, e.json), (3, false), "env over global");
+    let e = load(&["pin-toolkit", "--concurrency", "4"], &env_over);
+    assert_eq!(e.concurrency, 4, "CLI over env over global");
+}
+
+#[test]
+fn global_no_config_skips_global_and_repo() {
+    let root = repo("global-no-config");
+    let xdg = global_file(&root, "version = 2\n");
+    write(&root, ".pin-toolkit.toml", "version = 2\n");
+    let vars = [("XDG_CONFIG_HOME", xdg.as_str())];
+    assert_eq!(
+        load_in(&root, &root, &["pin-toolkit", "--no-config"], &vars),
+        Ok(Effective::fold(&[]))
+    );
+    assert_eq!(
+        load_in(
+            &root,
+            &root,
+            &["pin-toolkit", "--no-config", "--config", "missing.toml"],
+            &vars
+        ),
+        Ok(Effective::fold(&[])),
+        "--no-config wins over --config"
+    );
+    // Without it the global file is read first, so its error comes first.
+    assert_eq!(
+        load_in(&root, &root, &["pin-toolkit"], &vars),
+        Err(Fatal(
+            "xdg/pin-toolkit/config.toml: unsupported version 2 (expected 1)".into()
+        ))
+    );
+
+    let xdg = global_file(&root, "version = 1\nconcurrency = 2\n");
+    let vars = [("XDG_CONFIG_HOME", xdg.as_str())];
+    let eff = load_in(&root, &root, &["pin-toolkit", "--no-config"], &vars).unwrap();
+    assert_eq!(eff.concurrency, 8, "a valid global file is skipped too");
+}
+
+#[test]
+fn global_config_flag_keeps_global() {
+    let root = repo("global-config-flag");
+    let xdg = global_file(&root, "version = 1\nconcurrency = 2\n");
+    let days = |n: u32| format!("version = 1\n[release_age]\nmin_days = {n}\n");
+    write(&root, ".pin-toolkit.toml", &days(1));
+    write(&root, "env.toml", &days(2));
+    write(&root, "other.toml", &days(3));
+    let load = |argv: &[&str], extra: &[(&str, &str)]| {
+        let mut vars = vec![("XDG_CONFIG_HOME", xdg.as_str())];
+        vars.extend_from_slice(extra);
+        let e = load_in(&root, &root, argv, &vars).unwrap();
+        (e.update.min_age_days, e.concurrency)
+    };
+    assert_eq!(load(&["pin-toolkit"], &[]), (1, 2), "root file + global");
+    assert_eq!(
+        load(&["pin-toolkit", "--config", "other.toml"], &[]),
+        (3, 2),
+        "--config replaces the repo file only"
+    );
+    assert_eq!(
+        load(&["pin-toolkit"], &[("PIN_TOOLKIT_CONFIG", "env.toml")]),
+        (2, 2),
+        "PIN_TOOLKIT_CONFIG replaces the repo file only"
+    );
+    assert_eq!(
+        load_in(
+            &root,
+            &root,
+            &["pin-toolkit", "--config", "missing.toml"],
+            &[("XDG_CONFIG_HOME", xdg.as_str())]
+        ),
+        Err(Fatal("config file not found: missing.toml".into())),
+        "a given repo file must exist, whatever the global file says"
+    );
+}
+
+#[test]
+fn global_file_discovery() {
+    let root = repo("global-discovery");
+    let abs = |rel: &str| root.join(rel).to_str().unwrap().to_string();
+    let concurrency = |vars: &[(&str, &str)]| {
+        load_in(&root, &root, &["pin-toolkit"], vars)
+            .unwrap()
+            .concurrency
+    };
+    let (xdg, home) = (abs("xdg"), abs("home"));
+
+    // Missing file = no layer (not an error), whichever variable names it.
+    assert_eq!(concurrency(&[("XDG_CONFIG_HOME", &xdg)]), 8);
+    assert_eq!(concurrency(&[("HOME", &home)]), 8);
+    assert_eq!(concurrency(&[]), 8, "neither variable set");
+
+    write(
+        &root,
+        "home/.config/pin-toolkit/config.toml",
+        "version = 1\nconcurrency = 5\n",
+    );
+    assert_eq!(concurrency(&[("HOME", &home)]), 5, "$HOME/.config");
+    write(
+        &root,
+        "xdg/pin-toolkit/config.toml",
+        "version = 1\nconcurrency = 6\n",
+    );
+    let both = [("XDG_CONFIG_HOME", xdg.as_str()), ("HOME", home.as_str())];
+    assert_eq!(concurrency(&both), 6, "$XDG_CONFIG_HOME over $HOME");
+    let empty = [("XDG_CONFIG_HOME", ""), ("HOME", home.as_str())];
+    assert_eq!(concurrency(&empty), 5, "empty XDG_CONFIG_HOME ignored");
+    let relative = [("XDG_CONFIG_HOME", "xdg"), ("HOME", home.as_str())];
+    assert_eq!(
+        concurrency(&relative),
+        5,
+        "relative XDG_CONFIG_HOME ignored"
+    );
+}
+
+#[tokio::test]
+async fn global_bad_file_exits_2_naming_path() {
+    let root = repo("global-bad");
+    let xdg = global_file(&root, "version = 2\n");
+    let vars = [("XDG_CONFIG_HOME", xdg.as_str())];
+    write(&root, ".gitlab-ci.yml", "image: alpine:3.20\n");
+    let out = run_in(&root, &["pin-toolkit"], &vars).await;
+    assert_eq!(out.code, 2);
+    assert_eq!(
+        out.stderr,
+        "pin-toolkit: xdg/pin-toolkit/config.toml: unsupported version 2 (expected 1)\n"
+    );
+    assert_eq!(out.stdout, "");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".gitlab-ci.yml")).unwrap(),
+        "image: alpine:3.20\n",
+        "nothing is rewritten"
+    );
+    let out = run_in(&root, &["pin-toolkit", "plugins"], &vars).await;
+    assert_eq!(
+        (out.code, out.stdout.as_str()),
+        (2, ""),
+        "plugins loads the config too"
+    );
+
+    // Named relative to the cwd, like the repo file (review-2 N1).
+    std::fs::create_dir_all(root.join("ci/deep")).unwrap();
+    assert_eq!(
+        load_in(&root, &root.join("ci/deep"), &["pin-toolkit"], &vars),
+        Err(Fatal(
+            "../../xdg/pin-toolkit/config.toml: unsupported version 2 (expected 1)".into()
+        ))
+    );
+
+    // Unreadable (a directory in its place): the io error, with the path.
+    std::fs::remove_file(root.join("xdg/pin-toolkit/config.toml")).unwrap();
+    std::fs::create_dir(root.join("xdg/pin-toolkit/config.toml")).unwrap();
+    let err = load_in(&root, &root, &["pin-toolkit"], &vars).expect_err("unreadable global file");
+    assert!(
+        err.0.starts_with("xdg/pin-toolkit/config.toml: ") && !err.0.contains("not found"),
+        "{}",
+        err.0
+    );
 }

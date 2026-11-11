@@ -179,18 +179,43 @@ pub fn global_path(env: &BTreeMap<String, String>) -> Option<PathBuf> {
     Some(dir.join("pin-toolkit").join("config.toml"))
 }
 
-/// The effective configuration of one run: defaults < repo file < env <
-/// CLI. Repo file = `--no-config` ? none : `--config` (must exist) :
-/// `PIN_TOOLKIT_CONFIG` (must exist) : `<root>/.pin-toolkit.toml` if it
-/// exists. Relative paths are relative to the cwd.
+/// The effective configuration of one run: defaults < global file < repo
+/// file < env < CLI. `--no-config` skips the global and the repo file.
+/// Global file = [`global_path`] if it exists (a missing file is no layer).
+/// Repo file = `--config` (must exist) : `PIN_TOOLKIT_CONFIG` (must exist)
+/// : `<root>/.pin-toolkit.toml` if it exists; these override only the repo
+/// file, the global file still applies. Relative paths are relative to
+/// the cwd.
 pub fn load(p: &Process, root: &Path, cli: &Cli) -> Result<Effective, Fatal> {
-    let mut layers = Vec::with_capacity(3);
+    let mut layers = Vec::with_capacity(4);
+    if let Some(global) = global_layer(p, cli)? {
+        layers.push(global);
+    }
     if let Some(repo) = repo_layer(p, root, cli)? {
         layers.push(repo);
     }
     layers.push(env::layer(&p.env)?);
     layers.push(cli::layer(cli)?);
     Ok(Effective::fold(&layers))
+}
+
+/// The global layer, if a global file applies: not with `--no-config`, and
+/// only when [`global_path`] names a file that exists. An unreadable file
+/// or one that does not parse is fatal, named relative to the cwd.
+fn global_layer(p: &Process, cli: &Cli) -> Result<Option<Layer>, Fatal> {
+    if cli.opts.no_config {
+        return Ok(None);
+    }
+    let Some(path) = global_path(&p.env).map(|g| p.cwd.join(g)) else {
+        return Ok(None);
+    };
+    let display = PathBuf::from(crate::walk::shown(&p.cwd, &path));
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Fatal(format!("{}: {e}", display.display()))),
+    };
+    global::parse(&display, &text).map(Some)
 }
 
 /// The repo layer, if a repo file applies.
