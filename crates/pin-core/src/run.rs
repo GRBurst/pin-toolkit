@@ -90,6 +90,10 @@ pub struct GitlabEnv {
     pub ci_job_token: Option<String>,
     /// `CI_JOB_TOKEN` is sent only to this host (D37).
     pub ci_server_host: Option<String>,
+    /// Host → token value bound by the global config's `[hosts]` (spec
+    /// §7.3), sent as `PRIVATE-TOKEN` only to that host, after the env
+    /// bindings above. Filled by the front-end; `Debug` prints the hosts only.
+    pub bound: BTreeMap<String, String>,
 }
 
 impl Default for GitlabEnv {
@@ -101,6 +105,7 @@ impl Default for GitlabEnv {
             gitlab_token: None,
             ci_job_token: None,
             ci_server_host: None,
+            bound: BTreeMap::new(),
         }
     }
 }
@@ -113,6 +118,14 @@ impl fmt::Debug for GitlabEnv {
             .field("gitlab_token", &redact(&self.gitlab_token))
             .field("ci_job_token", &redact(&self.ci_job_token))
             .field("ci_server_host", &self.ci_server_host)
+            .field(
+                "bound",
+                &self
+                    .bound
+                    .keys()
+                    .map(|h| (h, Redacted))
+                    .collect::<BTreeMap<_, _>>(),
+            )
             .finish()
     }
 }
@@ -175,6 +188,7 @@ impl GitlabEnv {
             gitlab_token: non_empty(vars, "GITLAB_TOKEN"),
             ci_job_token: non_empty(vars, "CI_JOB_TOKEN"),
             ci_server_host,
+            bound: BTreeMap::new(),
         })
     }
 
@@ -191,7 +205,8 @@ impl GitlabEnv {
     }
 
     /// `GITLAB_TOKEN` for the primary; else `CI_JOB_TOKEN` for
-    /// `CI_SERVER_HOST`; else anonymous (T-D12).
+    /// `CI_SERVER_HOST`; else the `bound` token for `host`; else anonymous
+    /// (T-D12, spec §7.3: env bindings win over the global config).
     pub fn auth_for(&self, host: &str) -> GitlabAuth {
         if host == self.primary
             && let Some(t) = &self.gitlab_token
@@ -202,6 +217,9 @@ impl GitlabEnv {
             && let Some(t) = &self.ci_job_token
         {
             return GitlabAuth::Job(t.clone());
+        }
+        if let Some(t) = self.bound.get(host) {
+            return GitlabAuth::Private(t.clone());
         }
         GitlabAuth::Anonymous
     }
@@ -1110,6 +1128,37 @@ mod tests {
         assert_eq!(
             env.resolve_set(),
             BTreeSet::from([com.to_string(), ex.to_string()])
+        );
+    }
+
+    /// Spec §7.3: a `bound` token goes as `PRIVATE-TOKEN` to its own host
+    /// only, after the env bindings (they win); `Debug` hides its value.
+    #[test]
+    fn auth_for_bound_host() {
+        use GitlabAuth::{Anonymous, Job, Private};
+        const BT: &str = "b0und-s3cr3t";
+        let (com, ex, other) = ("gitlab.com", "gitlab.example.com", "other.example");
+        let mut env = gitlab_env(com, Some(other), None, None);
+        env.bound = BTreeMap::from([(ex.to_string(), BT.to_string())]);
+        assert_eq!(env.auth_for(ex), Private(BT.into()));
+        assert_eq!(env.auth_for(com), Anonymous);
+        assert_eq!(env.auth_for(other), Anonymous);
+        assert_eq!(env.auth_for("gitlab.example.com:8443"), Anonymous);
+
+        let mut env = gitlab_env(ex, Some(other), Some("pt"), Some("jt"));
+        env.bound = [ex, other, com]
+            .into_iter()
+            .map(|h| (h.to_string(), BT.to_string()))
+            .collect();
+        assert_eq!(env.auth_for(ex), Private("pt".into()));
+        assert_eq!(env.auth_for(other), Job("jt".into()));
+        assert_eq!(env.auth_for(com), Private(BT.into()));
+
+        let printed = format!("{env:?}");
+        assert!(!printed.contains(BT), "secret leaked: {printed}");
+        assert!(
+            printed.contains(r#"bound: {"gitlab.com": <redacted>, "#),
+            "{printed}"
         );
     }
 

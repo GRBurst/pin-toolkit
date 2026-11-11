@@ -1,6 +1,6 @@
 //! D31 + D37 on the wire (T7): with two GitLab hosts in one run,
-//! `CI_JOB_TOKEN` reaches only `CI_SERVER_HOST` and `GITLAB_TOKEN` only the
-//! primary host. A = `gitlab.example.com`, B = `gitlab.com`, both wiremock
+//! `CI_JOB_TOKEN` reaches only `CI_SERVER_HOST`, `GITLAB_TOKEN` only the
+//! primary host and a global `[hosts]` token only its own host (spec §7.3). A = `gitlab.example.com`, B = `gitlab.com`, both wiremock
 //! servers reached through `base_urls.gitlab` (feature `test-support`).
 //! Mocks that must never match are mounted first with `expect(0)`; the
 //! expectations are verified when the servers drop.
@@ -39,13 +39,13 @@ async fn allow(server: &MockServer) {
         .await;
 }
 
-fn ctx(
+fn env(
     vars: &[(&str, &str)],
     primary: &str,
     hosts: &[&str],
     a: &MockServer,
     b: &MockServer,
-) -> Ctx {
+) -> ResolverEnv {
     let vars: BTreeMap<String, String> = vars
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -53,6 +53,33 @@ fn ctx(
     let hosts: BTreeSet<String> = hosts.iter().map(|h| h.to_string()).collect();
     let mut env = ResolverEnv::from_vars(&vars, Some(primary.to_string()), hosts).unwrap();
     env.base_urls.gitlab = BTreeMap::from([(A.to_string(), a.uri()), (B.to_string(), b.uri())]);
+    env
+}
+
+fn ctx(
+    vars: &[(&str, &str)],
+    primary: &str,
+    hosts: &[&str],
+    a: &MockServer,
+    b: &MockServer,
+) -> Ctx {
+    Ctx::new(Default::default(), 0, env(vars, primary, hosts, a, b))
+}
+
+/// [`ctx`] with `bound` as the global config's `[hosts]` tokens.
+fn ctx_bound(
+    vars: &[(&str, &str)],
+    primary: &str,
+    hosts: &[&str],
+    bound: &[(&str, &str)],
+    a: &MockServer,
+    b: &MockServer,
+) -> Ctx {
+    let mut env = env(vars, primary, hosts, a, b);
+    env.gitlab.bound = bound
+        .iter()
+        .map(|(h, t)| (h.to_string(), t.to_string()))
+        .collect();
     Ctx::new(Default::default(), 0, env)
 }
 
@@ -112,5 +139,59 @@ async fn private_token_only_reaches_primary() {
     forbid(&b, "PRIVATE-TOKEN").await;
     allow(&b).await;
     let ctx = ctx(&[("GITLAB_TOKEN", "pt")], A, &[B], &a, &b);
+    resolve_both(&ctx).await;
+}
+
+/// Spec §7.3: a `[hosts]` token reaches only its own host (A), never the
+/// primary (B).
+#[tokio::test]
+async fn bound_token_only_reaches_bound_host() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    Mock::given(method("GET"))
+        .and(path(TAG))
+        .and(header("PRIVATE-TOKEN", "bt"))
+        .respond_with(ok())
+        .expect(1)
+        .mount(&a)
+        .await;
+    forbid(&b, "PRIVATE-TOKEN").await;
+    allow(&b).await;
+    let ctx = ctx_bound(&[], B, &[A], &[(A, "bt")], &a, &b);
+    resolve_both(&ctx).await;
+}
+
+/// The env bindings win over `[hosts]`: `GITLAB_TOKEN` to the primary (A),
+/// `CI_JOB_TOKEN` to `CI_SERVER_HOST` (B); neither bound token is sent.
+#[tokio::test]
+async fn bound_token_loses_to_env_bindings() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    Mock::given(method("GET"))
+        .and(header("PRIVATE-TOKEN", "bt-a"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&a)
+        .await;
+    forbid(&b, "PRIVATE-TOKEN").await;
+    Mock::given(method("GET"))
+        .and(path(TAG))
+        .and(header("PRIVATE-TOKEN", "pt"))
+        .respond_with(ok())
+        .expect(1)
+        .mount(&a)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(TAG))
+        .and(header("JOB-TOKEN", "jt"))
+        .respond_with(ok())
+        .expect(1)
+        .mount(&b)
+        .await;
+    let vars = [
+        ("GITLAB_TOKEN", "pt"),
+        ("CI_JOB_TOKEN", "jt"),
+        ("CI_SERVER_HOST", B),
+    ];
+    let bound = [(A, "bt-a"), (B, "bt-b")];
+    let ctx = ctx_bound(&vars, A, &[B], &bound, &a, &b);
     resolve_both(&ctx).await;
 }
