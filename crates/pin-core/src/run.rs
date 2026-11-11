@@ -243,8 +243,8 @@ impl GitlabEnv {
     }
 
     /// `GITLAB_TOKEN` for the primary; else `CI_JOB_TOKEN` for
-    /// `CI_SERVER_HOST`; else the `bound` token for `host`; else anonymous
-    /// (T-D12, spec §7.3: env bindings win over the global config).
+    /// `CI_SERVER_HOST`; else the non-empty `bound` token for `host`; else
+    /// anonymous (T-D12, spec §7.3: env bindings win over the global config).
     pub fn auth_for(&self, host: &str) -> GitlabAuth {
         if host == self.primary
             && let Some(t) = &self.gitlab_token
@@ -256,7 +256,7 @@ impl GitlabEnv {
         {
             return GitlabAuth::Job(t.clone());
         }
-        if let Some(t) = self.bound.get(host) {
+        if let Some(t) = self.bound.get(host).filter(|t| !t.is_empty()) {
             return GitlabAuth::Private(t.clone());
         }
         GitlabAuth::Anonymous
@@ -1190,7 +1190,10 @@ mod tests {
         const BT: &str = "b0und-s3cr3t";
         let (com, ex, other) = ("gitlab.com", "gitlab.example.com", "other.example");
         let mut env = gitlab_env(com, Some(other), None, None);
-        env.bound = BTreeMap::from([(ex.to_string(), BT.to_string())]);
+        env.bound = BTreeMap::from([
+            (ex.to_string(), BT.to_string()),
+            (com.to_string(), String::new()), // empty = no credential
+        ]);
         assert_eq!(env.auth_for(ex), Private(BT.into()));
         assert_eq!(env.auth_for(com), Anonymous);
         assert_eq!(env.auth_for(other), Anonymous);
