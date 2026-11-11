@@ -11,6 +11,8 @@ use pin_core::run::{AgePolicy, UpdatePolicy};
 use crate::Process;
 use crate::cli::{self, Cli};
 
+use self::global::HostBinding;
+
 pub mod env;
 pub mod global;
 pub mod repo;
@@ -46,6 +48,9 @@ pub struct Layer {
     pub skip: Option<Vec<String>>,
     /// The primary GitLab host (never from a repo file, §7.3).
     pub gitlab_host: Option<String>,
+    /// `[hosts."<host>"]` bindings (global file only, §7.3); replaces
+    /// lower layers' map.
+    pub hosts: Option<BTreeMap<String, HostBinding>>,
     /// `[plugins.<id>]` by plugin id.
     pub plugins: BTreeMap<String, PluginLayer>,
 }
@@ -79,13 +84,14 @@ pub struct Effective {
     pub only: Option<Vec<String>>,
     pub skip: Vec<String>,
     pub gitlab_host: Option<String>,
+    pub hosts: BTreeMap<String, HostBinding>,
     pub plugins: BTreeMap<String, PluginLayer>,
 }
 
 impl Effective {
     /// Fold `layers`, lowest precedence first (T-D4, T-D5): scalars and the
-    /// `files`/`gitlab-hosts`/`only`/`skip` lists take the last layer that
-    /// sets them, `ignore` concatenates in layer order, `kinds` merge per
+    /// `files`/`gitlab-hosts`/`only`/`skip` lists and the `hosts` map take
+    /// the last layer that sets them, `ignore` concatenates in layer order, `kinds` merge per
     /// key; unset fields get the built-in defaults. `check` implies
     /// `dry_run`.
     pub fn fold(layers: &[Layer]) -> Self {
@@ -108,6 +114,7 @@ impl Effective {
             only: acc.only,
             skip: acc.skip.unwrap_or_default(),
             gitlab_host: acc.gitlab_host,
+            hosts: acc.hosts.unwrap_or_default(),
             plugins: acc.plugins,
         }
     }
@@ -134,6 +141,7 @@ impl Layer {
         over(&mut self.only, &h.only);
         over(&mut self.skip, &h.skip);
         over(&mut self.gitlab_host, &h.gitlab_host);
+        over(&mut self.hosts, &h.hosts);
         for (id, p) in &h.plugins {
             self.plugins.entry(id.clone()).or_default().merge(p);
         }
@@ -425,6 +433,6 @@ mod tests {
         assert_eq!(d.update, UpdatePolicy::default());
         assert!(!d.json && !d.dry_run && !d.check);
         assert_eq!((d.only, d.skip, d.gitlab_host), (None, vec![], None));
-        assert!(d.plugins.is_empty());
+        assert!(d.hosts.is_empty() && d.plugins.is_empty());
     }
 }
