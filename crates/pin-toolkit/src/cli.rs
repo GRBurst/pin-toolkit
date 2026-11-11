@@ -83,7 +83,8 @@ pub struct Opts {
     /// Do not read a config file
     #[arg(long, global = true)]
     pub no_config: bool,
-    /// Primary GitLab host (default: CI_SERVER_HOST, else gitlab.com)
+    /// Primary GitLab host (default: GITLAB_URI, else CI_SERVER_HOST, else
+    /// gitlab.com)
     #[arg(long, global = true, value_name = "H")]
     pub gitlab_host: Option<String>,
 }

@@ -86,6 +86,13 @@ async fn usage_error_exits_2() {
         "stdout: {}",
         out.stdout
     );
+    // M5e' M4: the primary host's precedence names `GITLAB_URI`.
+    assert!(
+        out.stdout
+            .contains("(default: GITLAB_URI, else CI_SERVER_HOST, else gitlab.com)"),
+        "stdout: {}",
+        out.stdout
+    );
     assert_eq!(out.stderr, "");
 
     let out = run_in(&root, &["pin-toolkit", "--version"], &[]).await;

@@ -287,3 +287,84 @@ async fn bound_token_host_is_not_added_to_the_resolve_set() {
         out.stdout
     );
 }
+
+/// `GITLAB_URI` (a URL with a trailing slash) is the default primary: the
+/// include goes to A with `GITLAB_TOKEN`; the component on B gets none.
+#[tokio::test]
+async fn gitlab_uri_is_primary_and_gets_the_token() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    require(&a, "PRIVATE-TOKEN", "pt").await;
+    forbid(&b, "PRIVATE-TOKEN").await;
+    allow(&b).await;
+    let vars = [
+        ("GITLAB_URI", "https://gitlab.example.com/"),
+        ("GITLAB_TOKEN", "pt"),
+    ];
+    pin("cred-uri", B, B, &[], &vars, &a, &b).await;
+}
+
+/// D37: `GITLAB_URI` never binds `CI_JOB_TOKEN`; without `CI_SERVER_HOST` the
+/// job token is sent nowhere, not even to the `GITLAB_URI` host.
+#[tokio::test]
+async fn gitlab_uri_never_gets_the_job_token() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    for server in [&a, &b] {
+        forbid(server, "JOB-TOKEN").await;
+        allow(server).await;
+    }
+    let vars = [
+        ("GITLAB_URI", "https://gitlab.example.com/"),
+        ("CI_JOB_TOKEN", "jt"),
+    ];
+    pin("cred-uri-job", B, B, &[], &vars, &a, &b).await;
+}
+
+/// `--gitlab-host` beats `GITLAB_URI`: the include and `GITLAB_TOKEN` go to
+/// B; the `GITLAB_URI` host A (the component's) is then a plain extra host.
+#[tokio::test]
+async fn gitlab_uri_loses_to_gitlab_host_arg() {
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    require(&b, "PRIVATE-TOKEN", "pt").await;
+    forbid(&a, "PRIVATE-TOKEN").await;
+    allow(&a).await;
+    let vars = [
+        ("GITLAB_URI", "https://gitlab.example.com/"),
+        ("GITLAB_TOKEN", "pt"),
+    ];
+    pin("cred-uri-arg", A, A, &["--gitlab-host", B], &vars, &a, &b).await;
+}
+
+/// An invalid `GITLAB_URI` is fatal (exit 2, stdout empty) before any request.
+#[tokio::test]
+async fn gitlab_uri_invalid_is_fatal_before_any_request() {
+    const BAD: &str = "https://gitlab.example.com:notaport/x";
+    let (a, b) = (MockServer::start().await, MockServer::start().await);
+    for server in [&a, &b] {
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(server)
+            .await;
+    }
+    let root = repo("cred-uri-bad");
+    write(
+        &root,
+        ".gitlab-ci.yml",
+        "include:\n  - project: g/p\n    ref: main\n",
+    );
+    let bases = BTreeMap::from([(A.to_string(), a.uri()), (B.to_string(), b.uri())]);
+    let vars = [("GITLAB_URI", BAD), ("GITLAB_TOKEN", "pt")];
+    let out = run_tuned(&root, &["pin-toolkit"], &vars, |env| {
+        env.base_urls.gitlab = bases
+    })
+    .await;
+    assert_eq!(out.code, 2, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout, "");
+    assert_eq!(
+        out.stderr,
+        "pin-toolkit: GITLAB_URI: invalid GitLab host `gitlab.example.com:notaport`\n"
+    );
+    for server in [&a, &b] {
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}
