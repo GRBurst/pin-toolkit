@@ -161,12 +161,27 @@ pub fn valid_gitlab_host(h: &str) -> bool {
     name.split('.').all(label) && port.is_none_or(port_ok)
 }
 
+/// The `host[:port]` of a `GITLAB_URI` value (a URL or a bare host): an
+/// `http://`/`https://` scheme (any case) stripped, cut before the first
+/// `/`, `?` or `#` (path, trailing slash, query, fragment).
+fn gitlab_uri_host(v: &str) -> &str {
+    let rest = ["https://", "http://"]
+        .into_iter()
+        .find(|s| v.get(..s.len()).is_some_and(|p| p.eq_ignore_ascii_case(s)))
+        .map_or(v, |s| &v[s.len()..]);
+    rest.find(['/', '?', '#']).map_or(rest, |i| &rest[..i])
+}
+
 impl GitlabEnv {
     /// `primary` (the toolkit passes CLI > `PIN_TOOLKIT_GITLAB_HOST`), else
-    /// `CI_SERVER_HOST`, else `gitlab.com`; tokens from `GITLAB_TOKEN` and
-    /// `CI_JOB_TOKEN`. Empty values count as unset. A `CI_SERVER_HOST` that
-    /// is not a [`valid_gitlab_host`] is an error, never a fallback: it
-    /// would be the default primary and the job token's host (M5d final M1).
+    /// the `GITLAB_URI` host, else `CI_SERVER_HOST`, else `gitlab.com`;
+    /// tokens from `GITLAB_TOKEN` and `CI_JOB_TOKEN`. Empty values count as
+    /// unset. A `CI_SERVER_HOST` or `GITLAB_URI` host (a URL's `http(s)://`
+    /// and path cut off) that is not a [`valid_gitlab_host`] is an error,
+    /// never a fallback: either would be the default primary,
+    /// `CI_SERVER_HOST` also the job token's host (M5d final M1).
+    /// `GITLAB_URI` never binds `CI_JOB_TOKEN` (D37); its error hides a
+    /// URL's userinfo (`<redacted>@`).
     pub fn from_vars(
         vars: &BTreeMap<String, String>,
         primary: Option<String>,
@@ -178,8 +193,19 @@ impl GitlabEnv {
         {
             return Err(format!("CI_SERVER_HOST: invalid GitLab host `{h}`"));
         }
+        let uri = non_empty(vars, "GITLAB_URI");
+        let uri_host = uri.as_deref().map(gitlab_uri_host);
+        if let Some(h) = uri_host
+            && !valid_gitlab_host(h)
+        {
+            let shown = h
+                .rsplit_once('@')
+                .map_or(h.to_string(), |(_, h)| format!("<redacted>@{h}"));
+            return Err(format!("GITLAB_URI: invalid GitLab host `{shown}`"));
+        }
         let primary = primary
             .filter(|p| !p.is_empty())
+            .or_else(|| uri_host.map(str::to_string))
             .or_else(|| ci_server_host.clone())
             .unwrap_or_else(|| "gitlab.com".to_string());
         Ok(Self {
@@ -1160,6 +1186,140 @@ mod tests {
             printed.contains(r#"bound: {"gitlab.com": <redacted>, "#),
             "{printed}"
         );
+    }
+
+    fn vars(kv: &[(&str, &str)]) -> BTreeMap<String, String> {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// The primary from `vars` and the explicit `primary`.
+    fn primary_of(kv: &[(&str, &str)], primary: Option<&str>) -> String {
+        GitlabEnv::from_vars(&vars(kv), primary.map(str::to_string), BTreeSet::new())
+            .unwrap()
+            .primary
+    }
+
+    /// Owner 2026-11-11: a `GITLAB_URI` URL gives its `host[:port]`.
+    #[test]
+    fn gitlab_uri_url_with_port_and_path() {
+        let ex = "gitlab.example.com:8443";
+        for uri in [
+            "https://gitlab.example.com:8443",
+            "https://gitlab.example.com:8443/",
+            "https://gitlab.example.com:8443/group/sub/",
+            "https://gitlab.example.com:8443?x=1",
+            "https://gitlab.example.com:8443#top",
+        ] {
+            assert_eq!(primary_of(&[("GITLAB_URI", uri)], None), ex, "{uri}");
+        }
+    }
+
+    #[test]
+    fn gitlab_uri_bare_host() {
+        for uri in [
+            "gitlab.example.com",
+            "gitlab.example.com/",
+            "gitlab.example.com/g",
+        ] {
+            assert_eq!(
+                primary_of(&[("GITLAB_URI", uri)], None),
+                "gitlab.example.com",
+                "{uri}"
+            );
+        }
+    }
+
+    /// The scheme is `http://` or `https://`, in any case.
+    #[test]
+    fn gitlab_uri_http_scheme() {
+        for uri in [
+            "http://gitlab.example.com",
+            "HTTP://gitlab.example.com/",
+            "HttpS://gitlab.example.com/g/p",
+        ] {
+            assert_eq!(
+                primary_of(&[("GITLAB_URI", uri)], None),
+                "gitlab.example.com",
+                "{uri}"
+            );
+        }
+    }
+
+    /// Invalid → an error even with an explicit primary, never a fallback
+    /// to `gitlab.com`; a URL's userinfo never reaches the message.
+    #[test]
+    fn gitlab_uri_invalid_is_an_error() {
+        let table = [
+            ("ftp://gitlab.example.com", "ftp:"),
+            ("https://", ""),
+            ("https://gitlab.example.com:0/", "gitlab.example.com:0"),
+            ("gitlab.example.com:99999", "gitlab.example.com:99999"),
+            ("https://-x.example/p", "-x.example"),
+            (
+                "https://gitlab.com@evil.example/",
+                "<redacted>@evil.example",
+            ),
+            (
+                "https://oauth2:s3cr3t@gitlab.example.com",
+                "<redacted>@gitlab.example.com",
+            ),
+        ];
+        for (uri, shown) in table {
+            let kv = vars(&[("GITLAB_URI", uri), ("GITLAB_TOKEN", "pt")]);
+            let want = Err(format!("GITLAB_URI: invalid GitLab host `{shown}`"));
+            assert_eq!(GitlabEnv::from_vars(&kv, None, BTreeSet::new()), want);
+            assert_eq!(
+                GitlabEnv::from_vars(&kv, Some("gitlab.com".into()), BTreeSet::new()),
+                want
+            );
+            assert_eq!(
+                ResolverEnv::from_vars(&kv, None, BTreeSet::new()).map(|e| e.gitlab),
+                want
+            );
+        }
+    }
+
+    /// `GITLAB_URI` beats `CI_SERVER_HOST` for the primary (and so gets
+    /// `GITLAB_TOKEN`), but never `CI_JOB_TOKEN` (D37).
+    #[test]
+    fn gitlab_uri_precedence_over_ci_server_host() {
+        use GitlabAuth::{Anonymous, Job, Private};
+        let (uri, server) = ("gitlab.example.com", "ci.example");
+        let both = [
+            ("GITLAB_URI", "https://gitlab.example.com/"),
+            ("CI_SERVER_HOST", server),
+        ];
+        assert_eq!(primary_of(&both, None), uri);
+        assert_eq!(primary_of(&[("GITLAB_URI", ""), both[1]], None), server);
+        assert_eq!(primary_of(&[("GITLAB_URI", "")], None), "gitlab.com");
+
+        let tokens = [("GITLAB_TOKEN", "pt"), ("CI_JOB_TOKEN", "jt")];
+        let env = GitlabEnv::from_vars(
+            &vars(&[both[0], both[1], tokens[0], tokens[1]]),
+            None,
+            BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(env.auth_for(uri), Private("pt".into()));
+        assert_eq!(env.auth_for(server), Job("jt".into()));
+        let env =
+            GitlabEnv::from_vars(&vars(&[both[0], tokens[1]]), None, BTreeSet::new()).unwrap();
+        assert_eq!(env.ci_server_host, None);
+        assert_eq!(env.auth_for(uri), Anonymous);
+        assert_eq!(env.auth_for("gitlab.com"), Anonymous);
+    }
+
+    /// The explicit primary (CLI > `PIN_TOOLKIT_GITLAB_HOST`) beats it.
+    #[test]
+    fn gitlab_uri_arg_beats_it() {
+        let kv = [
+            ("GITLAB_URI", "https://gitlab.example.com"),
+            ("CI_SERVER_HOST", "ci.example"),
+        ];
+        assert_eq!(primary_of(&kv, Some("h.example")), "h.example");
+        assert_eq!(primary_of(&kv, Some("")), "gitlab.example.com");
     }
 
     /// Host syntax (review-2 L6, M5d final N5): `name[:port]`, labels of
