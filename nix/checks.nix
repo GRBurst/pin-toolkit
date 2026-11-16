@@ -17,6 +17,19 @@ let
   plugins =
     { plugins-none = pkg.override { plugins = [ ]; }; }
     // lib.genAttrs' allPlugins (p: lib.nameValuePair "plugins-${p}" (pkg.override { plugins = [ p ]; }));
+  hmConfig = extra: (home-manager.lib.homeManagerConfiguration {
+    inherit pkgs;
+    modules = [
+      self.homeManagerModules.default
+      {
+        home = { username = "u"; homeDirectory = if pkgs.stdenv.hostPlatform.isDarwin then "/Users/u" else "/home/u"; stateVersion = "25.05"; };
+        programs.pin-toolkit.enable = true;
+      }
+      extra
+    ];
+  }).config;
+  full = hmConfig { programs.pin-toolkit.settings = { concurrency = 4; hosts."gitlab.example.com" = { kind = "gitlab"; token-env = "GITLAB_EXAMPLE_TOKEN"; }; }; };
+  trimmed = hmConfig { programs.pin-toolkit.plugins.gitlab-ci.enable = false; };
   layout = pkgs.callPackage ./layout.nix { };
 in
 lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
@@ -27,6 +40,14 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     assert lib.assertMsg ((pkgs.extend self.overlays.default).pin-toolkit.drvPath == pkg.drvPath) "overlays.default: different derivation";
     assert lib.assertMsg (!(builtins.tryEval (pkg.override { plugins = [ "no-such-plugin" ]; }).drvPath).success) "unknown plugin accepted";
     pkg;
+  hm-module =
+    assert lib.assertMsg (full.programs.pin-toolkit.finalPackage == pkg) "all plugins enabled: finalPackage must be the flake default";
+    assert lib.assertMsg (trimmed.programs.pin-toolkit.finalPackage.passthru.plugins == [ ]) "gitlab-ci disabled: trimmed build";
+    pkgs.runCommand "pin-toolkit-hm-module-check" { } ''
+      f=${full.xdg.configFile."pin-toolkit/config.toml".source}
+      grep -qx 'version = 1' $f
+      touch $out
+    '';
   # leaf checks keep no cargo artifacts: their outputs would be pushed to Cachix
   # (nextest 89 MB, no-default 13 MB) and could evict the package the consumers pull
   clippy = craneLib.cargoClippy (ca // {
