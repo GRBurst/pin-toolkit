@@ -33,19 +33,16 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
-      - name: Cachix cache present?
-        id: cachix
-        run: |
-          if curl -fsS -o /dev/null https://pin-toolkit.cachix.org/nix-cache-info; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::Cachix cache pin-toolkit not found: building without it"
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
+      # Cachix is opt-in by the repository owner: create the cache, then set the
+      # repository variable CACHIX_CACHE to its name (Settings > Secrets and
+      # variables > Actions > Variables) and the secret CACHIX_AUTH_TOKEN. Until
+      # then (and in forks) the job builds without Cachix. Gating on an owner-set
+      # variable, not on a public probe, means nobody who registers the same name
+      # on cachix.org first can make this workflow trust their signing key.
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        if: steps.cachix.outputs.present == 'true'
+        if: vars.CACHIX_CACHE != ''
         with:
-          name: pin-toolkit
+          name: ${{ vars.CACHIX_CACHE }}
           authToken: ${{ github.event_name == 'push' && secrets.CACHIX_AUTH_TOKEN || '' }} # never handed to PR runs
           skipPush: ${{ github.event_name != 'push' }}
       - run: nix flake check -L
@@ -75,6 +72,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0 # origin/main for the ancestry check below
+      - name: Tag commit is on main
+        run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::tag $TAG points at $GITHUB_SHA, which is not on main"; exit 1; }
       - name: Tag equals workspace.package.version
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
@@ -97,14 +99,20 @@ jobs:
     steps:
       - name: Create the draft release once (never touch a published one)
         run: |
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            [ "$(gh release view "$TAG" --json isDraft -q .isDraft)" = true ] \
+          # only "release not found" means create; any other error (5xx, rate limit)
+          # must fail, or a re-run could create a second draft for the same tag
+          err=$RUNNER_TEMP/gh-release-view.err
+          if is_draft=$(gh release view "$TAG" --json isDraft -q .isDraft 2> "$err"); then
+            [ "$is_draft" = true ] \
               || { echo "::error::release $TAG is already published; refusing to modify it"; exit 1; }
             echo "draft release $TAG exists (re-run): keeping it"
-          else
+          elif grep -q 'release not found' "$err"; then
             flags=(--draft --verify-tag --generate-notes --title "$TAG")
             case "$TAG" in *-*) flags+=(--prerelease) ;; esac
             gh release create "$TAG" "${flags[@]}"
+          else
+            echo "::error::gh release view $TAG failed: $(cat "$err")"
+            exit 1
           fi
 
   binaries:
@@ -167,7 +175,10 @@ jobs:
           skopeo --insecure-policy copy docker-archive:result "docker://$IMAGE:${TAG#v}-$ARCH"
 
   manifest:
-    needs: images
+    # after binaries too: :<version> and :latest go public only once every release
+    # asset exists, so a failed binaries job never leaves a public tag that the
+    # delete-the-draft-and-re-tag recovery would then rewrite
+    needs: [images, binaries]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -190,6 +201,7 @@ jobs:
           case "$version" in *-*) ;; *) tags+=(-t "$IMAGE:latest") ;; esac
           docker buildx imagetools create "${tags[@]}" "$IMAGE:$version-amd64" "$IMAGE:$version-arm64"
           digest=$(docker buildx imagetools inspect "$IMAGE:$version" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ $digest == sha256:* ]] || { echo "::error::unexpected index digest: $digest"; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
