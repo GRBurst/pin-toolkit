@@ -9,6 +9,10 @@ let
   common = import ./common.nix { inherit lib craneLib; };
   ca = common.args // { inherit (common) cargoArtifacts; };
   pkg = self.packages.${system}.pin-toolkit;
+  testEnv = {
+    INSTA_UPDATE = "no"; # a snapshot mismatch fails; nothing is written
+    CI = "true";
+  };
   allPlugins = import ./plugins.nix lib;
   plugins =
     { plugins-none = pkg.override { plugins = [ ]; }; }
@@ -23,6 +27,22 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     assert lib.assertMsg ((pkgs.extend self.overlays.default).pin-toolkit.drvPath == pkg.drvPath) "overlays.default: different derivation";
     assert lib.assertMsg (!(builtins.tryEval (pkg.override { plugins = [ "no-such-plugin" ]; }).drvPath).success) "unknown plugin accepted";
     pkg;
+  # leaf checks keep no cargo artifacts: their outputs would be pushed to Cachix
+  # (nextest 89 MB, no-default 13 MB) and could evict the package the consumers pull
+  nextest = craneLib.cargoNextest (ca // {
+    cargoNextestExtraArgs = "--no-tests=fail"; # a filter or source change that runs nothing is red
+    env = testEnv;
+    doInstallCargoArtifacts = false;
+    __darwinAllowLocalNetworking = true;
+  });
+  nextest-no-default = craneLib.cargoNextest (ca // {
+    pnameSuffix = "-nd";
+    cargoExtraArgs = "--locked -p pin-toolkit --no-default-features";
+    cargoNextestExtraArgs = "--no-tests=fail";
+    env = testEnv;
+    doInstallCargoArtifacts = false;
+    __darwinAllowLocalNetworking = true;
+  });
   fmt = craneLib.cargoFmt { inherit (common) src; inherit (common.args) pname version; };
   doc = craneLib.cargoDoc (ca // { env.RUSTDOCFLAGS = "-D warnings"; doInstallCargoArtifacts = false; });
 }
