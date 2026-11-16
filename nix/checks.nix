@@ -44,20 +44,29 @@ let
   }).config;
   full = hmConfig { programs.pin-toolkit.settings = { concurrency = 4; hosts."gitlab.example.com" = { kind = "gitlab"; token-env = "GITLAB_EXAMPLE_TOKEN"; }; }; };
   trimmed = hmConfig { programs.pin-toolkit.plugins.gitlab-ci.enable = false; };
-  # Messages of the failed assertions of the bare module (HM's own evaluation
-  # only throws them; stub the options the module sets so they can be read).
-  failedAssertions = extra:
+  # The bare module on stub options (HM's own evaluation only throws failed
+  # assertions; this can read their messages and the generated file's recipe).
+  stubConfig = pkgs': extra:
     let
       stub = { options = {
         assertions = lib.mkOption { type = lib.types.listOf lib.types.raw; default = [ ]; };
         home.packages = lib.mkOption { type = lib.types.listOf lib.types.package; default = [ ]; };
         xdg.configFile = lib.mkOption { type = lib.types.attrsOf lib.types.raw; default = { }; };
       }; };
-      evaluated = lib.evalModules {
-        modules = [ stub self.homeManagerModules.default { _module.args.pkgs = pkgs; programs.pin-toolkit.enable = true; } extra ];
-      };
     in
-    map (a: a.message) (lib.filter (a: !a.assertion) evaluated.config.assertions);
+    (lib.evalModules {
+      modules = [ stub self.homeManagerModules.default { _module.args.pkgs = pkgs'; programs.pin-toolkit.enable = true; } extra ];
+    }).config;
+  failedAssertions = extra:
+    map (a: a.message) (lib.filter (a: !a.assertion) (stubConfig pkgs extra).assertions);
+  # Evaluation of `settings` fails (a type or unknown-option error). builtins.tryEval
+  # cannot read the message, so every negative has a positive control that differs
+  # from it in the one offending value.
+  settingsFail = extra: !(builtins.tryEval (builtins.toJSON (stubConfig pkgs extra).programs.pin-toolkit.settings)).success;
+  host = h: { programs.pin-toolkit.settings.hosts."gitlab.example.com" = h; };
+  # a build platform that cannot run the host's binaries (cross-built generation)
+  noExec = pkgs // { stdenv = pkgs.stdenv // { buildPlatform = pkgs.stdenv.buildPlatform // { canExecute = _: false; }; }; };
+  validated = pkgs': lib.hasInfix "config show" (stubConfig pkgs' { }).xdg.configFile."pin-toolkit/config.toml".source.buildCommand;
   layout = pkgs.callPackage ./layout.nix { };
 in
 lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
@@ -70,10 +79,20 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     assert lib.assertMsg ((pkg.override { plugins = [ "gitlab-ci" "gitlab-ci" ]; }).drvPath == pkg.drvPath) "duplicate plugins: must be the same derivation";
     pkg;
   hm-module =
-    assert lib.assertMsg (full.programs.pin-toolkit.finalPackage == pkg) "all plugins enabled: finalPackage must be the flake default";
+    # derivation == compares outPath: the all-plugins finalPackage is the Cachix-cached store path
+    assert lib.assertMsg (full.programs.pin-toolkit.finalPackage.outPath == pkg.outPath) "all plugins enabled: finalPackage must be the flake default";
+    assert lib.assertMsg ((hmConfig { imports = [ self.homeModules.default ]; }).programs.pin-toolkit.finalPackage.outPath == pkg.outPath) "both module aliases imported: must deduplicate (key)";
+    assert lib.assertMsg ((hmConfig { programs.pin-toolkit.enable = lib.mkForce false; }).programs.pin-toolkit.finalPackage.outPath == pkg.outPath) "disabled: finalPackage still readable";
     assert lib.assertMsg (trimmed.programs.pin-toolkit.finalPackage.passthru.plugins == [ ]) "gitlab-ci disabled: trimmed build";
     assert lib.assertMsg (failedAssertions { } == [ ]) "default module config: no failed assertion";
     assert lib.assertMsg (lib.any (lib.hasInfix "enabled but not in programs.pin-toolkit.package") (failedAssertions { programs.pin-toolkit.package = pkg.override { plugins = [ ]; }; })) "enabled plugin not in package: assertion message";
+    assert lib.assertMsg (!settingsFail (host { kind = "gitlab"; token-env = "GITLAB_EXAMPLE_TOKEN"; })) "control: a host with a variable name evaluates";
+    assert lib.assertMsg (settingsFail (host { kind = "gitlab"; token = "glpat-SECRET"; })) "hosts.*.token (a secret value) must fail evaluation";
+    assert lib.assertMsg (settingsFail (host { kind = "gitlab"; token-env = "glpat-SECRET123"; })) "hosts.*.token-env that is not a variable name must fail evaluation";
+    assert lib.assertMsg (settingsFail (host { kind = "ftp"; })) "unknown host kind must fail evaluation";
+    assert lib.assertMsg (validated pkgs && !validated noExec) "config validated by the binary only when the build platform can run it";
+    assert lib.assertMsg (lib.any (lib.hasInfix "has no `.override`") (failedAssertions { programs.pin-toolkit.package = pkgs.runCommand "w" { passthru.plugins = pkg.passthru.plugins; } "mkdir $out"; programs.pin-toolkit.plugins.gitlab-ci.enable = false; })) "package without .override and a disabled plugin: assertion message";
+    assert lib.assertMsg (failedAssertions { programs.pin-toolkit.package = pkgs.runCommand "w" { passthru.plugins = pkg.passthru.plugins; } "mkdir $out"; } == [ ]) "package without .override with every plugin enabled: fine";
     assert lib.assertMsg (lib.any (lib.hasInfix "programs.pin-toolkit.settings: update not allowed") (failedAssertions { programs.pin-toolkit.settings.update.enabled = true; })) "repo-only key in settings: assertion message";
     pkgs.runCommand "pin-toolkit-hm-module-check" { } ''
       f=${full.xdg.configFile."pin-toolkit/config.toml".source}

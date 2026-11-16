@@ -31,7 +31,8 @@
         };
       };
       homeManagerModules.default = {
-        _file = ./nix/hm-module.nix; # named in error messages, deduplicated by key
+        _file = ./nix/hm-module.nix; # named in error messages
+        key = toString ./nix/hm-module.nix; # both aliases below deduplicate by this key
         imports = [ (import ./nix/hm-module.nix self) ];
       };
       homeModules.default = self.homeManagerModules.default;
