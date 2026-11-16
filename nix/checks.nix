@@ -86,11 +86,41 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
 // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
   let
     static = self.packages.${system}.pin-toolkit-static;
+    image = self.packages.${system}.container;
+    arch = { x86_64-linux = "amd64"; aarch64-linux = "arm64"; }.${system};
   in
   {
     static = pkgs.runCommand "pin-toolkit-static-check" { nativeBuildInputs = [ pkgs.file ]; } ''
       file -L ${static}/bin/pin-toolkit | tee /dev/stderr | grep -q 'static-pie linked\|statically linked'
       echo ${layout static} > $out
+    '';
+    container = pkgs.runCommand "pin-toolkit-container-check" { nativeBuildInputs = [ pkgs.jq pkgs.gnutar pkgs.gzip ]; } ''
+      mkdir img && tar -xzf ${image} -C img
+      cfg=$(jq -r '.[0].Config' img/manifest.json)
+      jq -e '(.config.Entrypoint // null) == null and (.config.Cmd // null) == null' img/$cfg
+      jq -e '.config.Env | index("SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt") != null' img/$cfg
+      jq -e '.architecture == "${arch}" and .os == "linux"' img/$cfg
+      mkdir root
+      for l in $(jq -r '.[0].Layers[]' img/manifest.json); do tar -xf img/$l -C root; done
+      # resolve a path inside the image (absolute symlinks point into its /nix/store)
+      resolve() {
+        local p=$1 i t
+        for i in 1 2 3 4 5 6 7 8; do
+          [ -L "root$p" ] || break
+          t=$(readlink "root$p")
+          case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac
+        done
+        [ -f "root$p" ] && echo "root$p"
+      }
+      for f in /bin/sh /bin/grep /bin/pin-toolkit /etc/ssl/certs/ca-bundle.crt; do
+        resolve $f > /dev/null || { echo "image lacks $f"; exit 1; }
+      done
+      [ -d root/tmp ]
+      $(resolve /bin/sh) sh -c 'echo sh ok | grep -q ok' # busybox: the applet comes from argv
+      $(resolve /bin/pin-toolkit) --version | grep -qx 'pin-toolkit ${static.version}'
+      size=$(stat -c %s ${image}); echo "image ${image}: $size bytes"
+      [ "$size" -lt 20000000 ]
+      touch $out
     '';
   }
 )
