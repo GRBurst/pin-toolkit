@@ -85,20 +85,28 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
       touch $out
     '';
   workflows = pkgs.runCommand "pin-toolkit-workflows-check" {
-    nativeBuildInputs = [ pkgs.actionlint pkgs.shellcheck pkgs.yq-go ];
+    nativeBuildInputs = [ pkgs.actionlint pkgs.shellcheck pkgs.yq-go pkgs.zizmor ];
     src = lib.fileset.toSource { root = ../.; fileset = ../.github/workflows; };
   } ''
     cd $src
-    actionlint -no-color .github/workflows/*.yml
+    # GitHub runs *.yml and *.yaml alike; a new file must not escape the checks
+    shopt -s nullglob
+    wf=(.github/workflows/*.yml .github/workflows/*.yaml)
+    [ ''${#wf[@]} -gt 0 ] || { echo "no workflow files found under .github/workflows"; exit 1; }
+    actionlint -no-color "''${wf[@]}"
     # every `uses:` pinned by a full commit SHA with a `# vX` comment (spec §8.3)
-    if grep -nE '^\s*(-\s+)?uses:' .github/workflows/*.yml | grep -vE 'uses: [^@ ]+@[0-9a-f]{40} # v[0-9]'; then
+    if grep -nE '^\s*(-\s+)?uses:' "''${wf[@]}" | grep -vE 'uses: [^@ ]+@[0-9a-f]{40} # v[0-9]'; then
       echo "unpinned uses: above"; exit 1
     fi
     # least privilege: no workflow-wide grant, every job states its own
-    for f in .github/workflows/*.yml; do
+    for f in "''${wf[@]}"; do
       yq -e '(.permissions | tag) == "!!map" and (.permissions | length) == 0 and ([.jobs[] | select((.permissions | tag) != "!!map")] | length) == 0' "$f" > /dev/null \
         || { echo "$f: top-level permissions must be {} and every job must declare permissions"; exit 1; }
     done
+    # static security audit (template injection, dangerous triggers, flow-style or
+    # unpinned uses, artipacked, ...): any finding fails; the audits that need the
+    # GitHub API are skipped by --offline (review B-L1)
+    zizmor --offline .github/workflows
     touch $out
   '';
   # leaf checks keep no cargo artifacts: their outputs would be pushed to Cachix
