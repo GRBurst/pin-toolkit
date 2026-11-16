@@ -206,8 +206,9 @@ JSON (`--json`, stdout), schema version 1:
 
 Exit `2` comes in two forms:
 
-- **Fatal, before the run:** a usage error, a config error (repo file,
-  env value, `--kind`, `--gitlab-host`, `CI_SERVER_HOST`), an explicit
+- **Fatal, before the run:** a usage error, a config error (global or
+  repo config file, `GITLAB_URI` or `CI_SERVER_HOST`, env value,
+  `--kind`, `--gitlab-host`), an explicit
   path claimed by no or two plugins, a plugin that is requested
   (subcommand, alias, `--only`, `PIN_TOOLKIT_ONLY`) but not in this build
   (`plugins` only notes the latter two). stderr says
@@ -244,7 +245,10 @@ all of the user's repositories (the HM module, M6, generates it).
   exist (`config file not found: …`); a file that cannot be read exits `2`
   with `{path}: {error}`. `--no-config` reads neither the repo file nor
   the global file; `--config`/`PIN_TOOLKIT_CONFIG` replace only the repo
-  path, the global file still applies.
+  path, the global file still applies. An explicit path outside the
+  current repository is pinned with the current repository's config —
+  its own `.pin-toolkit.toml`, if any, is not read; the global layer is
+  independent of the current directory.
 
 ### `.pin-toolkit.toml`
 
@@ -364,9 +368,10 @@ the `[hosts]` bindings. It prints environment-variable *names* from
 `[hosts]`, never their values.
 
 `--origin` appends the layer each value comes from — `default`,
-`global`, `repo`, `env` or `cli`; for `ignore`, which several layers
-can combine, all contributing layers in layer order
-(`# global+repo`). `gitlab-host` shows `# env` when the primary host
+`global`, `repo`, `env` or `cli`; for `ignore` — the only key whose
+layers concatenate — it lists all contributing layers in layer order,
+joined by `+` (today only the repo layer can set it, so in practice
+`# repo`). `gitlab-host` shows `# env` when the primary host
 comes from `GITLAB_URI` or `CI_SERVER_HOST`. Invalid
 `CI_SERVER_HOST`/`GITLAB_URI` values still exit `2`, and
 `--only`/`--skip` cannot be combined with `config show` (exit `2`).
@@ -633,7 +638,8 @@ names; indented (job-level) `component:` / `include:`.
 - Every other host is resolved **anonymously** (public projects work),
   unless the [global config file](#global-config-file) binds it:
   `[hosts.<host>]` with `kind = "gitlab"` and `token-env = "ENV"` sends
-  the value of the named variable as `PRIVATE-TOKEN` to that host. A
+  the value of the named variable as `PRIVATE-TOKEN` to that host (a
+  binding whose variable is unset or empty grants nothing). A
   binding grants a credential, not a lookup — the host still must be the
   primary or in `gitlab-hosts` to be resolved. Environment tokens win
   over bindings (`GITLAB_TOKEN` to the primary, `CI_JOB_TOKEN` to
@@ -658,9 +664,11 @@ other targets in the file are still written:
 - `429`: `unresolved (gitlab api: rate limited (429), retry later)` —
   **no retry**; run again later
 - other API/network failures: `unresolved (gitlab api: …)`
-- a failed lookup on a host that is neither the primary nor bound in the
-  global config — for **any** error (this replaces the `gitlab api: …`
-  reasons above, including `429` and network failures):
+- a failed lookup on a host that has **no credential** — not the
+  primary with `GITLAB_TOKEN`, not `CI_SERVER_HOST` with `CI_JOB_TOKEN`,
+  and no non-empty `[hosts]` binding — for **any** error (this replaces
+  the `gitlab api: …` reasons above, including `429` and network
+  failures):
   `unresolved (gitlab.example.com: not trusted for credentials — bind it
   in /home/user/.config/pin-toolkit/config.toml)`; that path is
   `$XDG_CONFIG_HOME/pin-toolkit/config.toml` when set, else

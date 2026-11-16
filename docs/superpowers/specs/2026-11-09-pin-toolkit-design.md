@@ -412,7 +412,7 @@ implements the table; `crates/pin-toolkit/tests/exit_codes.rs` pins it and recom
 - `plugins` prints `{id}: enabled|disabled|not in this build`, then per compiled kind
   `  {kind}: on|off — {help}` (T-D27). An `only` id that is not in this build does not fail it (a run
   exits 2): it lists, exit 0, with the stderr note `pin-toolkit: note: plugin {id} not in this build
-  (named by --only/PIN_TOOLKIT_ONLY; a run exits 2)` (M5d final L3, main). `config show` comes in M5e'.
+  (named by --only/PIN_TOOLKIT_ONLY; a run exits 2)` (M5d final L3, main). `config show` came in M5e'.
 
 ### 6.7 Resolver cache
 
@@ -535,7 +535,7 @@ Merge rules: tables deep-merge, scalars take the higher layer, `files` lists are
 higher layer, `ignore` lists **concatenate**. `--no-config` skips the global and repo files.
 
 Smaller config first (D35): M5d implements `defaults < repo < env < CLI` with the full repo schema
-below; M5e' inserts the global layer, `[hosts]` and `config show --origin`. The security rule (§7.3)
+below; M5e' (done) inserted the global layer, `[hosts]` and `config show --origin`. The security rule (§7.3)
 holds from M5d: a global-only key in a repo file is exit 2, and without a global layer tokens come
 from env only, to the primary host (D31); `CI_JOB_TOKEN` only to `CI_SERVER_HOST` (D37).
 
@@ -676,8 +676,8 @@ tests: pin-core `gitlab_hosts.rs`, pin-toolkit `credentials.rs`.
 global path, set even with `--no-config`); `auth_for` is `GITLAB_TOKEN`→primary,
 `CI_JOB_TOKEN`→`CI_SERVER_HOST`, then a non-empty binding → `PRIVATE-TOKEN`, else anonymous — env
 tokens win over bindings, and a binding grants a credential, not a lookup (the host is not added to
-the resolve set). D45 is composed in pin-core `Ctx::gitlab_resolve`: a client error on a host that is
-neither the primary nor bound → `unresolved (<host>: not trusted for credentials — bind it in
+the resolve set). D45 is composed in pin-core `Ctx::gitlab_resolve`: a client error on a host with
+no credential (env token or non-empty binding) → `unresolved (<host>: not trusted for credentials — bind it in
 <path>)` (as built, every error kind — see the D45 row); `gitlab: no client for <host>` and
 construction errors keep their texts. `GITLAB_URI` (D48) joins the primary chain below
 `PIN_TOOLKIT_GITLAB_HOST`; the value is reduced to `host[:port]`, `@` is rejected, an invalid value
@@ -903,7 +903,7 @@ GitHub repo, and M5e' precedes M6 because the HM module writes the global config
 | D42 | Human report: `plugin:kind` after `file:line`; the total summary line always, one line per plugin when more than one plugin ran, then `follow-up:` lines; per-file errors on stderr in both modes (M5d T-D21) | main (2026-11-10, Open 5, PR-L1) | §6.4 verbatim; errors on stdout would corrupt `--json` |
 | D43 | Fatal errors (exit 2 before the run) print nothing on stdout, also with `--json` (M5d T-D22) | main (2026-11-10, Open 6) | a half-written report is worse than none; CI reads the exit code |
 | D44 | CLI `--only`/`--skip` with a plugin subcommand or alias is exit 2; env `PIN_TOOLKIT_ONLY`/`PIN_TOOLKIT_SKIP` are ignored in subcommand/alias mode (M5d T-D28) | main (2026-11-10, Open 15, PR-L6) | ambiguous intent on the command line; a CI-wide env value must not break `pin-ci` |
-| D45 | **Implemented in M5e'** in pin-core `Ctx::gitlab_resolve`: a failed lookup on a host that is neither the primary nor bound in the global config → `unresolved (<host>: not trusted for credentials — bind it in <path>)`, `<path>` = the global config path (computed from env, even with `--no-config`), else `~/.config/pin-toolkit/config.toml`. As built, the rewrite covers **every** client error — `401`/`403`/`404`, `429`, network and malformed responses alike (narrowing to auth-shaped errors is a post-DF1 follow-up, M3 review M1). In M5d an unbound host resolved anonymously with the plain `unresolved` reason (M5d T-D30) | main (2026-11-10, Open 17, PR-M6 option b) | the message names the global config, which exists only from M5e' |
+| D45 | **Implemented in M5e'** in pin-core `Ctx::gitlab_resolve`: a failed lookup on a host with no credential (not the primary with `GITLAB_TOKEN`, not `CI_SERVER_HOST` with `CI_JOB_TOKEN`, no non-empty `[hosts]` binding) → `unresolved (<host>: not trusted for credentials — bind it in <path>)`, `<path>` = the global config path (computed from env, even with `--no-config`), else `~/.config/pin-toolkit/config.toml`. As built, the rewrite covers **every** client error — `401`/`403`/`404`, `429`, network and malformed responses alike (narrowing to auth-shaped errors is a post-DF1 follow-up, M3 review M1). In M5d an unbound host resolved anonymously with the plain `unresolved` reason (M5d T-D30) | main (2026-11-10, Open 17, PR-M6 option b) | the message names the global config, which exists only from M5e' |
 | D46 | JSON `plugins` keyset = the enabled plugins (zero summary when a plugin found nothing); per-plugin `errors` sorted by `(file, line)` whatever their origin; the per-plugin human lines count only plugins that ran (routed files), not conflict- or walk-error-only entries (M5d review-2 L7) | main (2026-11-11) | a consumer can read `plugins["gitlab-ci"].summary` on an empty repo; deterministic output |
 | D47 | An explicit directory outside the git root is matched relative to its own git root (else the directory itself); walk errors are per-file errors (exit 2); bad ignore-file lines only warn (M5d review-2 M1, L3) | main (2026-11-11) | `--check ../other` must not be a silent green; §6.3 treats read failures as per-file errors |
 | D48 | `GITLAB_URI`: a GitLab URL (scheme optional, any case) reduced to `host[:port]` for the primary chain (D40); a value with credentials (`@`) is rejected; an invalid value exits 2 before any request, even when `--gitlab-host` is given (consistent with `CI_SERVER_HOST`); it never carries `CI_JOB_TOKEN` (D37); a URL under a relative root (`https://ex.com/gitlab`) makes `ex.com` the primary | owner (2026-11-11, M3 review N3) | one host spelling to audit; invalid host values are fatal everywhere (host-syntax rule); no second source for the job token |
