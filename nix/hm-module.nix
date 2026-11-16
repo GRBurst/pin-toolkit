@@ -13,6 +13,14 @@ let
   missing = lib.subtractLists available enabled;
   repoOnly = lib.intersectLists (lib.attrNames cfg.settings) [ "version" "plugins" "update" "release_age" ];
   configFile = toml.generate "pin-toolkit-config.toml" ({ version = 1; } // cfg.settings);
+  # The binary that reads the file validates it: a bad key fails the build
+  # (home-manager switch), not every later run (exit 2).
+  checkedConfig = pkgs.runCommand "pin-toolkit-config.toml" { } ''
+    mkdir -p xdg/pin-toolkit
+    cp ${configFile} xdg/pin-toolkit/config.toml
+    XDG_CONFIG_HOME=$PWD/xdg ${lib.getExe cfg.finalPackage} config show > /dev/null
+    cp ${configFile} $out
+  '';
 in
 {
   options.programs.pin-toolkit = {
@@ -75,6 +83,6 @@ in
       }
     ];
     home.packages = [ cfg.finalPackage ];
-    xdg.configFile."pin-toolkit/config.toml".source = configFile;
+    xdg.configFile."pin-toolkit/config.toml".source = checkedConfig;
   };
 }

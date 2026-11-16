@@ -63,6 +63,10 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     pkgs.runCommand "pin-toolkit-hm-module-check" { } ''
       f=${full.xdg.configFile."pin-toolkit/config.toml".source}
       grep -qx 'version = 1' $f
+      mkdir -p xdg/pin-toolkit && cp $f xdg/pin-toolkit/config.toml
+      XDG_CONFIG_HOME=$PWD/xdg ${pkg}/bin/pin-toolkit config show > show
+      grep -qx 'concurrency = 4' show
+      grep -qx 'hosts.gitlab.example.com.token-env = GITLAB_EXAMPLE_TOKEN' show
       touch $out
     '';
   # leaf checks keep no cargo artifacts: their outputs would be pushed to Cachix
