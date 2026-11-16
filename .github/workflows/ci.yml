@@ -134,3 +134,78 @@ jobs:
         with:
           subject-path: dist/*.tar.gz
       - run: gh release upload "$TAG" dist/*.tar.gz dist/*.tar.gz.sha256 --clobber
+
+  images:
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-24.04, arch: amd64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ github.ref_name }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No Cachix here either (see binaries)
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - run: nix build -L .#container
+      - name: Push ${{ env.IMAGE }}:<version>-${{ matrix.arch }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/containers-auth.json # a path a non-root user can write
+        run: |
+          skopeo() { nix run --inputs-from . nixpkgs#skopeo -- "$@"; }
+          skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          skopeo --insecure-policy copy docker-archive:result "docker://$IMAGE:${TAG#v}-$ARCH"
+
+  manifest:
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    outputs:
+      digest: ${{ steps.index.outputs.digest }}
+    steps:
+      - name: Create ${{ env.IMAGE }}:<version> and :latest
+        id: index
+        run: |
+          docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          version=${TAG#v}
+          tags=(-t "$IMAGE:$version")
+          case "$version" in *-*) ;; *) tags+=(-t "$IMAGE:latest") ;; esac
+          docker buildx imagetools create "${tags[@]}" "$IMAGE:$version-amd64" "$IMAGE:$version-arm64"
+          digest=$(docker buildx imagetools inspect "$IMAGE:$version" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
+  publish:
+    needs: [binaries, manifest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - run: gh release edit "$TAG" --draft=false
