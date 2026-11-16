@@ -17,7 +17,10 @@
     {
       packages = eachSystem (pkgs:
         let pin-toolkit = pkgs.callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
-        in { default = pin-toolkit; inherit pin-toolkit; });
+        in { default = pin-toolkit; inherit pin-toolkit; }
+          // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+            pin-toolkit-static = pkgs.pkgsStatic.callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs.pkgsStatic; };
+          });
       checks = eachSystem (pkgs: import ./nix/checks.nix { inherit pkgs crane home-manager self; });
       overlays.default = final: _prev: {
         pin-toolkit = final.callPackage ./nix/package.nix {

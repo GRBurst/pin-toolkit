@@ -83,3 +83,14 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
   fmt = craneLib.cargoFmt { inherit (common) src; inherit (common.args) pname version; };
   doc = craneLib.cargoDoc (ca // { env.RUSTDOCFLAGS = "-D warnings"; doInstallCargoArtifacts = false; });
 }
+// lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
+  let
+    static = self.packages.${system}.pin-toolkit-static;
+  in
+  {
+    static = pkgs.runCommand "pin-toolkit-static-check" { nativeBuildInputs = [ pkgs.file ]; } ''
+      file -L ${static}/bin/pin-toolkit | tee /dev/stderr | grep -q 'static-pie linked\|statically linked'
+      echo ${layout static} > $out
+    '';
+  }
+)
