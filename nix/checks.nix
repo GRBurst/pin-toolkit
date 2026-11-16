@@ -13,6 +13,15 @@ let
     INSTA_UPDATE = "no"; # a snapshot mismatch fails; nothing is written
     CI = "true";
   };
+  # gate.sh runs `cargo test` in the dev profile; the flake checks build in the
+  # release profile. Keep debug assertions and overflow checks on for the
+  # workspace crates (dependencies stay shared release artifacts), so the
+  # debug_assert!s in pin-core run in CI too (review A-M1).
+  workspaceCrates = map (d: (lib.importTOML ../crates/${d}/Cargo.toml).package.name)
+    (lib.attrNames (lib.filterAttrs (_: t: t == "directory") (builtins.readDir ../crates)));
+  devAssertions = lib.concatMapStrings
+    (c: " --config profile.release.package.${c}.debug-assertions=true --config profile.release.package.${c}.overflow-checks=true")
+    workspaceCrates;
   allPlugins = import ./plugins.nix lib;
   plugins =
     { plugins-none = pkg.override { plugins = [ ]; }; }
@@ -93,7 +102,7 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     doInstallCargoArtifacts = false;
   });
   nextest = craneLib.cargoNextest (ca // {
-    cargoNextestExtraArgs = "--no-tests=fail"; # a filter or source change that runs nothing is red
+    cargoNextestExtraArgs = "--no-tests=fail${devAssertions}"; # a filter or source change that runs nothing is red
     env = testEnv;
     doInstallCargoArtifacts = false;
     __darwinAllowLocalNetworking = true;
@@ -101,7 +110,7 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
   nextest-no-default = craneLib.cargoNextest (ca // {
     pnameSuffix = "-nd";
     cargoExtraArgs = "--locked -p pin-toolkit --no-default-features";
-    cargoNextestExtraArgs = "--no-tests=fail";
+    cargoNextestExtraArgs = "--no-tests=fail${devAssertions}";
     env = testEnv;
     doInstallCargoArtifacts = false;
     __darwinAllowLocalNetworking = true;
