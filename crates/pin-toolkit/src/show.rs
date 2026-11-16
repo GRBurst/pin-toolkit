@@ -6,7 +6,8 @@
 //! With `--origin` each line ends `  # <origin>`: the highest layer that
 //! sets the value (default, global, repo, env, cli; `default` when none
 //! does), computed from [`Loaded::layers`]. `ignore` concatenates across
-//! layers: every contributing layer, highest first, joined by `+`.
+//! layers: its origin is the contributing layers in layer order (lowest
+//! first, the order the patterns concatenate in), joined by `+`.
 
 use std::fmt::Display;
 

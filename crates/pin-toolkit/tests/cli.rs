@@ -109,6 +109,34 @@ async fn usage_error_exits_2() {
 
 // ---- `config show` (M5e', design S5) ---------------------------------------
 
+/// Every credential-ish variable a run reads (the registry and GitLab
+/// ones, and the ones the host bindings below name), all holding a secret.
+/// `config show` prints variable NAMES only, never these values.
+const SECRETS: &[(&str, &str)] = &[
+    ("GITLAB_TOKEN", "glpat-SECRET-VALUE-1"),
+    ("CI_JOB_TOKEN", "job-SECRET-VALUE-2"),
+    ("DOCKERHUB_USER", "user-SECRET-VALUE-3"),
+    ("DOCKERHUB_TOKEN", "dh-SECRET-VALUE-4"),
+    ("GITHUB_TOKEN", "ghp-SECRET-VALUE-5"),
+    ("GITLAB_EXAMPLE_TOKEN", "glpat-SECRET-VALUE-6"),
+    ("CHARTS_USER", "charts-SECRET-VALUE-7"),
+    ("CHARTS_PASSWORD", "hunter2-SECRET-VALUE-8"),
+];
+
+/// [`run_in`] with [`SECRETS`] added to `vars`; fails if any secret value
+/// reaches stdout or stderr, whatever else the test asserts.
+async fn run_config(cwd: &Path, argv: &[&str], vars: &[(&str, &str)]) -> pin_toolkit::Output {
+    let all: Vec<(&str, &str)> = vars.iter().chain(SECRETS).copied().collect();
+    let out = run_in(cwd, argv, &all).await;
+    assert!(
+        !out.stdout.contains("SECRET-VALUE") && !out.stderr.contains("SECRET-VALUE"),
+        "a secret value leaked: {argv:?}\nstdout: {}\nstderr: {}",
+        out.stdout,
+        out.stderr
+    );
+    out
+}
+
 /// The `plugins.gitlab-ci.*` lines of a default config (what a build with
 /// the plugin prints; empty without it).
 fn gitlab_ci_defaults() -> &'static str {
@@ -133,7 +161,7 @@ fn gitlab_ci_defaults() -> &'static str {
 #[tokio::test]
 async fn config_show_prints_defaults() {
     let root = repo("cli-config-show-defaults");
-    let out = run_in(&root, &["pin-toolkit", "config", "show"], &[]).await;
+    let out = run_config(&root, &["pin-toolkit", "config", "show"], &[]).await;
     let want = format!(
         "config.global-file = none\n\
          config.repo-file = none\n\
@@ -176,14 +204,8 @@ async fn config_show_prints_global_and_repo_values() {
          [plugins.helm]\nrun = false\n",
     );
     let xdg = root.join("xdg").display().to_string();
-    let vars = [
-        ("XDG_CONFIG_HOME", xdg.as_str()),
-        ("GITLAB_EXAMPLE_TOKEN", "glpat-SECRET-VALUE"),
-        ("CHARTS_PASSWORD", "hunter2-SECRET-VALUE"),
-        ("GITLAB_TOKEN", "glpat-PRIMARY-SECRET"),
-        ("CI_JOB_TOKEN", "job-SECRET"),
-    ];
-    let out = run_in(&root, &["pin-toolkit", "config", "show"], &vars).await;
+    let vars = [("XDG_CONFIG_HOME", xdg.as_str())];
+    let out = run_config(&root, &["pin-toolkit", "config", "show"], &vars).await;
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert_eq!(out.stderr, "");
     let mut want = String::from(
@@ -209,18 +231,12 @@ async fn config_show_prints_global_and_repo_values() {
          hosts.registry.example.com.ca-file = /etc/ssl/corp-ca.pem\n",
     );
     assert_eq!(out.stdout, want);
-    for secret in ["SECRET-VALUE", "PRIMARY-SECRET", "job-SECRET"] {
-        assert!(
-            !out.stdout.contains(secret) && !out.stderr.contains(secret),
-            "{secret} leaked"
-        );
-    }
 }
 
 /// The `gitlab-host` line of `pin-toolkit <argv>` in `root`.
 async fn gitlab_host_of(root: &Path, argv: &[&str], vars: &[(&str, &str)]) -> String {
     let argv: Vec<&str> = ["pin-toolkit"].iter().chain(argv).copied().collect();
-    let out = run_in(root, &argv, vars).await;
+    let out = run_config(root, &argv, vars).await;
     assert_eq!(out.code, 0, "{argv:?} stderr: {}", out.stderr);
     out.stdout
         .lines()
@@ -266,7 +282,7 @@ async fn config_show_prints_the_effective_primary_host() {
         "env.example.com"
     );
 
-    let out = run_in(
+    let out = run_config(
         &root,
         &["pin-toolkit", "--no-config", "config", "show"],
         &[],
@@ -287,7 +303,7 @@ async fn config_show_prints_nothing_on_bad_config() {
     let root = repo("cli-config-show-bad");
     let argv = ["pin-toolkit", "config", "show"];
 
-    let out = run_in(&root, &argv, &[("CI_SERVER_HOST", "bad host!")]).await;
+    let out = run_config(&root, &argv, &[("CI_SERVER_HOST", "bad host!")]).await;
     assert_eq!(
         (out.code, out.stdout.as_str(), out.stderr.as_str()),
         (
@@ -296,7 +312,7 @@ async fn config_show_prints_nothing_on_bad_config() {
             "pin-toolkit: CI_SERVER_HOST: invalid GitLab host `bad host!`\n"
         )
     );
-    let out = run_in(&root, &argv, &[("GITLAB_URI", "https://bad_host/")]).await;
+    let out = run_config(&root, &argv, &[("GITLAB_URI", "https://bad_host/")]).await;
     assert_eq!(
         (out.code, out.stdout.as_str(), out.stderr.as_str()),
         (
@@ -307,7 +323,7 @@ async fn config_show_prints_nothing_on_bad_config() {
     );
 
     write(&root, ".pin-toolkit.toml", "version = 2\n");
-    let out = run_in(&root, &argv, &[]).await;
+    let out = run_config(&root, &argv, &[]).await;
     assert_eq!((out.code, out.stdout.as_str()), (2, ""));
     assert!(
         out.stderr.starts_with("pin-toolkit: .pin-toolkit.toml: "),
@@ -318,7 +334,7 @@ async fn config_show_prints_nothing_on_bad_config() {
     write(&root, ".pin-toolkit.toml", "version = 1\n");
     write(&root, "xdg/pin-toolkit/config.toml", "version = 2\n");
     let xdg = root.join("xdg").display().to_string();
-    let out = run_in(&root, &argv, &[("XDG_CONFIG_HOME", xdg.as_str())]).await;
+    let out = run_config(&root, &argv, &[("XDG_CONFIG_HOME", xdg.as_str())]).await;
     assert_eq!(
         (out.code, out.stdout.as_str(), out.stderr.as_str()),
         (
@@ -328,7 +344,7 @@ async fn config_show_prints_nothing_on_bad_config() {
         )
     );
 
-    let out = run_in(&root, &argv, &[("PIN_TOOLKIT_CONCURRENCY", "x")]).await;
+    let out = run_config(&root, &argv, &[("PIN_TOOLKIT_CONCURRENCY", "x")]).await;
     assert_eq!((out.code, out.stdout.as_str()), (2, ""));
 }
 
@@ -342,7 +358,7 @@ async fn config_show_prints_rejects_only_skip_ignores_their_env() {
             ["pin-toolkit", "config", "show", flag, "gitlab-ci"],
             ["pin-toolkit", flag, "gitlab-ci", "config", "show"],
         ] {
-            let out = run_in(&root, &argv, &[]).await;
+            let out = run_config(&root, &argv, &[]).await;
             assert_eq!(
                 (out.code, out.stdout.as_str(), out.stderr.as_str()),
                 (
@@ -354,12 +370,12 @@ async fn config_show_prints_rejects_only_skip_ignores_their_env() {
             );
         }
     }
-    let plain = run_in(&root, &["pin-toolkit", "config", "show"], &[]).await;
+    let plain = run_config(&root, &["pin-toolkit", "config", "show"], &[]).await;
     let vars = [
         ("PIN_TOOLKIT_ONLY", "nope"),
         ("PIN_TOOLKIT_SKIP", "gitlab-ci"),
     ];
-    let out = run_in(&root, &["pin-toolkit", "config", "show"], &vars).await;
+    let out = run_config(&root, &["pin-toolkit", "config", "show"], &vars).await;
     assert_eq!((out.code, out.stderr.as_str()), (0, ""));
     assert_eq!(out.stdout, plain.stdout, "env ONLY/SKIP change nothing");
 }
@@ -371,7 +387,7 @@ async fn config_show_prints_rejects_only_skip_ignores_their_env() {
 async fn config_show_prints_config_only_no_run() {
     let root = repo("cli-config-show-norun");
     write(&root, ".gitlab-ci.yml", "image: alpine:3.20\n");
-    let out = run_in(&root, &["pin-toolkit", "config", "show", "--update"], &[]).await;
+    let out = run_config(&root, &["pin-toolkit", "config", "show", "--update"], &[]).await;
     assert_eq!(out.code, 0, "stderr: {}", out.stderr);
     assert!(
         out.stdout.contains("update.enabled = true\n"),
@@ -385,6 +401,36 @@ async fn config_show_prints_config_only_no_run() {
     );
 }
 
+/// `./config` (and a `config` after a path) is a path, not the subcommand:
+/// a normal run, whether or not the file exists, never prints the
+/// configuration.
+#[tokio::test]
+async fn config_show_is_not_run_for_a_config_path() {
+    let root = repo("cli-config-show-path");
+    for argv in [
+        &["pin-toolkit", "./config"][..],
+        &["pin-toolkit", "./config", "config", "show"],
+    ] {
+        // No such file.
+        let out = run_config(&root, argv, &[]).await;
+        assert!(
+            !out.stdout.contains("config.global-file") && !out.stdout.contains("config.repo-file"),
+            "{argv:?}: {}",
+            out.stdout
+        );
+        assert_eq!(out.code, 2, "{argv:?}: a missing path is a usage error");
+        assert!(out.stderr.contains("./config"), "{argv:?}: {}", out.stderr);
+    }
+    // A file named `config` with nothing to pin: a normal run, no listing.
+    write(&root, "config", "image: alpine\n");
+    let out = run_config(&root, &["pin-toolkit", "./config"], &[]).await;
+    assert!(
+        !out.stdout.contains("config.global-file") && !out.stdout.contains("config.repo-file"),
+        "{}",
+        out.stdout
+    );
+}
+
 // ---- `config show --origin` (M5e', design S5) ------------------------------
 
 /// Nothing configured: every line says `default`, and the plain output is
@@ -392,8 +438,8 @@ async fn config_show_prints_config_only_no_run() {
 #[tokio::test]
 async fn config_show_origin_defaults() {
     let root = repo("cli-config-show-origin-defaults");
-    let plain = run_in(&root, &["pin-toolkit", "config", "show"], &[]).await;
-    let out = run_in(&root, &["pin-toolkit", "config", "show", "--origin"], &[]).await;
+    let plain = run_config(&root, &["pin-toolkit", "config", "show"], &[]).await;
+    let out = run_config(&root, &["pin-toolkit", "config", "show", "--origin"], &[]).await;
     assert_eq!((out.code, out.stderr.as_str()), (0, ""));
     assert!(
         out.stdout.lines().count() >= 9 && out.stdout.lines().all(|l| l.ends_with("  # default")),
@@ -433,7 +479,6 @@ async fn config_show_origin_global_repo_env_cli() {
         ("XDG_CONFIG_HOME", xdg.as_str()),
         ("PIN_TOOLKIT_CONCURRENCY", "3"),
         ("GITLAB_URI", "https://uri.example.com/"),
-        ("GITLAB_EXAMPLE_TOKEN", "glpat-SECRET-VALUE"),
     ];
     let argv = [
         "pin-toolkit",
@@ -444,7 +489,7 @@ async fn config_show_origin_global_repo_env_cli() {
         "show",
         "--origin",
     ];
-    let out = run_in(&root, &argv, &vars).await;
+    let out = run_config(&root, &argv, &vars).await;
     assert_eq!((out.code, out.stderr.as_str()), (0, ""));
     let lines: Vec<&str> = out.stdout.lines().collect();
     assert_eq!(
@@ -489,7 +534,6 @@ async fn config_show_origin_global_repo_env_cli() {
             "hosts.gitlab.example.com.token-env = GITLAB_EXAMPLE_TOKEN  # global",
         ]
     );
-    assert!(!out.stdout.contains("SECRET-VALUE"), "a token value leaked");
 }
 
 /// The CLI beats env, repo and global.
@@ -525,7 +569,7 @@ async fn config_show_origin_cli_over_env_repo_global() {
         "--min-age-days",
         "30",
     ];
-    let out = run_in(&root, &argv, &vars).await;
+    let out = run_config(&root, &argv, &vars).await;
     assert_eq!((out.code, out.stderr.as_str()), (0, ""));
     let lines: Vec<&str> = out.stdout.lines().collect();
     assert_eq!(
@@ -542,7 +586,7 @@ async fn config_show_origin_cli_over_env_repo_global() {
         out.stdout
     );
     // Without the CLI the env wins over the files.
-    let out = run_in(&root, &["pin-toolkit", "config", "show", "--origin"], &vars).await;
+    let out = run_config(&root, &["pin-toolkit", "config", "show", "--origin"], &vars).await;
     let lines: Vec<&str> = out.stdout.lines().collect();
     assert_eq!(
         (lines[2], lines[4], lines[6], lines[7]),
@@ -569,7 +613,7 @@ async fn config_show_origin_gitlab_host() {
                 .chain(argv)
                 .copied()
                 .collect();
-            let out = run_in(&root, &argv, vars).await;
+            let out = run_config(&root, &argv, vars).await;
             assert_eq!(out.code, 0, "{argv:?} stderr: {}", out.stderr);
             out.stdout
                 .lines()
@@ -612,14 +656,14 @@ async fn config_show_origin_gitlab_host() {
 async fn config_show_origin_bad_config_exits_2() {
     let root = repo("cli-config-show-origin-bad");
     write(&root, ".pin-toolkit.toml", "version = 2\n");
-    let out = run_in(&root, &["pin-toolkit", "config", "show", "--origin"], &[]).await;
+    let out = run_config(&root, &["pin-toolkit", "config", "show", "--origin"], &[]).await;
     assert_eq!((out.code, out.stdout.as_str()), (2, ""));
     assert!(
         out.stderr.starts_with("pin-toolkit: .pin-toolkit.toml: "),
         "stderr: {}",
         out.stderr
     );
-    let out = run_in(&root, &["pin-toolkit", "--origin", "config", "show"], &[]).await;
+    let out = run_config(&root, &["pin-toolkit", "--origin", "config", "show"], &[]).await;
     assert_eq!((out.code, out.stdout.as_str()), (2, ""));
     assert!(out.stderr.starts_with("error:"), "stderr: {}", out.stderr);
 }

@@ -230,7 +230,8 @@ pub fn origin_of(layers: &[(Origin, Layer)], set: impl Fn(&Layer) -> bool) -> Or
 }
 
 /// Every layer where `set` holds, highest first: the origins of a value
-/// that concatenates across layers (`ignore`).
+/// that concatenates across layers (`ignore`). `config show` prints them
+/// reversed (lowest first, in concatenation order), joined by `+`.
 pub fn origins_of(layers: &[(Origin, Layer)], set: impl Fn(&Layer) -> bool) -> Vec<Origin> {
     layers
         .iter()
