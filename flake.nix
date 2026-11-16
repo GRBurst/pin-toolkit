@@ -1,0 +1,22 @@
+{
+  description = "pin-toolkit: pin CI references to immutable digests";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    crane.url = "github:ipetkov/crane/v0.24.0";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+  outputs = { self, nixpkgs, crane, home-manager }:
+    let
+      inherit (nixpkgs) lib;
+      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
+      eachSystem = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+    in
+    {
+      packages = eachSystem (pkgs:
+        let pin-toolkit = pkgs.callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
+        in { default = pin-toolkit; inherit pin-toolkit; });
+    };
+}
