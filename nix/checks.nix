@@ -47,6 +47,32 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     doInstallCargoArtifacts = false;
     __darwinAllowLocalNetworking = true;
   });
+  feature-matrix = craneLib.mkCargoDerivation (ca // {
+    pnameSuffix = "-feature-matrix";
+    nativeBuildInputs = [ pkgs.clippy ];
+    doInstallCargoArtifacts = false;
+    buildPhaseCargoCommand = ''
+      for f in "" oci gitlab yaml oci,gitlab,test-support; do
+        cargo clippy --profile release --locked -p pin-core --no-default-features ''${f:+--features "$f"} --all-targets -- -D warnings
+      done
+      cargo clippy --profile release --locked -p pin-toolkit --no-default-features --all-targets -- -D warnings
+    '';
+    installPhaseCommand = "mkdir -p $out";
+  });
+  d38 = craneLib.mkCargoDerivation (ca // {
+    pnameSuffix = "-d38";
+    doInstallCargoArtifacts = false;
+    buildPhaseCargoCommand = ''
+      cargo check --profile release --locked -p pin-gitlab-ci -p pin-toolkit
+      for p in pin-gitlab-ci pin-toolkit; do
+        t=$(cargo tree --locked -p "$p" -e normal,build -f '{p} {f}')
+        if grep -q 'pin-core.*test-support' <<< "$t"; then
+          echo "D38: a normal dependency of $p enables pin-core/test-support"; exit 1
+        fi
+      done
+    '';
+    installPhaseCommand = "mkdir -p $out";
+  });
   fmt = craneLib.cargoFmt { inherit (common) src; inherit (common.args) pname version; };
   doc = craneLib.cargoDoc (ca // { env.RUSTDOCFLAGS = "-D warnings"; doInstallCargoArtifacts = false; });
 }
