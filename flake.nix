@@ -18,5 +18,6 @@
       packages = eachSystem (pkgs:
         let pin-toolkit = pkgs.callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
         in { default = pin-toolkit; inherit pin-toolkit; });
+      checks = eachSystem (pkgs: import ./nix/checks.nix { inherit pkgs crane home-manager self; });
     };
 }
