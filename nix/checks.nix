@@ -87,12 +87,23 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
   let
     static = self.packages.${system}.pin-toolkit-static;
     image = self.packages.${system}.container;
+    dist = self.packages.${system}.dist;
     arch = { x86_64-linux = "amd64"; aarch64-linux = "arm64"; }.${system};
   in
   {
     static = pkgs.runCommand "pin-toolkit-static-check" { nativeBuildInputs = [ pkgs.file ]; } ''
       file -L ${static}/bin/pin-toolkit | tee /dev/stderr | grep -q 'static-pie linked\|statically linked'
       echo ${layout static} > $out
+    '';
+    dist = pkgs.runCommand "pin-toolkit-dist-check" { } ''
+      cd ${dist}
+      name=pin-toolkit-v${static.version}-${pkgs.pkgsStatic.stdenv.hostPlatform.config}
+      [ "$(ls | tr '\n' ' ')" = "$name.tar.gz $name.tar.gz.sha256 " ]
+      sha256sum -c $name.tar.gz.sha256
+      want=$( (echo LICENSE; echo README.md; ls ${static}/bin) | sed "s|^|$name/|" | sort)
+      got=$(tar -tzf $name.tar.gz | grep -v '/$' | sort)
+      [ "$got" = "$want" ] || { echo "tarball: $got"; echo "expected: $want"; exit 1; }
+      touch $out
     '';
     container = pkgs.runCommand "pin-toolkit-container-check" { nativeBuildInputs = [ pkgs.jq pkgs.gnutar pkgs.gzip ]; } ''
       mkdir img && tar -xzf ${image} -C img
