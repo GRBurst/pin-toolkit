@@ -73,6 +73,13 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     '';
     installPhaseCommand = "mkdir -p $out";
   });
+  deny = craneLib.cargoDeny {
+    inherit (common.args) pname version;
+    src = lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [ (lib.fileset.fromSource common.src) ../deny.toml ];
+    };
+  };
   fmt = craneLib.cargoFmt { inherit (common) src; inherit (common.args) pname version; };
   doc = craneLib.cargoDoc (ca // { env.RUSTDOCFLAGS = "-D warnings"; doInstallCargoArtifacts = false; });
 }

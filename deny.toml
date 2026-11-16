@@ -1,0 +1,23 @@
+# cargo-deny (flake check `deny`: bans, licenses, sources; offline).
+# Advisories need the RustSec database (network): CI runs them separately
+# (job `advisories`, not a flake check, not a release gate); the policy lives here.
+[graph]
+all-features = true
+
+[advisories]
+unmaintained = "workspace"
+yanked = "deny"
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC", "Unicode-3.0", "CDLA-Permissive-2.0"]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
