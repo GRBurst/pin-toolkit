@@ -69,6 +69,23 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
       grep -qx 'hosts.gitlab.example.com.token-env = GITLAB_EXAMPLE_TOKEN' show
       touch $out
     '';
+  workflows = pkgs.runCommand "pin-toolkit-workflows-check" {
+    nativeBuildInputs = [ pkgs.actionlint pkgs.shellcheck pkgs.yq-go ];
+    src = lib.fileset.toSource { root = ../.; fileset = ../.github/workflows; };
+  } ''
+    cd $src
+    actionlint -no-color .github/workflows/*.yml
+    # every `uses:` pinned by a full commit SHA with a `# vX` comment (spec §8.3)
+    if grep -nE '^\s*(-\s+)?uses:' .github/workflows/*.yml | grep -vE 'uses: [^@ ]+@[0-9a-f]{40} # v[0-9]'; then
+      echo "unpinned uses: above"; exit 1
+    fi
+    # least privilege: no workflow-wide grant, every job states its own
+    for f in .github/workflows/*.yml; do
+      yq -e '(.permissions | tag) == "!!map" and (.permissions | length) == 0 and ([.jobs[] | select((.permissions | tag) != "!!map")] | length) == 0' "$f" > /dev/null \
+        || { echo "$f: top-level permissions must be {} and every job must declare permissions"; exit 1; }
+    done
+    touch $out
+  '';
   # leaf checks keep no cargo artifacts: their outputs would be pushed to Cachix
   # (nextest 89 MB, no-default 13 MB) and could evict the package the consumers pull
   clippy = craneLib.cargoClippy (ca // {
