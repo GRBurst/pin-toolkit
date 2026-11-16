@@ -5,6 +5,9 @@
 let
   inherit (pkgs) lib;
   system = pkgs.stdenv.hostPlatform.system;
+  craneLib = crane.mkLib pkgs;
+  common = import ./common.nix { inherit lib craneLib; };
+  ca = common.args // { inherit (common) cargoArtifacts; };
   pkg = self.packages.${system}.pin-toolkit;
   allPlugins = import ./plugins.nix lib;
   plugins =
@@ -20,4 +23,6 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     assert lib.assertMsg ((pkgs.extend self.overlays.default).pin-toolkit.drvPath == pkg.drvPath) "overlays.default: different derivation";
     assert lib.assertMsg (!(builtins.tryEval (pkg.override { plugins = [ "no-such-plugin" ]; }).drvPath).success) "unknown plugin accepted";
     pkg;
+  fmt = craneLib.cargoFmt { inherit (common) src; inherit (common.args) pname version; };
+  doc = craneLib.cargoDoc (ca // { env.RUSTDOCFLAGS = "-D warnings"; doInstallCargoArtifacts = false; });
 }
