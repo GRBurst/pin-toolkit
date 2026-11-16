@@ -10,6 +10,8 @@ let
   allPlugins = import ./plugins.nix lib;
   enabled = lib.filter (p: cfg.plugins.${p}.enable) allPlugins;
   available = cfg.package.passthru.plugins or [ ];
+  missing = lib.subtractLists available enabled;
+  repoOnly = lib.intersectLists (lib.attrNames cfg.settings) [ "version" "plugins" "update" "release_age" ];
   configFile = toml.generate "pin-toolkit-config.toml" ({ version = 1; } // cfg.settings);
 in
 {
@@ -62,6 +64,16 @@ in
     programs.pin-toolkit.finalPackage =
       if lib.naturalSort enabled == lib.naturalSort available then cfg.package
       else cfg.package.override { plugins = enabled; };
+    assertions = [
+      {
+        assertion = missing == [ ];
+        message = "programs.pin-toolkit: plugin(s) ${lib.concatStringsSep ", " missing} enabled but not in programs.pin-toolkit.package (its passthru.plugins: ${lib.concatStringsSep ", " available})";
+      }
+      {
+        assertion = repoOnly == [ ];
+        message = "programs.pin-toolkit.settings: ${lib.concatStringsSep ", " repoOnly} not allowed (version is set by the module; plugins, update and release_age belong in a repository's .pin-toolkit.toml)";
+      }
+    ];
     home.packages = [ cfg.finalPackage ];
     xdg.configFile."pin-toolkit/config.toml".source = configFile;
   };
