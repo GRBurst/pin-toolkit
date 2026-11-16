@@ -157,6 +157,8 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     image = self.packages.${system}.container;
     dist = self.packages.${system}.dist;
     arch = { x86_64-linux = "amd64"; aarch64-linux = "arm64"; }.${system};
+    # written out, not derived: the check pins the published asset name
+    triple = { x86_64-linux = "x86_64-unknown-linux-musl"; aarch64-linux = "aarch64-unknown-linux-musl"; }.${system};
   in
   {
     static = pkgs.runCommand "pin-toolkit-static-check" { nativeBuildInputs = [ pkgs.file ]; } ''
@@ -165,15 +167,18 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     '';
     dist = pkgs.runCommand "pin-toolkit-dist-check" { } ''
       cd ${dist}
-      name=pin-toolkit-v${static.version}-${pkgs.pkgsStatic.stdenv.hostPlatform.config}
+      name=pin-toolkit-v${static.version}-${triple}
       [ "$(ls | tr '\n' ' ')" = "$name.tar.gz $name.tar.gz.sha256 " ]
       sha256sum -c $name.tar.gz.sha256
       want=$( (echo LICENSE; echo README.md; ls ${static}/bin) | sed "s|^|$name/|" | sort)
       got=$(tar -tzf $name.tar.gz | grep -v '/$' | sort)
       [ "$got" = "$want" ] || { echo "tarball: $got"; echo "expected: $want"; exit 1; }
+      # the shipped binary is the static one checks.static validated (review A-M2)
+      x=$(mktemp -d) && tar -xzf $name.tar.gz -C $x
+      cmp $x/$name/pin-toolkit ${static}/bin/pin-toolkit
       touch $out
     '';
-    container = pkgs.runCommand "pin-toolkit-container-check" { nativeBuildInputs = [ pkgs.jq pkgs.gnutar pkgs.gzip ]; } ''
+    container = pkgs.runCommand "pin-toolkit-container-check" { nativeBuildInputs = [ pkgs.jq pkgs.gnutar pkgs.gzip pkgs.file ]; } ''
       mkdir img && tar -xzf ${image} -C img
       cfg=$(jq -r '.[0].Config' img/manifest.json)
       jq -e '(.config.Entrypoint // null) == null and (.config.Cmd // null) == null' img/$cfg
@@ -191,14 +196,23 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
         done
         [ -f "root$p" ] && echo "root$p"
       }
-      for f in /bin/sh /bin/grep /bin/pin-toolkit /etc/ssl/certs/ca-bundle.crt; do
+      for f in /bin/busybox /bin/sh /bin/grep /bin/pin-toolkit /etc/ssl/certs/ca-bundle.crt; do
         resolve $f > /dev/null || { echo "image lacks $f"; exit 1; }
       done
-      [ -d root/tmp ]
-      $(resolve /bin/sh) sh -c 'echo sh ok | grep -q ok' # busybox: the applet comes from argv
+      # /tmp is sticky and world-writable (the tar header: extracting as a user drops the bit)
+      for l in $(jq -r '.[0].Layers[]' img/manifest.json); do tar -tvf img/$l; done \
+        | grep -q '^drwxrwxrwt .* \./tmp/$' || { echo "image: /tmp is not drwxrwxrwt"; exit 1; }
+      # sh and grep are the image's own busybox, and it is static: a dynamic one
+      # runs here (the sandbox has a libc) but not in a bare GitLab job (review A-M2)
+      bb=$(resolve /bin/busybox)
+      [ "$(resolve /bin/sh)" = "$bb" ] && [ "$(resolve /bin/grep)" = "$bb" ]
+      file -L "$bb" | tee /dev/stderr | grep -q 'statically linked\|static-pie linked'
+      $bb sh -c 'echo sh ok' | $bb grep -qx 'sh ok' # busybox: the applet comes from argv
+      # the shipped binary is the static one checks.static validated
+      cmp "$(resolve /bin/pin-toolkit)" ${static}/bin/pin-toolkit
       $(resolve /bin/pin-toolkit) --version | grep -qx 'pin-toolkit ${static.version}'
       size=$(stat -c %s ${image}); echo "image ${image}: $size bytes"
-      [ "$size" -lt 20000000 ]
+      [ "$size" -lt 10000000 ]
       touch $out
     '';
   }
