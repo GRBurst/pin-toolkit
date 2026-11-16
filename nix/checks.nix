@@ -29,6 +29,10 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     pkg;
   # leaf checks keep no cargo artifacts: their outputs would be pushed to Cachix
   # (nextest 89 MB, no-default 13 MB) and could evict the package the consumers pull
+  clippy = craneLib.cargoClippy (ca // {
+    cargoClippyExtraArgs = "--all-targets -- -D warnings";
+    doInstallCargoArtifacts = false;
+  });
   nextest = craneLib.cargoNextest (ca // {
     cargoNextestExtraArgs = "--no-tests=fail"; # a filter or source change that runs nothing is red
     env = testEnv;

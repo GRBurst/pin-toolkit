@@ -98,6 +98,7 @@ impl std::error::Error for PinFilesError {}
 /// file run concurrently, bounded by `opts.concurrency`). The clients are
 /// cloned into one [`Ctx`] (shared caches); the first file error aborts, and
 /// carries the rows of the files before it (review L2).
+#[allow(clippy::result_large_err)] // test helper: the error carries the earlier rows (review L2)
 pub async fn pin_files(
     paths: &[PathBuf],
     opts: &PinOptions,
