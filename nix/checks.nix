@@ -24,7 +24,12 @@ let
     workspaceCrates;
   allPlugins = import ./plugins.nix lib;
   plugins =
-    { plugins-none = pkg.override { plugins = [ ]; }; }
+    {
+      plugins-none = pkg.override { plugins = [ ]; };
+      # the all-plugins package (Cachix path) gets its own layout check, not only
+      # through the per-plugin ones that coincide with it while there is one plugin
+      plugins-all = pkg;
+    }
     // lib.genAttrs' allPlugins (p: lib.nameValuePair "plugins-${p}" (pkg.override { plugins = [ p ]; }));
   hmConfig = extra: (home-manager.lib.homeManagerConfiguration {
     inherit pkgs;
@@ -149,7 +154,15 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     };
   };
   fmt = craneLib.cargoFmt { inherit (common) src; inherit (common.args) pname version; };
-  doc = craneLib.cargoDoc (ca // { env.RUSTDOCFLAGS = "-D warnings"; doInstallCargoArtifacts = false; });
+  # mkCargoDerivation, not cargoDoc: cargoDoc hard-codes its install phase and
+  # would push the 7.6 MB rendered HTML to Cachix on every main push (review A-L2)
+  doc = craneLib.mkCargoDerivation (ca // {
+    pnameSuffix = "-doc";
+    env.RUSTDOCFLAGS = "-D warnings";
+    doInstallCargoArtifacts = false;
+    buildPhaseCargoCommand = "cargoWithProfile doc --locked --workspace --all-features --no-deps";
+    installPhaseCommand = "mkdir -p $out";
+  });
 }
 // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
   let
