@@ -41,6 +41,7 @@ are not built yet (`pin-toolkit plugins` shows the state of each).
 pin-toolkit [OPTIONS] [PATHS]...             # every enabled plugin
 pin-toolkit gitlab-ci [OPTIONS] [PATHS]...   # only the gitlab-ci plugin
 pin-toolkit plugins                          # compiled-in plugins, kinds, enable state
+pin-toolkit config show [--origin]           # the effective configuration
 ```
 
 - `PATHS` — files or directories. Default: the git root (the first
@@ -52,7 +53,10 @@ pin-toolkit plugins                          # compiled-in plugins, kinds, enabl
   `pin-toolkit a.yml gitlab-ci` treats `gitlab-ci` as a path, so it is an
   all-plugins run that fails with `no plugin claims …` (exit `2`).
 - clap's `help` subcommand exists (`pin-toolkit help`, `pin-toolkit help
-  gitlab-ci`), so a directory named `help` must be passed as `./help`.
+  gitlab-ci`), so a directory named `help` must be passed as `./help`;
+  `pin-toolkit help config` shows the `config` subcommand's help.
+- A file named `config` in the current directory must be passed as
+  `./config`: the `config` subcommand wins over a bare path.
 - Options may appear before or after the subcommand.
 
 | Option | Meaning |
@@ -67,9 +71,9 @@ pin-toolkit plugins                          # compiled-in plugins, kinds, enabl
 | `--only <P,…>` | run only these plugins |
 | `--skip <P,…>` | do not run these plugins |
 | `--kind <P:K=on\|off>` | turn one kind on or off, repeatable (e.g. `--kind gitlab-ci:service=off`) |
-| `--config <FILE>` | repository config file (default: `.pin-toolkit.toml` at the git root) |
-| `--no-config` | do not read a config file |
-| `--gitlab-host <H>` | primary GitLab host (default: `CI_SERVER_HOST`, else `gitlab.com`) |
+| `--config <FILE>` | repository config file (default: `.pin-toolkit.toml` at the git root); the [global config file](#global-config-file) is read separately |
+| `--no-config` | read neither the repository config nor the [global config file](#global-config-file) |
+| `--gitlab-host <H>` | primary GitLab host (default: `PIN_TOOLKIT_GITLAB_HOST`, `GITLAB_URI`, `CI_SERVER_HOST`, else `gitlab.com`; see [GitLab hosts and auth](#gitlab-hosts-and-auth)) |
 
 Flags are presence-only (there is no `--no-update`; use
 `PIN_TOOLKIT_UPDATE=0` over a repo `enabled = true`).
@@ -225,9 +229,12 @@ nothing is written, and `0` again after a pin run.
 
 ## Configuration
 
-Settings come from four layers, each overriding the one before:
-**defaults < repo `.pin-toolkit.toml` < env `PIN_TOOLKIT_*` < CLI**. A
-global config file arrives in M5e'.
+Settings come from five layers, each overriding the one before:
+**defaults < global config file < repo `.pin-toolkit.toml` < env
+`PIN_TOOLKIT_*` < CLI**. The [global config file](#global-config-file)
+(`$XDG_CONFIG_HOME/pin-toolkit/config.toml`, else
+`$HOME/.config/pin-toolkit/config.toml`) is the per-user layer, shared by
+all of the user's repositories (the HM module, M6, generates it).
 
 - Scalars: the highest layer that sets them wins. `files` and
   `gitlab-hosts` lists are **replaced** by a higher layer; `ignore` lists
@@ -235,7 +242,9 @@ global config file arrives in M5e'.
 - The repo file is `--config FILE` if given, else `PIN_TOOLKIT_CONFIG`,
   else `.pin-toolkit.toml` at the git root if it exists. A named file must
   exist (`config file not found: …`); a file that cannot be read exits `2`
-  with `{path}: {error}`. `--no-config` reads none.
+  with `{path}: {error}`. `--no-config` reads neither the repo file nor
+  the global file; `--config`/`PIN_TOOLKIT_CONFIG` replace only the repo
+  path, the global file still applies.
 
 ### `.pin-toolkit.toml`
 
@@ -293,6 +302,106 @@ of characters (including `/` and none), `?` one character.
   `skipped (block scalar)` row.
 
 An ignored reference has no row and is never resolved.
+
+### Global config file
+
+`$XDG_CONFIG_HOME/pin-toolkit/config.toml` — only when `XDG_CONFIG_HOME`
+is set to a non-empty absolute path — else
+`$HOME/.config/pin-toolkit/config.toml` (the same on macOS); if neither
+variable is set, there is no global layer. A missing file is simply no
+layer; an unreadable or invalid one exits `2` naming the path (shown
+relative to the current directory, like the repo file).
+
+The file may set only the scalar keys `version`, `json` and
+`concurrency` and the `[hosts]` table — not `update`, `release_age` or
+`[plugins]` (those are repository-level; an unknown key exits `2`):
+
+```toml
+version = 1              # required, must be 1
+
+concurrency = 2          # = --concurrency (default 8)
+json = true              # = --json
+
+[hosts.<host>]           # one table per host, a plain host with optional :port
+kind = "gitlab"          # "gitlab" | "helm-repo" | "oci"
+```
+
+Each `[hosts.<host>]` table carries exactly the keys of its kind:
+
+- `kind = "gitlab"`: `token-env = "ENV"` — the **name** of an
+  environment variable that holds the token; its value is sent as
+  `PRIVATE-TOKEN` to that host (see
+  [GitLab hosts and auth](#gitlab-hosts-and-auth)).
+- `kind = "helm-repo"`: `username-env = "ENV"` and
+  `password-env = "ENV"` — variable names for a helm repository
+  (validated and shown by [`config show`](#config-show); consumed by
+  the helm plugin, not yet built).
+- `kind = "oci"`: `ca-file = "PATH"` — a CA bundle for an OCI registry
+  (validated and shown; consumed by a later milestone).
+
+Only environment-variable **names** may appear in the file, never
+secret values: the HM module (M6) generates this file into the
+world-readable Nix store.
+
+A binding grants a **credential, not a lookup**: the host still must be
+the primary host or in `plugins.gitlab-ci.gitlab-hosts` to be resolved
+at all. Environment tokens win over bindings — `GITLAB_TOKEN` still goes
+to the primary host, `CI_JOB_TOKEN` still to `CI_SERVER_HOST` only.
+
+Exit `2` (the message names the file) for: a missing `version` or one
+other than `1`; an unknown key (including `update`, `release_age` and
+`plugins`) or host kind; a key that does not belong to the table's kind;
+and a host key that is not a plain host
+(``invalid GitLab host `x` in hosts``).
+
+### `config show`
+
+`pin-toolkit config show` prints the effective configuration without
+walking the repository: the two config-file paths (or `none`), the
+scalar settings, every plugin's settings (defaults included for
+compiled-in plugins; only set keys for plugins not in this build) and
+the `[hosts]` bindings. It prints environment-variable *names* from
+`[hosts]`, never their values.
+
+`--origin` appends the layer each value comes from — `default`,
+`global`, `repo`, `env` or `cli`; for `ignore`, which several layers
+can combine, all contributing layers in layer order
+(`# global+repo`). `gitlab-host` shows `# env` when the primary host
+comes from `GITLAB_URI` or `CI_SERVER_HOST`. Invalid
+`CI_SERVER_HOST`/`GITLAB_URI` values still exit `2`, and
+`--only`/`--skip` cannot be combined with `config show` (exit `2`).
+
+```console
+$ pin-toolkit config show --origin
+config.global-file = .config/pin-toolkit/config.toml  # global
+config.repo-file = .pin-toolkit.toml  # repo
+update.enabled = true  # repo
+update.major = false  # default
+release-age.min-days = 0  # default
+release-age.unknown = allow  # default
+concurrency = 2  # global
+json = false  # default
+gitlab-host = gitlab.com  # default
+plugins.gitlab-ci.run = true  # default
+plugins.gitlab-ci.files = [".gitlab-ci.yml", "**/*.gitlab-ci.yml", ".gitlab/ci/**/*.yml"]  # default
+plugins.gitlab-ci.ignore = ["registry.example.com/legacy/*"]  # repo
+plugins.gitlab-ci.kinds.image = true  # default
+plugins.gitlab-ci.kinds.service = true  # default
+plugins.gitlab-ci.kinds.component = true  # default
+plugins.gitlab-ci.kinds.include = true  # default
+plugins.gitlab-ci.gitlab-hosts = ["gitlab.example.com"]  # repo
+hosts.charts.example.com.kind = helm-repo  # global
+hosts.charts.example.com.username-env = CHARTS_USER  # global
+hosts.charts.example.com.password-env = CHARTS_PASSWORD  # global
+hosts.gitlab.example.com.kind = gitlab  # global
+hosts.gitlab.example.com.token-env = GITLAB_EXAMPLE_TOKEN  # global
+hosts.registry.example.com.kind = oci  # global
+hosts.registry.example.com.ca-file = /etc/ssl/certs/corp-ca.pem  # global
+```
+
+(Without `--origin` the same lines print without the `# …` comments.
+Paths are shown relative to the current directory — in this example
+`$HOME` is the repository root itself.)
 
 ### Environment
 
@@ -500,8 +609,17 @@ names; indented (job-level) `component:` / `include:`.
 #### GitLab hosts and auth
 
 - **Primary host:** `--gitlab-host` > `PIN_TOOLKIT_GITLAB_HOST` >
-  `CI_SERVER_HOST` > `gitlab.com`. Includes resolve there. A repository
-  config cannot set it.
+  `GITLAB_URI` > `CI_SERVER_HOST` > `gitlab.com`. Includes resolve there.
+  A repository config cannot set it.
+- **`GITLAB_URI`:** a URL for the primary host; the scheme (any case) is
+  optional and the value is reduced to `host[:port]`
+  (`https://gitlab.example.com` → `gitlab.example.com`). A value with
+  credentials (`user@host`) is rejected (``GITLAB_URI: a GitLab URL must
+  not contain credentials``); an invalid value exits `2` before any
+  request, even when `--gitlab-host` is also given (``GITLAB_URI:
+  invalid GitLab host `x` ``); like `CI_SERVER_HOST` it never carries
+  `CI_JOB_TOKEN`; and like it, a URL under a relative URL root
+  (`https://ex.com/gitlab`) makes `ex.com` the primary.
 - **Resolved hosts:** the primary plus `plugins.gitlab-ci.gitlab-hosts`;
   components on other hosts are `skipped (host not enabled: …)`.
   `CI_SERVER_HOST` is not added implicitly when it is not the primary.
@@ -512,11 +630,14 @@ names; indented (job-level) `component:` / `include:`.
   the list endpoint `GET /projects/:id/repository/branches?search=<name>`
   plus an exact-name match (the single-branch endpoint is not in the
   job-token allowlist); PAT/anonymous use the single-branch endpoint.
-- Every other host is resolved **anonymously** (public projects work). A
-  `gitlab-hosts` entry other than the primary host and `CI_SERVER_HOST` is
-  resolved anonymously; a private project there fails as `unresolved`.
-  Binding credentials to further hosts arrives with the global config
-  (M5e').
+- Every other host is resolved **anonymously** (public projects work),
+  unless the [global config file](#global-config-file) binds it:
+  `[hosts.<host>]` with `kind = "gitlab"` and `token-env = "ENV"` sends
+  the value of the named variable as `PRIVATE-TOKEN` to that host. A
+  binding grants a credential, not a lookup — the host still must be the
+  primary or in `gitlab-hosts` to be resolved. Environment tokens win
+  over bindings (`GITLAB_TOKEN` to the primary, `CI_JOB_TOKEN` to
+  `CI_SERVER_HOST` only).
 - A host value (`--gitlab-host`, `PIN_TOOLKIT_GITLAB_HOST`, `gitlab-hosts`
   entries, and a non-empty `CI_SERVER_HOST`) must be a plain host with an
   optional port: dot-separated labels of letters, digits and `-` (no empty
@@ -537,6 +658,14 @@ other targets in the file are still written:
 - `429`: `unresolved (gitlab api: rate limited (429), retry later)` —
   **no retry**; run again later
 - other API/network failures: `unresolved (gitlab api: …)`
+- a failed lookup on a host that is neither the primary nor bound in the
+  global config — for **any** error (this replaces the `gitlab api: …`
+  reasons above, including `429` and network failures):
+  `unresolved (gitlab.example.com: not trusted for credentials — bind it
+  in /home/user/.config/pin-toolkit/config.toml)`; that path is
+  `$XDG_CONFIG_HOME/pin-toolkit/config.toml` when set, else
+  `$HOME/.config/pin-toolkit/config.toml` (or `~/.config/…` when neither
+  variable is set)
 
 ### Multi-registry support
 
