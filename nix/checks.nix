@@ -67,6 +67,7 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
   pin-toolkit =
     assert lib.assertMsg ((pkgs.extend self.overlays.default).pin-toolkit.drvPath == pkg.drvPath) "overlays.default: different derivation";
     assert lib.assertMsg (!(builtins.tryEval (pkg.override { plugins = [ "no-such-plugin" ]; }).drvPath).success) "unknown plugin accepted";
+    assert lib.assertMsg ((pkg.override { plugins = [ "gitlab-ci" "gitlab-ci" ]; }).drvPath == pkg.drvPath) "duplicate plugins: must be the same derivation";
     pkg;
   hm-module =
     assert lib.assertMsg (full.programs.pin-toolkit.finalPackage == pkg) "all plugins enabled: finalPackage must be the flake default";

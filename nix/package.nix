@@ -8,6 +8,9 @@
 let
   allPlugins = import ./plugins.nix lib;
   unknown = lib.subtractLists allPlugins plugins;
+  # canonical: the set of plugins decides the derivation, not duplicates (which
+  # would make `ln -s` fail) or the order they were listed in (review A nits)
+  enabled = lib.naturalSort (lib.unique plugins);
   common = import ./common.nix { inherit lib craneLib; };
 in
 assert lib.assertMsg (unknown == [ ])
@@ -18,12 +21,12 @@ craneLib.buildPackage (
     inherit (common) cargoArtifacts;
     cargoExtraArgs =
       "--locked -p pin-toolkit --no-default-features"
-      + lib.optionalString (plugins != [ ]) " --features ${lib.concatStringsSep "," plugins}";
+      + lib.optionalString (enabled != [ ]) " --features ${lib.concatStringsSep "," enabled}";
     doCheck = false; # the tests run once, in checks.nextest
     postInstall =
-      lib.concatMapStrings (p: "ln -s pin-toolkit $out/bin/pin-${p}\n") plugins
-      + lib.optionalString (lib.elem "gitlab-ci" plugins) "ln -s pin-toolkit $out/bin/pin-ci\n";
-    passthru = { inherit plugins allPlugins; };
+      lib.concatMapStrings (p: "ln -s pin-toolkit $out/bin/pin-${p}\n") enabled
+      + lib.optionalString (lib.elem "gitlab-ci" enabled) "ln -s pin-toolkit $out/bin/pin-ci\n";
+    passthru = { plugins = enabled; inherit allPlugins; };
     meta = {
       description = "Pin CI image, component and include references to immutable digests";
       homepage = "https://github.com/GRBurst/pin-toolkit";

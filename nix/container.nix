@@ -1,6 +1,6 @@
 # GitLab CI image (spec §8.4): static binary, static busybox (sh, grep),
 # CA certificates; no Entrypoint, so GitLab can pipe its script into sh.
-{ lib, dockerTools, busybox, pin-toolkit }:
+{ dockerTools, busybox, pin-toolkit }:
 dockerTools.buildLayeredImage {
   name = "pin-toolkit";
   tag = pin-toolkit.version;

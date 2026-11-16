@@ -1,6 +1,6 @@
 # Release assets (spec §8.3 `binaries`): the static binary and its aliases,
 # LICENSE and README.md as a reproducible tar.gz plus its .sha256.
-{ lib, runCommand, pin-toolkit, target }:
+{ runCommand, pin-toolkit, target }:
 let
   name = "pin-toolkit-v${pin-toolkit.version}-${target}";
 in
