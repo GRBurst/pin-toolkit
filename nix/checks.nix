@@ -14,5 +14,10 @@ let
 in
 lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
 // {
-  pin-toolkit = pkg;
+  # the overlay builds the same store path (pkgs = the flake's nixpkgs);
+  # an unknown plugin is an evaluation error
+  pin-toolkit =
+    assert lib.assertMsg ((pkgs.extend self.overlays.default).pin-toolkit.drvPath == pkg.drvPath) "overlays.default: different derivation";
+    assert lib.assertMsg (!(builtins.tryEval (pkg.override { plugins = [ "no-such-plugin" ]; }).drvPath).success) "unknown plugin accepted";
+    pkg;
 }

@@ -19,5 +19,17 @@
         let pin-toolkit = pkgs.callPackage ./nix/package.nix { craneLib = crane.mkLib pkgs; };
         in { default = pin-toolkit; inherit pin-toolkit; });
       checks = eachSystem (pkgs: import ./nix/checks.nix { inherit pkgs crane home-manager self; });
+      overlays.default = final: _prev: {
+        pin-toolkit = final.callPackage ./nix/package.nix {
+          craneLib = crane.mkLib final;
+          plugins = import ./nix/plugins.nix final.lib; # not a consumer overlay's `plugins` attribute
+        };
+      };
+      devShells = eachSystem (pkgs: {
+        default = (crane.mkLib pkgs).devShell {
+          checks = self.checks.${pkgs.stdenv.hostPlatform.system};
+          packages = with pkgs; [ cargo-nextest cargo-deny actionlint ];
+        };
+      });
     };
 }
