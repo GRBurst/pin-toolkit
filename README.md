@@ -27,6 +27,10 @@ touched, and a second run reports everything `ok` and writes nothing.
 
 ## Install
 
+No release has been tagged yet: the Cachix cache, the GHCR image and the
+tarballs described below appear once the owner has done the setup steps and
+pushed the first `v*` tag. Until then, build from source.
+
 The Nix flake (`github:GRBurst/pin-toolkit`) builds for `x86_64-linux`,
 `aarch64-linux` and `aarch64-darwin`. Its `default` package has every plugin
 and is the store path that the Cachix cache serves. Release tarballs cover
@@ -77,9 +81,11 @@ programs.pin-toolkit = {
 `settings` is written to the global config file `pin-toolkit/config.toml`
 (`version = 1` is added). It takes `json`, `concurrency` and `[hosts]` only;
 `update`, `release_age`, `plugins` and `version` belong in a repository's
-`.pin-toolkit.toml`. Host values are environment-variable **names**. A
-value that looks like a token fails evaluation, and the Nix store is
-world-readable, so never put a secret in `settings`.
+`.pin-toolkit.toml`. Host values are environment-variable **names**: a value
+that is not a valid variable name (for example a pasted `glpat-…` token with a
+dash) fails evaluation. A well-formed name such as `ghp_…` is accepted, so the
+rule is "names only", not "no token-looking text". The Nix store is
+world-readable: never put a secret in `settings`.
 
 `programs.pin-toolkit.plugins.<name>.enable` decides whether a plugin is
 **in the build**. Disabling one makes `finalPackage` a feature-trimmed build
@@ -91,8 +97,13 @@ in one repository, set `[plugins.<name>] run = false` in its
 
 ```nix
 # a different store path: not in Cachix, compiled locally
-pin-toolkit.packages.${system}.default.override { plugins = [ "gitlab-ci" ]; }
+pin-toolkit.packages.${system}.default.override { plugins = [ ]; }
 ```
+
+Today the only plugin is `gitlab-ci`, so the default is already every plugin:
+`override { plugins = [ "gitlab-ci" ]; }` is the same set and the cached path.
+Any other set (here `[ ]`) is a different store path that Cachix does not have.
+`pin-toolkit plugins` shows the built set.
 
 The list names the plugins to build in (`pin-toolkit plugins` shows the
 built set). An unknown plugin name fails evaluation.
@@ -112,7 +123,7 @@ flake's package and nothing is substituted from Cachix. The build needs rustc
 Each `v*` release (Linux only) attaches
 `pin-toolkit-v<version>-<triple>.tar.gz` and its `.sha256`, for
 `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`. The binaries are
-static. Each tarball holds `pin-toolkit`, the `pin-<plugin>` aliases, `LICENSE`
+static. Each tarball holds `pin-toolkit`, the `pin-<plugin>` and `pin-ci` aliases, `LICENSE`
 and `README.md`.
 
 ```sh
@@ -122,9 +133,11 @@ gh attestation verify pin-toolkit-v<version>-x86_64-unknown-linux-musl.tar.gz -R
 
 ### macOS
 
-There is no macOS release tarball. Use the flake (`nix profile install
-github:GRBurst/pin-toolkit`, cached once CI has pushed the darwin build) or
-build from source:
+There is no macOS release tarball, and the flake has no `x86_64-darwin`
+output (Intel Macs: build from source). On `aarch64-darwin`, use the flake
+(`nix profile install github:GRBurst/pin-toolkit`, cached once CI has pushed the
+darwin build) or build from source. `cargo install` needs rustc >= 1.88 and
+installs `pin-toolkit` only (no `pin-*` aliases):
 
 ```sh
 cargo install --locked --git https://github.com/GRBurst/pin-toolkit pin-toolkit
@@ -148,7 +161,8 @@ pin-check:
 
 The image is public once the owner has set the GHCR package to public. Only
 private registries need credentials: write them to `~/.docker/config.json`
-(or `$DOCKER_CONFIG`) with the `DOCKER_AUTH_CONFIG` variable. For GitLab, the
+(`$HOME/.docker/config.json` is the only location pin-toolkit reads; it does not
+read `DOCKER_CONFIG` or `DOCKER_AUTH_CONFIG`). For GitLab, the
 job's `CI_JOB_TOKEN` is used for `CI_SERVER_HOST` only; set `GITLAB_TOKEN`
 for the primary host (see [GitLab hosts and auth](#gitlab-hosts-and-auth)).
 
@@ -233,8 +247,8 @@ pinned: 0, ok: 0, updated: 2, skipped: 0, unresolved: 0
 `pin-<plugin>` (e.g. `pin-gitlab-ci`) and `pin-ci` are argv[0] aliases of
 `pin-toolkit <plugin>` / `pin-toolkit gitlab-ci`: the same flags, config,
 output and exit codes. The `pin-ci` alias is kept as one dispatch entry;
-the symlinks ship with the nix package (M6). Until then, create one by hand
-(`ln -s pin-toolkit pin-ci`). `pin-ci` has no legacy mode: without paths it
+the Nix package and the release tarballs ship the symlinks. Elsewhere (for
+example `cargo install`), create one by hand (`ln -s pin-toolkit pin-ci`). `pin-ci` has no legacy mode: without paths it
 walks the repository (there is no `ci/.gitlab-ci.yml` default any more),
 and it accepts any explicit file. Usage and help texts always say
 `pin-toolkit`. `pin-helm` (a known plugin that is not built) exits `2` with
@@ -364,7 +378,7 @@ Settings come from five layers, each overriding the one before:
 `PIN_TOOLKIT_*` < CLI**. The [global config file](#global-config-file)
 (`$XDG_CONFIG_HOME/pin-toolkit/config.toml`, else
 `$HOME/.config/pin-toolkit/config.toml`) is the per-user layer, shared by
-all of the user's repositories (the HM module, M6, generates it).
+all of the user's repositories (the HM module generates it).
 
 - Scalars: the highest layer that sets them wins. `files` and
   `gitlab-hosts` lists are **replaced** by a higher layer; `ignore` lists
@@ -473,7 +487,7 @@ Each `[hosts.<host>]` table carries exactly the keys of its kind:
   (validated and shown; consumed by a later milestone).
 
 Only environment-variable **names** may appear in the file, never
-secret values: the HM module (M6) generates this file into the
+secret values: the HM module generates this file into the
 world-readable Nix store.
 
 A binding grants a **credential, not a lookup**: the host still must be
@@ -861,9 +875,9 @@ accepted and validated; planned kinds: `action`, `docker-action`,
 
 ## Tests
 
-- `scripts/nix-check.sh` — the Nix gate: refuses untracked files in the flake's
-  sources (Nix sees tracked files only), then `nix flake check -L` (builds and
-  runs the checks for `x86_64-linux`) and `nix flake check --no-build --all-systems`
+- `scripts/nix-check.sh` — the Nix gate: refuses any untracked file in the repository
+  (Nix sees tracked files only), then `nix flake check -L` (builds and runs the
+  checks for the current system) and `nix flake check --no-build --all-systems`
   (evaluates the other systems). CI's `nix` job runs the same checks on
   Linux and macOS runners; `advisories` runs `cargo deny check advisories`.
 - `scripts/gate.sh` — the repository gate, run before every commit: the
