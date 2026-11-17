@@ -1,0 +1,72 @@
+# GitLab smoke pipelines (DF1 part 1, plan docs/plans/df1-gitlab-smoke.md):
+# run the released pin-toolkit image inside GitLab CI.
+# - pushes to the default branch: `dogfood` (repo-wide --check with the pinned
+#   release image) and `smoke` (pin a fixture end to end, then --check again);
+# - v* tags: `release-image` tests the image this tag released, after a delay.
+# Every image is pinned by digest by pin-toolkit itself, except release-image's:
+# its image does not exist when this file is written (see the input below).
+spec:
+  inputs:
+    release-tag:
+      description: >-
+        The pushed tag. release-image runs ghcr.io/grburst/pin-toolkit:<tag
+        without its leading v> (GHCR tags have no v). Leave the default.
+      default: $CI_COMMIT_TAG
+---
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG =~ /^v[0-9]/
+  auto_cancel:
+    on_new_commit: interruptible
+
+default:
+  interruptible: true
+  timeout: 5m
+
+variables:
+  GIT_DEPTH: "1"
+
+dogfood:
+  image: ghcr.io/grburst/pin-toolkit:0.1.0@sha256:4e90bb33cf2361d3e7ed8bcd53ffa4d64560d0de1eb013d85da7895275687fa5
+  rules:
+    - if: $CI_COMMIT_BRANCH
+  script:
+    - pin-toolkit --version
+    - pin-toolkit plugins
+    - rc=0; pin-toolkit --check --json > pin-report.json || rc=$?; cat pin-report.json; exit $rc
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [pin-report.json]
+
+smoke:
+  image: ghcr.io/grburst/pin-toolkit:0.1.0@sha256:4e90bb33cf2361d3e7ed8bcd53ffa4d64560d0de1eb013d85da7895275687fa5
+  rules:
+    - if: $CI_COMMIT_BRANCH
+  script:
+    - sh ci/smoke/smoke.sh smoke-out
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [smoke-out/]
+
+release-image:
+  # Not digest-pinned on purpose: the tag pipeline starts before GitHub has
+  # built the image. $[[ … | truncate(1,64) ]] drops the tag's leading "v";
+  # pin-toolkit skips the line (unparseable reference), so --check stays green.
+  image: ghcr.io/grburst/pin-toolkit:$[[ inputs.release-tag | expand_vars | truncate(1,64) ]]
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v[0-9]/
+      when: delayed
+      start_in: 45 minutes
+  interruptible: false
+  script:
+    - pin-toolkit --version
+    - test "$(pin-toolkit --version)" = "pin-toolkit ${CI_COMMIT_TAG#v}"
+    - pin-toolkit plugins
+    - sh ci/smoke/smoke.sh smoke-out
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [smoke-out/]
