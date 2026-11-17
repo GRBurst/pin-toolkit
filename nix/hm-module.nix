@@ -12,9 +12,10 @@ let
   available = cfg.package.passthru.plugins or [ ];
   missing = lib.subtractLists available enabled;
   repoOnly = lib.intersectLists (lib.attrNames cfg.settings) [ "version" "plugins" "update" "release_age" ];
-  # An environment variable NAME (spec §7.3), never a value: a pasted token
-  # (`ghp_…`-style values contain characters a name cannot, or fail the binary)
-  # is refused at evaluation, before anything reaches the world-readable store.
+  # An environment variable NAME (spec §7.3), never a value: a pasted value with
+  # characters a name cannot contain (e.g. `glpat-…`) is refused at evaluation,
+  # before anything reaches the world-readable store. Values that happen to be
+  # valid names (e.g. `ghp_…`) cannot be told apart from names and pass.
   envName = lib.types.strMatching "[A-Za-z_][A-Za-z0-9_]*";
   envOption = description: lib.mkOption {
     type = lib.types.nullOr envName;
