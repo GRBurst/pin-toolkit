@@ -1,0 +1,8 @@
+# Repository config (README "Configuration"). The default gitlab-ci globs
+# include `**/*.gitlab-ci.yml`, which matches ci/.gitlab-ci.yml: the legacy
+# pipeline's sample and the oracle's input (tests/oracle.rs, live.rs), kept
+# deliberately unpinned. `files` replaces the defaults, so a repo-wide run
+# (the GitLab `dogfood` job) checks only this repository's real CI config.
+version = 1
+[plugins.gitlab-ci]
+files = [".gitlab-ci.yml", ".gitlab/ci/**/*.yml"]
