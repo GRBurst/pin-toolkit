@@ -6,7 +6,9 @@ digests, GitLab components and includes to commit SHAs.
 `pin-toolkit` is one multi-call binary with one plugin per file format
 (see [Plugins](#plugins)). It replaces the former `pin-ci` binary, which
 no longer exists: `pin-ci` is now only an argv[0] alias of
-`pin-toolkit gitlab-ci` (see [Aliases](#aliases)).
+`pin-toolkit gitlab-ci` (see [Aliases](#aliases)). Installation (Nix, Home Manager, release tarballs)
+and the GitLab CI image are described in [Install](#install) and
+[CI image](#ci-image).
 
 ## What it does
 
@@ -22,6 +24,133 @@ reference's tag is first bumped to the latest eligible stable tag (see
 
 Edits are byte-exact and idempotent: bytes outside a reference are never
 touched, and a second run reports everything `ok` and writes nothing.
+
+## Install
+
+The Nix flake (`github:GRBurst/pin-toolkit`) builds for `x86_64-linux`,
+`aarch64-linux` and `aarch64-darwin`. Its `default` package has every plugin
+and is the store path that the Cachix cache serves. Release tarballs cover
+Linux only (see [Release tarballs](#release-tarballs)).
+
+### Nix flake input
+
+```nix
+inputs.pin-toolkit.url = "github:GRBurst/pin-toolkit";
+# optional, safe: only dedups the Home Manager input of your lock
+inputs.pin-toolkit.inputs.home-manager.follows = "home-manager";
+```
+
+Do **not** add `inputs.pin-toolkit.inputs.nixpkgs.follows` or
+`inputs.pin-toolkit.inputs.crane.follows`. The package's store path depends
+on the flake's own nixpkgs and crane, so either `follows` changes it and the
+Cachix cache misses (the build then runs locally). `home-manager.follows` is
+the exception: the package never uses that input.
+
+### Nix profile and Cachix
+
+```sh
+cachix use pin-toolkit            # the cache is `pin-toolkit` (pin-toolkit.cachix.org)
+nix profile install github:GRBurst/pin-toolkit
+```
+
+`cachix use` needs the `cachix` CLI. Until the owner has created the cache,
+`cachix use pin-toolkit` fails and every build runs from source.
+
+### Home Manager
+
+```nix
+# in your Home Manager modules (the flake input above)
+imports = [ inputs.pin-toolkit.homeManagerModules.default ];
+programs.pin-toolkit = {
+  enable = true;
+  # every plugin enabled (the default): the cached package
+  settings = {
+    concurrency = 4;
+    hosts."gitlab.example.com" = {
+      kind = "gitlab";
+      token-env = "GITLAB_EXAMPLE_TOKEN";   # the NAME of an environment variable
+    };
+  };
+};
+```
+
+`settings` is written to the global config file `pin-toolkit/config.toml`
+(`version = 1` is added). It takes `json`, `concurrency` and `[hosts]` only;
+`update`, `release_age`, `plugins` and `version` belong in a repository's
+`.pin-toolkit.toml`. Host values are environment-variable **names**. A
+value that looks like a token fails evaluation, and the Nix store is
+world-readable, so never put a secret in `settings`.
+
+`programs.pin-toolkit.plugins.<name>.enable` decides whether a plugin is
+**in the build**. Disabling one makes `finalPackage` a feature-trimmed build
+that is not in Cachix and compiles locally. To stop a built plugin from running
+in one repository, set `[plugins.<name>] run = false` in its
+`.pin-toolkit.toml`.
+
+### Plugin override (uncached)
+
+```nix
+# a different store path: not in Cachix, compiled locally
+pin-toolkit.packages.${system}.default.override { plugins = [ "gitlab-ci" ]; }
+```
+
+The list names the plugins to build in (`pin-toolkit plugins` shows the
+built set). An unknown plugin name fails evaluation.
+
+### Overlay
+
+```nix
+nixpkgs.overlays = [ inputs.pin-toolkit.overlays.default ];  # pkgs.pin-toolkit
+```
+
+The overlay builds with **your** nixpkgs, so the store path differs from the
+flake's package and nothing is substituted from Cachix. The build needs rustc
+>= 1.88 (let-chains in `pin-core`); nixpkgs-unstable has it.
+
+### Release tarballs
+
+Each `v*` release (Linux only) attaches
+`pin-toolkit-v<version>-<triple>.tar.gz` and its `.sha256`, for
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`. The binaries are
+static. Each tarball holds `pin-toolkit`, the `pin-<plugin>` aliases, `LICENSE`
+and `README.md`.
+
+```sh
+sha256sum -c pin-toolkit-v<version>-x86_64-unknown-linux-musl.tar.gz.sha256
+gh attestation verify pin-toolkit-v<version>-x86_64-unknown-linux-musl.tar.gz -R GRBurst/pin-toolkit
+```
+
+### macOS
+
+There is no macOS release tarball. Use the flake (`nix profile install
+github:GRBurst/pin-toolkit`, cached once CI has pushed the darwin build) or
+build from source:
+
+```sh
+cargo install --locked --git https://github.com/GRBurst/pin-toolkit pin-toolkit
+```
+
+## CI image
+
+The image `ghcr.io/grburst/pin-toolkit` runs on GitLab CI. It contains the
+static `pin-toolkit` binary (all plugins), a static busybox with `sh` and
+`grep`, and the CA bundle. It has **no entrypoint**, so GitLab can pipe the
+job script into `sh`. Tags are `<version>` and `:latest` (not for pre-release
+versions, which carry a `-`), and each index is attested. Pin the digest:
+
+```yaml
+pin-check:
+  image: ghcr.io/grburst/pin-toolkit:<version>@sha256:<digest>   # from: docker buildx imagetools inspect ghcr.io/grburst/pin-toolkit:<version>
+  script: [ pin-toolkit --check --json > pin-report.json ]
+  artifacts: { when: always, paths: [pin-report.json] }
+  rules: [ { if: $CI_PIPELINE_SOURCE == "merge_request_event" } ]
+```
+
+The image is public once the owner has set the GHCR package to public. Only
+private registries need credentials: write them to `~/.docker/config.json`
+(or `$DOCKER_CONFIG`) with the `DOCKER_AUTH_CONFIG` variable. For GitLab, the
+job's `CI_JOB_TOKEN` is used for `CI_SERVER_HOST` only; set `GITLAB_TOKEN`
+for the primary host (see [GitLab hosts and auth](#gitlab-hosts-and-auth)).
 
 ## Plugins
 
@@ -732,6 +861,11 @@ accepted and validated; planned kinds: `action`, `docker-action`,
 
 ## Tests
 
+- `scripts/nix-check.sh` — the Nix gate: refuses untracked files in the flake's
+  sources (Nix sees tracked files only), then `nix flake check -L` (builds and
+  runs the checks for `x86_64-linux`) and `nix flake check --no-build --all-systems`
+  (evaluates the other systems). CI's `nix` job runs the same checks on
+  Linux and macOS runners; `advisories` runs `cargo deny check advisories`.
 - `scripts/gate.sh` — the repository gate, run before every commit: the
   whole test suite with all features (`INSTA_UPDATE=no`, snapshots must
   match), `cargo fmt --check`, clippy `-D warnings` (workspace, the
