@@ -27,9 +27,9 @@ touched, and a second run reports everything `ok` and writes nothing.
 
 ## Install
 
-No release has been tagged yet: the Cachix cache, the GHCR image and the
-tarballs described below appear once the owner has done the setup steps and
-pushed the first `v*` tag. Until then, build from source.
+No release has been tagged yet: the GHCR image and the tarballs described
+below appear once the owner pushes the first `v*` tag. The Cachix cache is
+filled by CI on every push to `main`.
 
 The Nix flake (`github:GRBurst/pin-toolkit`) builds for `x86_64-linux`,
 `aarch64-linux` and `aarch64-darwin`. Its `default` package has every plugin
@@ -53,12 +53,17 @@ the exception: the package never uses that input.
 ### Nix profile and Cachix
 
 ```sh
-cachix use pin-toolkit            # the cache is `pin-toolkit` (pin-toolkit.cachix.org)
+cachix use grburst-pin-toolkit    # grburst-pin-toolkit.cachix.org
 nix profile install github:GRBurst/pin-toolkit
 ```
 
-`cachix use` needs the `cachix` CLI. Until the owner has created the cache,
-`cachix use pin-toolkit` fails and every build runs from source.
+Without the `cachix` CLI, add the cache to `nix.conf` (or NixOS
+`nix.settings`) yourself:
+
+```
+extra-substituters = https://grburst-pin-toolkit.cachix.org
+extra-trusted-public-keys = grburst-pin-toolkit.cachix.org-1:uq+dzxIgqZKNzUHyjnoqR7CnLmNRi9UpDwQb01pJJ0k=
+```
 
 ### Home Manager
 
