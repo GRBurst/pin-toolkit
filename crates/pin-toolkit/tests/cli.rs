@@ -104,7 +104,8 @@ async fn usage_error_exits_2() {
     assert_eq!(out.stderr, "");
 
     let out = run_in(&root, &["pin-toolkit", "--version"], &[]).await;
-    assert_eq!((out.code, out.stdout.as_str()), (0, "pin-toolkit 0.1.0\n"));
+    let want = format!("pin-toolkit {}\n", env!("CARGO_PKG_VERSION"));
+    assert_eq!((out.code, out.stdout.as_str()), (0, want.as_str()));
 }
 
 // ---- `config show` (M5e', design S5) ---------------------------------------

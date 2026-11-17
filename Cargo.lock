@@ -899,7 +899,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pin-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "reqwest",
  "saphyr-parser",
@@ -912,7 +912,7 @@ dependencies = [
 
 [[package]]
 name = "pin-gitlab-ci"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "insta",
  "pin-core",
@@ -929,7 +929,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pin-toolkit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "globset",
