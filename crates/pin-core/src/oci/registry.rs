@@ -208,7 +208,8 @@ fn creds_from_auths(
 }
 
 /// Config entry -> credentials: `username`+`password` -> Basic, else
-/// `identitytoken` -> Bearer, else `None`.
+/// `auth` (base64 `user:password`) -> Basic, else `identitytoken` ->
+/// Bearer, else `None`.
 fn entry_to_creds(entry: &serde_json::Value) -> Option<HostCreds> {
     if let (Some(user), Some(pass)) = (
         entry.get("username").and_then(serde_json::Value::as_str),
@@ -219,6 +220,14 @@ fn entry_to_creds(entry: &serde_json::Value) -> Option<HostCreds> {
             password: pass.to_string(),
         });
     }
+    // What `docker login` writes: `auth` = base64("user:password").
+    if let Some((user, password)) = entry
+        .get("auth")
+        .and_then(serde_json::Value::as_str)
+        .and_then(decode_basic_auth)
+    {
+        return Some(HostCreds::Basic { user, password });
+    }
     if let Some(token) = entry
         .get("identitytoken")
         .and_then(serde_json::Value::as_str)
@@ -228,6 +237,33 @@ fn entry_to_creds(entry: &serde_json::Value) -> Option<HostCreds> {
         });
     }
     None
+}
+
+/// `base64("user:password")` (standard alphabet, padding optional) ->
+/// `(user, password)`, split at the first `:`; anything else -> `None`.
+fn decode_basic_auth(b64: &str) -> Option<(String, String)> {
+    let mut bits: u32 = 0;
+    let mut n = 0;
+    let mut out = Vec::with_capacity(b64.len() * 3 / 4);
+    for c in b64.trim_end_matches('=').bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        bits = (bits << 6) | u32::from(v);
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+        }
+    }
+    let text = String::from_utf8(out).ok()?;
+    let (user, password) = text.split_once(':')?;
+    (!user.is_empty()).then(|| (user.to_string(), password.to_string()))
 }
 
 /// Token cache key: `[host, realm, service, scope]`.
@@ -1025,6 +1061,28 @@ mod tests {
                 token: "ya29.xyz".to_string()
             })
         );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn creds_config_auth_field() {
+        // What `docker login` writes: `auth` = base64("user:pass"); the
+        // password may itself contain ':' (split at the first one only).
+        let home = fresh_home("auth-field");
+        write_docker_config(
+            &home,
+            r#"{"auths":{"repo.example.com":{"auth":"dTpwOmFzcw=="},"bad.example.com":{"auth":"%%%"},"nocolon.example.com":{"auth":"dXNlcg=="}}}"#,
+        );
+        let c = Creds::load_from_env(Some(&home), |_| None);
+        assert_eq!(
+            c.for_host("repo.example.com"),
+            Some(&HostCreds::Basic {
+                user: "u".to_string(),
+                password: "p:ass".to_string()
+            })
+        );
+        assert_eq!(c.for_host("bad.example.com"), None);
+        assert_eq!(c.for_host("nocolon.example.com"), None);
         std::fs::remove_dir_all(&home).ok();
     }
 

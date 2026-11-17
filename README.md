@@ -852,7 +852,9 @@ keys in order `https://index.docker.io/v1/`, `https://docker.io`,
 `index.docker.io/v1/`, `docker.io` for Docker Hub; `ghcr.io` /
 `https://ghcr.io` for GitHub; `{host}` / `https://{host}` for anything
 else. An entry's `username` + `password` are Basic credentials, otherwise
-an `identitytoken` is a Bearer token. Precedence is per host: env vars
+its `auth` field (base64 `user:password`, what `docker login` writes) is,
+otherwise an `identitytoken` is a Bearer token. Credential helpers
+(`credsStore`, `credHelpers`) are not read yet. Precedence is per host: env vars
 first, then config.json. A missing or malformed config.json is never
 fatal — the host simply has no credentials. A registry token is only ever
 sent to the host it was issued for.
