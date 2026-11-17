@@ -696,6 +696,7 @@ pin-toolkit `credentials.rs` (extended), pin-core `gitlab_hosts.rs`.
 - Selecting plugins: `pin-toolkit.packages.${system}.default.override { plugins = [ "gitlab-ci" ]; }`. This is a different store path, so Cachix misses and it builds locally.
 - Tests in the sandbox: no network, and live/oracle tests stay env-gated. wiremock binds to loopback, so darwin needs `__darwinAllowLocalNetworking = true`.
 - Consumers must not set `inputs.pin-toolkit.inputs.nixpkgs.follows`, because that changes the store path and loses the Cachix hit. Document this.
+- As built (M6): the toolchain is the flake's locked `nixpkgs-unstable` (rustc 1.99.1 at lock time; D49). `pin-toolkit-static` is crane on `pkgsStatic` (static-pie, musl; `checks.static` runs `file -L`). The binaries keep their `.symtab` (stdenv strips with `-S` only): a full strip saves 22% (9.16 → 7.14 MB) but drops the symbol names in backtraces, an owner decision not taken. `checks` = the cargo gate legs as separate derivations sharing one `buildDepsOnly` (D51), `deny` (D52), the per-plugin layout checks, `hm-module` (D50), `workflows` (D56) and, on Linux, `static`, `container`, `dist` (D55). The nextest legs run with `debug-assertions` and `overflow-checks` on for the workspace crates (the release profile would otherwise turn them off). `publish = false` in the three crates (D52). `scripts/nix-check.sh` is the local entry point (untracked-file guard, `nix flake check -L`, `nix flake check --no-build --all-systems`).
 
 ### 8.2 Home Manager module
 
@@ -708,7 +709,6 @@ programs.pin-toolkit = {
   enable = true;
   package = <flake default>;                    # all plugins; the Cachix-cached store path
   plugins.<name>.enable = true;                 # generated from allPlugins; default true; = in the build
-  plugins.<name>.settings = { };                # → [plugins.<name>] (run, kinds, files, …)
   settings = { };                               # → rest of config.toml (pkgs.formats.toml), no secrets
   # read-only: finalPackage
 };
@@ -733,6 +733,19 @@ programs.pin-toolkit = {
   scalar `json`/`concurrency` and `[hosts]` (environment-variable **names** only — never secret
   values, the Nix store is world-readable). `settings` must stay within that schema; `[plugins.*]`,
   `update` and `release_age` are repository-level and do not belong in it.
+- As built (M6, D50, D58): `plugins.<name>.settings` is dropped (a `[plugins.*]` table in the global file is a
+  `deny_unknown_fields` error). `settings` is a submodule: `freeformType = toml.type` for `json`, `concurrency` and
+  the rest (validated by the binary), and a strict `hosts` (`kind` ∈ `gitlab`, `helm-repo`, `oci`; `token-env`,
+  `username-env`, `password-env` must be environment-variable names `[A-Za-z_][A-Za-z0-9_]*`; `ca-file` is a path).
+  A value that looks like a token fails evaluation. Module type errors can echo the offending value to the
+  user's terminal (never to the store). The repo-only assertion (`version`, `plugins`, `update`, `release_age`)
+  and the enabled-⊆-`passthru.plugins` assertion are kept; a custom package without `.override` fails clearly
+  when a plugin is disabled.
+- As built (M6, D49, D50): the generated file is validated at build time by `pin-toolkit config show` (run with
+  `XDG_CONFIG_HOME` pointing at a directory that holds the generated file), but only when `buildPlatform.canExecute hostPlatform`; a
+  cross-built generation copies the file unvalidated. `homeManagerModules.default` carries `_file` and a `key`, so
+  the alias `homeModules.default` deduplicates. `finalPackage` is the same store path as the flake default when
+  every plugin is enabled.
 
 Source for `homeModules`: https://github.com/nix-community/home-manager/blob/master/flake-module.nix.
 
@@ -757,6 +770,21 @@ because the latter now installs Determinate Nix by default and calls upstream Ni
 macOS ships through Cachix and `cargo install --locked` only: Nix-built darwin binaries reference
 `/nix/store` dylibs. cargo-dist only becomes worth it if non-Nix installers become a goal.
 
+- As built (M6, D54–D57, D59): the `nix` job's Cachix step runs only when the repository variable `CACHIX_CACHE`
+  is set (`name: ${{ vars.CACHIX_CACHE }}`); the auth token `CACHIX_AUTH_TOKEN` is passed only on `push` events and
+  `skipPush` is set on every other event. There is **no public probe** (D57). Runner labels are pinned
+  (`ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15`). An `advisories` job runs `cargo deny check advisories` (not a
+  release gate, D52). Jobs: `tag-version` (tag `v*` only: the tag must equal `workspace.package.version` and the tag
+  commit must be an ancestor of `origin/main`), `create-release` (needs `nix` and `tag-version`; fails when the
+  release is already published and when `gh release view` fails with anything other than "release not found";
+  otherwise keeps a draft or creates one with `--draft --verify-tag --generate-notes`, `--prerelease` when the tag
+  contains `-`), `binaries` (matrix; `nix build -L .#dist`; `actions/attest` on `dist/*.tar.gz`; `gh release upload
+  --clobber`), `images` (matrix amd64/arm64; skopeo pushes `<ver>-<arch>`), `manifest` (needs `images` and
+  `binaries`; `:<ver>` and, unless `<ver>` contains `-`, `:latest`; `actions/attest` of the index digest) and
+  `publish` (`gh release edit --draft=false`). Every release job has a `timeout-minutes`. `binaries` and `images`
+  use no Cachix (D54). `artifact-metadata` is not granted (D53). The `workflows` check covers `*.yml` and `*.yaml`
+  and runs `zizmor --offline`.
+
 ### 8.4 Container for GitLab CI
 
 `dockerTools.buildLayeredImage`: the static binary, static busybox (GitLab needs `sh` and `grep`)
@@ -775,6 +803,14 @@ Registry credentials come via `DOCKER_AUTH_CONFIG` written to `~/.docker/config.
 `$DOCKER_CONFIG`), and GitLab credentials via `CI_JOB_TOKEN`/`GITLAB_TOKEN`. Private CAs need F3:
 reqwest with both `rustls-tls-webpki-roots` **and** `rustls-tls-native-roots`. Today's `rustls-tls`
 uses bundled roots only and ignores `SSL_CERT_FILE`.
+
+- As built (M6, D53): `nix/container.nix` = `buildLayeredImage` of the static binary, a static busybox
+  (`sh`, `grep`), `dockerTools.caCertificates`, `/tmp` mode 1777, `Env` `PATH=/bin` and
+  `SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt`, OCI labels and **no `Entrypoint` and no `Cmd`**. The check
+  `checks.container` enforces these, the architecture per system (amd64/arm64), that `/bin/sh`, `/bin/grep`,
+  `/bin/pin-toolkit` and the CA bundle resolve in the image, that `sh -c` runs, and an image size below 10 MB.
+  Published to GHCR only: `ghcr.io/grburst/pin-toolkit` (per-arch tags `<ver>-<arch>`, then the index tags; D59).
+  The image is pulled by digest (see the README's CI image section); only the index digest is attested (N3, optional follow-up).
 
 ## 9. Migration of this repo
 
@@ -824,7 +860,7 @@ S ≈ 1–2 tasks, M ≈ 3–4, L ≈ 5+. Each milestone gets its own plan in `d
 | M5d | done (2026-11-11, … 3941898 + docs): minimal `pin-toolkit` binary (replaces `pin-ci`); repo config + env + CLI; `CI_JOB_TOKEN` → `CI_SERVER_HOST` only | M (built as 31 tasks + review fixes) | new binary; `pin-ci` kept as a plain argv[0] alias |
 | M5f | done (2026-11-11): docs, license, GitHub full-history push (owner, verified) | S | none |
 | M5e' | done (2026-11-16, branches `m5e-m1-m3-m7`, `m5e-m2-fold`, `m5e-m4-wire`, `m5e-m5m6`): global config (HM-written), `[hosts]` bindings, `config show --origin`, D45 message, `GITLAB_URI` (D48) | M | new config layer |
-| M6 | flake + crane + checks + HM module (M), GitHub Actions + Cachix (S), releases + container (M). Human prerequisites (O3): GitHub repo, Cachix cache + `CACHIX_AUTH_TOKEN`, GHCR push rights | L | none |
+| M6 | **Done** (branch `m6-nix-release`, one branch for M1–M7; commits `M1.T1`…`M7.T2`, review fixes `M6-fix:` c7f91e1…c9d9c31; plan `docs/plans/m6-nix-release.md`; D49–D59): flake + crane + checks + HM module (M), GitHub Actions + Cachix (S), releases + container (M). Human prerequisites (O3): GitHub repo, Cachix cache + `CACHIX_AUTH_TOKEN`, GHCR push rights | L | none |
 | DF1 | dogfood: the owner runs pin-toolkit on his real repos (locally via HM, in CI via the container). Each fix from real use is its own commit with reviewed snapshots | open (owner-driven) | yes, from real use |
 | G1 | gitlab-ci C3b: `include: - component:` + `$CI_SERVER_FQDN` alias | M | yes (new targets) |
 | F3 | native TLS roots (§8.4); its `CI_JOB_TOKEN` half moved to M5d (D37) | S | yes, documented |
@@ -836,7 +872,7 @@ S ≈ 1–2 tasks, M ≈ 3–4, L ≈ 5+. Each milestone gets its own plan in `d
 | M9 | github-actions plugin (A1–A3), `GitHubClient` (pin-core feature `github`) | M | new plugin |
 | later | C6 classic `helm … repo/chart`, `sha:` value keys, template scan for `tag-digest`, `--refresh-lock` (shells out to `helm dependency update`), `include:integrity` | — | — |
 
-Order (D34): M4b-1 ✓ → S2 ✓ → M5a ✓ → M5b ✓ → M5c ✓ → M5c-y ✓ → M5d ✓ → M5f ✓ → M5e' ✓ → M6 → **DF1** → G1 → F3 →
+Order (D34): M4b-1 ✓ → S2 ✓ → M5a ✓ → M5b ✓ → M5c ✓ → M5c-y ✓ → M5d ✓ → M5f ✓ → M5e' ✓ → M6 ✓ → **DF1** → G1 → F3 →
 M4b-2 → M7 → M8a → M8b → M8c → M9. Real use comes before Helm (owner, 2026-11-10): what dogfooding finds
 shapes the core before the helm plugin builds on it. GitLab first (owner); distribution right after
 the minimal binary, so dogfooding uses the real install path. M5f precedes M5e' because M6 needs the
@@ -907,6 +943,17 @@ GitHub repo, and M5e' precedes M6 because the HM module writes the global config
 | D46 | JSON `plugins` keyset = the enabled plugins (zero summary when a plugin found nothing); per-plugin `errors` sorted by `(file, line)` whatever their origin; the per-plugin human lines count only plugins that ran (routed files), not conflict- or walk-error-only entries (M5d review-2 L7) | main (2026-11-11) | a consumer can read `plugins["gitlab-ci"].summary` on an empty repo; deterministic output |
 | D47 | An explicit directory outside the git root is matched relative to its own git root (else the directory itself); walk errors are per-file errors (exit 2); bad ignore-file lines only warn (M5d review-2 M1, L3) | main (2026-11-11) | `--check ../other` must not be a silent green; §6.3 treats read failures as per-file errors |
 | D48 | `GITLAB_URI`: a GitLab URL (scheme optional, any case) reduced to `host[:port]` for the primary chain (D40); a value with credentials (`@`) is rejected; an invalid value exits 2 before any request, even when `--gitlab-host` is given (consistent with `CI_SERVER_HOST`); it never carries `CI_JOB_TOKEN` (D37); a URL under a relative root (`https://ex.com/gitlab`) makes `ex.com` the primary | owner (2026-11-11, M3 review N3) | one host spelling to audit; invalid host values are fatal everywhere (host-syntax rule); no second source for the job token |
+| D49 | Toolchain = the flake's locked `nixpkgs-unstable` (rustc 1.99.1 at lock time); no rust-overlay and no `rust-toolchain` file; the static build = crane on `pkgsStatic` (static-pie, musl) | main (2026-11-16, M6 design §1 #1, §3) | one toolchain for `nix develop`, checks and releases; the owner's local rustc 1.95 gets its own lint drift fixed in the test helper |
+| D50 | HM `settings` is the global config only (`json`, `concurrency`, strict `hosts`); `plugins.<name>.settings` is dropped; repo-only keys (`version`, `plugins`, `update`, `release_age`) fail an assertion; the file is validated at build time by `pin-toolkit config show` when the build platform can run the host platform. `config show` must stay independent of the filesystem beyond the config file: a future stat of `ca-file` would break the sandboxed validation | main (2026-11-16, M6 design §6, §9) | the binary is the schema (no second parser in Nix); no secret or plugin table in the world-readable store |
+| D51 | Gate legs as separate flake checks sharing one `buildDepsOnly` (fmt, doc, nextest, nextest-no-default, clippy, feature-matrix, d38, deny, layout), instead of running `scripts/gate.sh` inside Nix (§14.1 DF1/M6); tests via cargo-nextest with debug-assertions and overflow-checks on in the workspace crates; zero sandbox skips; `scripts/gate.sh` stays the developer's cargo gate. No doctest check: no doctests exist, and nextest does not run them (the design's proposed `cargoDocTest` is not added; add it with the first doctest) | main (2026-11-16, M6 design §4, §9) | one gate definition per leg; Cachix must not receive cargo artefacts from leaf checks |
+| D52 | cargo-deny bans, licenses and sources run offline in the `deny` check (`deny.toml`); advisories are a separate `advisories` CI job that does not gate releases (needs the network), with the policy in an explicit `[advisories]` table (`unmaintained = "workspace"`, `yanked = "deny"`); the three crates are `publish = false` | main (2026-11-16, M6 design §4, §11 Q1) | an upstream advisory must not block shipping a fix; no crates.io publish (D29) |
+| D53 | Release assets = `packages.dist` (Nix-built, checked by `checks.dist`); attestation via `actions/attest` v4.2.2 (not `attest-build-provenance`); `artifact-metadata` is not granted (a User-owned repository) | main (2026-11-16, M6 design §5.1, §5.3) | the attested bytes are a Nix output; the attest action is the one GitHub's wrapper points to |
+| D54 | Cachix as built: the `nix` job's Cachix step runs only when the repository variable `CACHIX_CACHE` is set; `CACHIX_AUTH_TOKEN` is passed only on `push` events (main, `v*`), `skipPush` otherwise; the release jobs (`binaries`, `images`) build without Cachix | main (2026-11-16, M6 design §5.4 as amended by D57) | PRs and forks never receive the token; releases attest only source + cache.nixos.org bytes |
+| D55 | Checks run on all 3 systems, except `static`, `container` and `dist`, which are Linux-only (`lib.optionalAttrs isLinux`); `packages.aarch64-darwin` attrNames = `[default, pin-toolkit]` | main (2026-11-16, M6 design §2, §4) | no static or image outputs on darwin; darwin and aarch64 are evaluated locally, built in CI |
+| D56 | `checks.workflows`: actionlint + shellcheck, `zizmor --offline`, every `uses:` pinned by a 40-hex SHA with a `# vX` comment, top-level `permissions` an empty map and every job's `permissions` a map; covers `*.yml` and `*.yaml` | main (2026-11-16, M6 design §4, §5.1; review fixes B-M1, B-L1) | a missing or weaker permission block or an unpinned action fails the flake check, not a release |
+| D57 | The Cachix gate is the owner-set repository variable `CACHIX_CACHE` (`if: vars.CACHIX_CACHE != ''`), not the design's public probe of `pin-toolkit.cachix.org/nix-cache-info` (M6 design §5.4 superseded). Cache names on cachix.org are first-come: a probe would let whoever registers `pin-toolkit` first make CI trust their signing key | M6 review (code-review-m4-m6 M4), fix cd3c021 | the owner controls the trust root; the token is still push-only (D54); optional later: an environment restricted to `main` and `v*` (N5, §14.1) |
+| D58 | HM `settings.hosts` is strictly typed: `kind` is an enum (`gitlab`, `helm-repo`, `oci`), `*-env` values must be environment-variable names, unknown keys fail evaluation; a value that looks like a token fails at evaluation. Other global keys stay free-form and are validated by the binary | M6 review (code-review-m4-m6 B-M3), fix c9d9c31 | a pasted token must not reach the world-readable store; the binary stays the schema for the rest |
+| D59 | Release gates: `tag-version` requires the tag commit to be an ancestor of `origin/main`; `create-release` fails on a published release and on `gh` errors other than "release not found"; `manifest` needs `[images, binaries]` so `:<ver>` and `:latest` appear only after every asset exists; a tag with `-` is a pre-release and never moves `:latest` | M6 review (code-review-m4-m6 B-M2, B-M4, N4), fixes cd3c021 | a tag from a branch cannot release; a published release is never modified by CI; a failed binaries job leaves no public tag to rewrite |
 
 ## 13. Owner answers
 
@@ -916,7 +963,7 @@ Open for the owner: retiring the oracle, decided after DF1 (D29).
 |---|---|---|---|
 | O1 | What does "plugin disabled in Home Manager" mean? | **Not installed.** Enabling a plugin is a build decision, configuring it is runtime (§8.2). The owner runs with all plugins enabled, i.e. the cached default package; a subset is a local feature-trimmed build. A repo config can still stop a built plugin from running (`run = false`). **M5d: resolved as T-D11** (a repo table for an unbuilt plugin → notice, exit unaffected; an explicit request → exit 2; §8.2 as built) | M6 (HM module, package override), M5d (`run` key, "not in this build" handling), M5e' (global config) |
 | O2 | values.yaml map image without a `digest:` key | **Always write `tag: "1.2.3@sha256:<d>"` by default**, opt-out `plugins.helm.values.tag-digest = false` (→ `skipped (no digest key)`). An existing `digest:` key is still filled instead (tag kept). Known risk, accepted: charts that use `.tag` in labels or `semverCompare` | M8a |
-| O3 | Name, owner, Cachix, GitLab repo | Name **`pin-toolkit`**. Repo **`github.com/GRBurst/pin-toolkit`** (handle owner-confirmed 2026-11-11); the full-history push is **done**, pushed by the owner 2026-11-11 (repo created, `main` pushed; verified: remote `main` == `abcd5c5`). The GitLab mirror was also updated by the owner 2026-11-11. Cachix cache: not set up yet; use the recommended name **`pin-toolkit`** (`pin-toolkit.cachix.org`). The GitLab repo **stays** (mirror) and additionally **hosts the GitLab test components/projects** used by the live component/include tests. Human prerequisites for M6 (the GitHub repo is done, 2026-11-11): the Cachix cache + `CACHIX_AUTH_TOKEN` secret, GHCR push rights | M5f, M6, live GitLab tests |
+| O3 | Name, owner, Cachix, GitLab repo | Name **`pin-toolkit`**. Repo **`github.com/GRBurst/pin-toolkit`** (handle owner-confirmed 2026-11-11); the full-history push is **done**, pushed by the owner 2026-11-11 (repo created, `main` pushed; verified: remote `main` == `abcd5c5`). The GitLab mirror was also updated by the owner 2026-11-11. Cachix cache: not set up yet; use the recommended name **`pin-toolkit`** (`pin-toolkit.cachix.org`). The GitLab repo **stays** (mirror) and additionally **hosts the GitLab test components/projects** used by the live component/include tests. Human prerequisites for M6 (the GitHub repo is done, 2026-11-11): the Cachix cache + `CACHIX_AUTH_TOKEN` secret, GHCR push rights. **M6 human steps (as built):** (1) create the Cachix cache `pin-toolkit` before the first main push; (2) set the repository variable `CACHIX_CACHE=pin-toolkit` (the Cachix step runs only when it is set; there is no probe, D57); (3) add the secret `CACHIX_AUTH_TOKEN` (used on push events only); (4) after the first GHCR push, set the package `ghcr.io/grburst/pin-toolkit` public; (5) enable GitHub immutable releases and a `v*` tag ruleset; (6) the owner pushes the first tag (`v0.1.0` when decided) and checks the release, the attestations and the image (design §8); a failed release leaves a draft (fix on main, then re-run or re-tag, design §5.5); (7) the owner drops `- ci builds + cachix` from the local, untracked `TODO.md` (no task edits it). | M5f, M6, live GitLab tests |
 | O4 | License | **`MIT OR Apache-2.0`** | M5f |
 | O5 | (2026-11-10) Compatibility with pin-ci? | **None**: the tool has never been used in the real world. No legacy mode; goldens become snapshot tests; R1/R2 fixed in the restructure. Byte-exact edits stay a hard invariant. `pin-ci` only as a cheap plain alias, or dropped | §2, §6.5–6.6, §9, §11, D33 |
 | O6 | (2026-11-10) YAML parser for discovery? | **Yes**, span-preserving, gated by a spike; edits stay splices. S2 result: adopt saphyr-parser with fix-ups | §6.9, D32 |
@@ -958,6 +1005,7 @@ Open for the owner: retiring the oracle, decided after DF1 (D29).
 - **Carry-overs of the M5d final review:**
   - **Done in M5e' (reviews `.superpowers/sdd/2026-11-11-m5e/`):** the configuration for an out-of-root directory is the cwd repository's, not that directory's own `.pin-toolkit.toml` (documented in the README); the §7.3 `not trusted for credentials` message (D45) is implemented; review-1 N1 (drop `Selection: Default`, keep `From<KindSet>`) and review-2 N2 (module-wide `allow(dead_code)` narrowed to the test-only items) are fixed. Review-2 N4 (named `Plan` entry struct) stays for M7.
   - **Later milestones (M5e' reviews):** host normalisation — host keys, `GITLAB_URI`, `CI_SERVER_HOST` and `--gitlab-host` are matched case-sensitively today (ASCII-lowercase them); `Loaded::env_primary` in `config show` duplicates pin-core's primary-host precedence (could be exposed by `GitlabEnv`); `config show` keys are not round-trippable (dotted option sub-keys are printed unquoted; the printed kebab keys differ from the file keys).
-  - **DF1/M6:** the walk-error policy in practice (an unreadable, un-ignored directory, e.g. a root-owned docker volume under the repo, makes every run exit 2; collect feedback, document `.ignore` as the workaround); run `scripts/gate.sh` in the flake checks/CI (it is `--locked` now). The gate prints the `--no-default-features` test count but does not compare it with the previous one (main: not added).
+  - **DF1/M6:** the walk-error policy in practice (an unreadable, un-ignored directory, e.g. a root-owned docker volume under the repo, makes every run exit 2; collect feedback, document `.ignore` as the workaround); run `scripts/gate.sh` in the flake checks/CI (it is `--locked` now). **Resolved in M6 (D51):** the gate legs run as flake checks (`scripts/nix-check.sh` locally, the `nix` job in CI); `scripts/gate.sh` stays the developer's cargo gate. The walk-error item stays open. The gate prints the `--no-default-features` test count but does not compare it with the previous one (main: not added).
   - **M7:** multi-plugin human lines, walked files claimed by 2+ plugins and per-plugin JSON errors are exercised only with fake plugin ids until a second plugin exists; add end-to-end rows then.
   - **Before M8:** per-finding splice validation (the first item of this list).
+  - **M6 close-out, later (not in M6):** A-L3 static dependency size (a `pushFilter` for the static deps closure, and the Cachix budget); the strip decision (the binaries keep `.symtab`; a full strip saves 22% and drops backtrace symbol names; owner decision, §8.1); N3 per-architecture attestations (only the index digest is attested today, §8.4); N5 environment-scoped secrets (move `CACHIX_AUTH_TOKEN` into an environment restricted to `main` and `v*`, D57); the plugin-order canonicalisation in `nix/package.nix` (`lib.naturalSort (lib.unique plugins)`) is untested with more than one plugin, because only `gitlab-ci` exists.

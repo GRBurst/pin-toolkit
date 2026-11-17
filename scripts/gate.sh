@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# The repository gate: run before every commit (and in CI once it exists).
+# The repository gate: run before every commit. CI runs these legs as flake
+# checks (scripts/nix-check.sh, `nix flake check`); this script stays the cargo
+# gate for the developer's toolchain.
 # Uses the `cargo` on PATH (devenv has no Rust by design; export the
 # toolchain's bin dir and, optionally, CARGO_HOME before calling).
 # Every cargo call is `--locked` (Cargo.lock must be current). The tests
