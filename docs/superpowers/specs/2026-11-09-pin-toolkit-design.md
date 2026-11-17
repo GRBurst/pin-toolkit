@@ -818,8 +818,6 @@ uses bundled roots only and ignores `SSL_CERT_FILE`.
 
 ## 9. Migration of this repo
 
-## 9. Migration of this repo
-
 M4b-1 is merged (0e2047b), including `impl Default for PinOptions`. There is no compatibility layer
 (D33): the safety net is snapshot review plus the byte-exact and idempotence properties (§11), not
 frozen output. Rows are in execution order.
@@ -867,7 +865,7 @@ S ≈ 1–2 tasks, M ≈ 3–4, L ≈ 5+. Each milestone gets its own plan in `d
 | M5f | done (2026-11-11): docs, license, GitHub full-history push (owner, verified) | S | none |
 | M5e' | done (2026-11-16, branches `m5e-m1-m3-m7`, `m5e-m2-fold`, `m5e-m4-wire`, `m5e-m5m6`): global config (HM-written), `[hosts]` bindings, `config show --origin`, D45 message, `GITLAB_URI` (D48) | M | new config layer |
 | M6 | **Done** (branch `m6-nix-release`, one branch for M1–M7; commits `M1.T1`…`M7.T2`, review fixes `M6-fix:` c7f91e1…c9d9c31; plan `docs/plans/m6-nix-release.md`; D49–D59): flake + crane + checks + HM module (M), GitHub Actions + Cachix (S), releases + container (M). Human prerequisites (O3): GitHub repo, Cachix cache + `CACHIX_AUTH_TOKEN`, GHCR push rights | L | none |
-| DF1 | dogfood: the owner runs pin-toolkit on his real repos (locally via HM, in CI via the container). Each fix from real use is its own commit with reviewed snapshots | part 1 (GitLab smoke pipelines) done in `df1-gitlab-smoke` (D60, D61, §8.4 as built); owner-driven dogfooding continues (open) | yes, from real use |
+| DF1 | dogfood: the owner runs pin-toolkit on his real repos (locally via HM, in CI via the container). Each fix from real use is its own commit with reviewed snapshots | part 1 (GitLab smoke pipelines) implemented in `df1-gitlab-smoke` (D60, D61, §8.4 as built), unverified on gitlab.com until the first push (O9); owner-driven dogfooding continues (open) | yes, from real use |
 | G1 | gitlab-ci C3b: `include: - component:` + `$CI_SERVER_FQDN` alias | M | yes (new targets) |
 | F3 | native TLS roots (§8.4); its `CI_JOB_TOKEN` half moved to M5d (D37) | S | yes, documented |
 | M4b-2 | component/include `--update` (GitLab tags list, `order_by=version`), comment-aware re-pin (`existing_comment`), verify in `--check`, GitLab tag dates for release age | M | yes |
@@ -977,7 +975,7 @@ Open for the owner: retiring the oracle, decided after DF1 (D29).
 | O6 | (2026-11-10) YAML parser for discovery? | **Yes**, span-preserving, gated by a spike; edits stay splices. S2 result: adopt saphyr-parser with fix-ups | §6.9, D32 |
 | O7 | (2026-11-10) Order and config scope | **Real use before Helm, smaller config first**: minimal binary → distribution → dogfood → G1/F3/M4b-2 → helm. Full layered config only as needed by the HM module | §7.1, §9, §10, D34, D35 |
 | O8 | (2026-11-10) `Ctx` shape | **Lazy, feature-gated resolvers in pin-core**, no extra crates | §6.2, D36 |
-| O9 | (2026-11-17) DF1 owner steps for gitlab.com | Before the first push: CI/CD and instance runners enabled on `GRBurst/pin-toolkit`; CI/CD configuration file left empty (default `.gitlab-ci.yml`); the project stays **public**; no CI/CD variables or tokens (`GITLAB_TOKEN`, `GITHUB_TOKEN`, `PIN_TOOLKIT_*` are not needed and would mask the job-token path). Optional: a CI Lint dry run for `ref: main` and `ref: v0.1.0` (needs a PAT with `api`; not a gate). After the first `main` push: `dogfood` and `smoke` green; `pin-report.json` summary pinned 0, ok 2, skipped 1, unresolved 0; the smoke log ends `smoke: OK`. On the next `v*` tag: `release-image` shows as delayed, then green (or Retry). If GitLab rejects the `spec:` header or the `$[[ … ]]` image: switch `release-image` to fallback B (D61) as a follow-up commit. After a release: `pin-toolkit --update .gitlab-ci.yml` bumps the dogfood image. Usage quotas: check per-job minutes after a week (estimate ≤ 1 min per job) | DF1, D60, D61 |
+| O9 | (2026-11-17) DF1 owner steps for gitlab.com | Before the first push: CI/CD and instance runners enabled on `GRBurst/pin-toolkit`; CI/CD configuration file left empty (default `.gitlab-ci.yml`); the project stays **public**; no CI/CD variables or tokens (`GITLAB_TOKEN`, `GITHUB_TOKEN`, `PIN_TOOLKIT_*` are not needed and would mask the job-token path). **Gate before the first push:** a CI Lint dry run (project CI Lint page, "Simulate a pipeline", or the API with a PAT with `api`) for `ref: main` and `ref: v0.1.0`; a rejected `spec:` header blocks every pipeline, including `dogfood` and `smoke` (code-review M3). Code reaches GitLab by the owner's direct push to `origin`; if that ever becomes a pull mirror, enable "Trigger pipelines for mirror updates". A pipeline can also be started by hand (Build → Pipelines → Run pipeline, `web` rule). After the first `main` push: `dogfood` and `smoke` green; `pin-report.json` summary pinned 0, ok 2, skipped 1, unresolved 0; the smoke log ends `smoke: OK`. On the next `v*` tag: `release-image` shows as delayed, then green (or Retry). If GitLab rejects the `spec:` header or the `$[[ … ]]` image: switch `release-image` to fallback B (D61) as a follow-up commit. After a release: `pin-toolkit --update .gitlab-ci.yml` bumps the dogfood image. Usage quotas: check per-job minutes after a week (estimate ≤ 1 min per job) | DF1, D60, D61 |
 
 ## 14. Left to the builder
 

@@ -25,9 +25,13 @@ has 'image: public\.ecr\.aws/docker/library/alpine:3\.20@sha256:[0-9a-f]{64}'
 has 'component: gitlab\.com/components/secret-detection/secret-detection@[0-9a-f]{40}  # 2\.4\.0'
 has '    ref: [0-9a-f]{40}  # main'
 has '    ref: b63c04bea5c4376d34f9597cd357271bc654fb30  # v0\.1\.0'
-# branch pipelines: main resolves to the commit this pipeline runs for
-# (a newer push auto-cancels this interruptible job first)
-if [ -n "${CI_COMMIT_BRANCH:-}" ]; then has "    ref: ${CI_COMMIT_SHA}  # main"; fi
+# main pipelines: `main` usually resolves to the commit this pipeline runs for.
+# Only a warning: a newer push (or a [ci skip] push) moves main without this
+# job being cancelled; the 40-hex check above already proves the resolution.
+if [ "${CI_COMMIT_BRANCH:-}" = "${CI_DEFAULT_BRANCH:-main}" ] && [ -n "${CI_COMMIT_SHA:-}" ]; then
+  grep -qx "    ref: ${CI_COMMIT_SHA}  # main" "$f" \
+    || echo "smoke: warning: main resolved to a newer commit than ${CI_COMMIT_SHA}" >&2
+fi
 
 run "$out/check.txt" --check
 grep -qx 'pinned: 0, ok: 4, updated: 0, skipped: 0, unresolved: 0' "$out/check.txt" \

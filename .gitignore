@@ -18,3 +18,6 @@ devenv.local.yaml
 # nix build out-links
 /result*
 /dist
+
+# GitLab smoke output (ci/smoke/smoke.sh)
+smoke-out/

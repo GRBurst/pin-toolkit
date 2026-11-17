@@ -140,7 +140,7 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     yq 'select(document_index == 0)' .gitlab-ci.yml > $TMPDIR/head.yml
     yq 'select(document_index == 1)' .gitlab-ci.yml > $TMPDIR/jobs.yml
     yq -e '.spec.inputs.release-tag.default == "$CI_COMMIT_TAG"' $TMPDIR/head.yml > /dev/null
-    yq -e '(.workflow.rules | length) == 2 and ([.workflow.rules[].if | test("^\$CI_PIPELINE_SOURCE == \"push\" && ")] | all)' $TMPDIR/jobs.yml > /dev/null
+    yq -e '(.workflow.rules | length) == 3 and ([.workflow.rules[].if | select(test("^\$CI_PIPELINE_SOURCE == \"push\" && "))] | length) == 2 and .workflow.rules[2].if == "$CI_PIPELINE_SOURCE == \"web\""' $TMPDIR/jobs.yml > /dev/null
     yq -e '.release-image.rules[0] | ((.["if"] == "$CI_COMMIT_TAG =~ /^v[0-9]/") and (.when == "delayed") and (.start_in == "45 minutes"))' $TMPDIR/jobs.yml > /dev/null
     yq -e '.default.interruptible == true and .default.timeout == "5m"' $TMPDIR/jobs.yml > /dev/null
     # every branch and tag job runs the released image, digest-pinned by pin-toolkit
