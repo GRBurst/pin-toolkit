@@ -164,8 +164,14 @@ pin-check:
   rules: [ { if: $CI_PIPELINE_SOURCE == "merge_request_event" } ]
 ```
 
-The image is public once the owner has set the GHCR package to public. Only
-private registries need credentials: write them to `$HOME/.docker/config.json`
+The image is public: pulling it needs no credentials. This repository's own
+[.gitlab-ci.yml](.gitlab-ci.yml) is a working example: `dogfood` runs a
+repo-wide `--check --json` with the pinned image (`.pin-toolkit.toml` keeps the
+legacy sample `ci/.gitlab-ci.yml` out of that run: it is the oracle's input);
+`smoke` runs `ci/smoke/smoke.sh` end to end (pins a fixture, asserts the pins,
+then checks it again); `release-image` tests the image of a `v*` tag after a
+45-minute delay, because that image cannot carry a digest before GitHub has
+built it. Only private registries need credentials: write them to `$HOME/.docker/config.json`
 (the image sets no `HOME`, so the runner's value applies; set `HOME` in the job
 if unsure. This is the only location pin-toolkit reads; it does not
 read `DOCKER_CONFIG` or `DOCKER_AUTH_CONFIG`). For GitLab, the
@@ -905,6 +911,11 @@ accepted and validated; planned kinds: `action`, `docker-action`,
   table), `credentials.rs` (tokens on the wire, wiremock), `aliases.rs`
   (argv[0] aliases through the real binary, unix), `fixture_snapshots.rs`
   (human + JSON snapshots over the gitlab-ci fixtures).
+- `sh ci/smoke/smoke.sh [OUT_DIR]` — the GitLab smoke (needs network: gitlab.com,
+  ECR Public): pins a copy of `ci/smoke/pins.yml` with `pin-toolkit` on `PATH`
+  (`PATH=$PWD/target/debug:$PATH sh ci/smoke/smoke.sh .tmp/smoke`), asserts four
+  pins and a clean second `--check`. Set `CI_COMMIT_BRANCH` and `CI_COMMIT_SHA` to
+  also assert the `main` pin against that commit.
 - `PIN_CI_LIVE=1 cargo test -p pin-toolkit --test live` — opt-in live smoke
   of the real binary: pins `alpine:3.20` from Docker Hub, then `--check`
   exits `0`.
