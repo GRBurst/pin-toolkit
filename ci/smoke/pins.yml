@@ -1,0 +1,13 @@
+# DF1 smoke fixture: deliberately UNPINNED. The GitLab `smoke` jobs copy this
+# file and pin the copy (ci/smoke/smoke.sh); never pin it in place. It is not
+# a pipeline and matches no gitlab-ci `files` glob, so repo-wide runs skip it.
+# The root `component:` key is the only component form found before G1 (spec C3/C3b).
+image: public.ecr.aws/docker/library/alpine:3.20
+component: gitlab.com/components/secret-detection/secret-detection@2.4.0
+include:
+  - project: GRBurst/pin-toolkit
+    ref: main
+    file: /.gitlab-ci.yml
+  - project: GRBurst/pin-toolkit
+    ref: v0.1.0
+    file: /.gitlab-ci.yml
