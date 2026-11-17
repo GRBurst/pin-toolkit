@@ -176,8 +176,8 @@ jobs:
 
   manifest:
     # after binaries too: :<version> and :latest go public only once every release
-    # asset exists, so a failed binaries job never leaves a public tag that the
-    # delete-the-draft-and-re-tag recovery would then rewrite
+    # asset exists, so a failed binaries job never leaves a public :<version>
+    # without its release assets (recovery = fix on main, new version and tag)
     needs: [images, binaries]
     runs-on: ubuntu-24.04
     timeout-minutes: 15

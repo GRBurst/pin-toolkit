@@ -6,9 +6,9 @@ digests, GitLab components and includes to commit SHAs.
 `pin-toolkit` is one multi-call binary with one plugin per file format
 (see [Plugins](#plugins)). It replaces the former `pin-ci` binary, which
 no longer exists: `pin-ci` is now only an argv[0] alias of
-`pin-toolkit gitlab-ci` (see [Aliases](#aliases)). Installation (Nix, Home Manager, release tarballs)
-and the GitLab CI image are described in [Install](#install) and
-[CI image](#ci-image).
+`pin-toolkit gitlab-ci` (see [Aliases](#aliases)). Installation (Nix, Home
+Manager, release tarballs) and the GitLab CI image are described in
+[Install](#install) and [CI image](#ci-image).
 
 ## What it does
 
@@ -81,7 +81,7 @@ programs.pin-toolkit = {
 `settings` is written to the global config file `pin-toolkit/config.toml`
 (`version = 1` is added). It takes `json`, `concurrency` and `[hosts]` only;
 `update`, `release_age`, `plugins` and `version` belong in a repository's
-`.pin-toolkit.toml`. Host values are environment-variable **names**: a value
+`.pin-toolkit.toml`. The `*-env` host values are environment-variable **names**: a value
 that is not a valid variable name (for example a pasted `glpat-…` token with a
 dash) fails evaluation. A well-formed name such as `ghp_…` is accepted, so the
 rule is "names only", not "no token-looking text". The Nix store is
@@ -103,7 +103,6 @@ pin-toolkit.packages.${system}.default.override { plugins = [ ]; }
 Today the only plugin is `gitlab-ci`, so the default is already every plugin:
 `override { plugins = [ "gitlab-ci" ]; }` is the same set and the cached path.
 Any other set (here `[ ]`) is a different store path that Cachix does not have.
-`pin-toolkit plugins` shows the built set.
 
 The list names the plugins to build in (`pin-toolkit plugins` shows the
 built set). An unknown plugin name fails evaluation.
@@ -114,8 +113,9 @@ built set). An unknown plugin name fails evaluation.
 nixpkgs.overlays = [ inputs.pin-toolkit.overlays.default ];  # pkgs.pin-toolkit
 ```
 
-The overlay builds with **your** nixpkgs, so the store path differs from the
-flake's package and nothing is substituted from Cachix. The build needs rustc
+The overlay builds with **your** nixpkgs: unless that is the same nixpkgs
+revision as the flake's lock, the store path differs from the flake's package
+and nothing is substituted from Cachix. The build needs rustc
 >= 1.88 (let-chains in `pin-core`); nixpkgs-unstable has it.
 
 ### Release tarballs
@@ -160,8 +160,9 @@ pin-check:
 ```
 
 The image is public once the owner has set the GHCR package to public. Only
-private registries need credentials: write them to `~/.docker/config.json`
-(`$HOME/.docker/config.json` is the only location pin-toolkit reads; it does not
+private registries need credentials: write them to `$HOME/.docker/config.json`
+(the image sets no `HOME`, so the runner's value applies; set `HOME` in the job
+if unsure. This is the only location pin-toolkit reads; it does not
 read `DOCKER_CONFIG` or `DOCKER_AUTH_CONFIG`). For GitLab, the
 job's `CI_JOB_TOKEN` is used for `CI_SERVER_HOST` only; set `GITLAB_TOKEN`
 for the primary host (see [GitLab hosts and auth](#gitlab-hosts-and-auth)).
