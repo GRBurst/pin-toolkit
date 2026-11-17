@@ -128,6 +128,32 @@ lib.mapAttrs' (n: v: lib.nameValuePair n (layout v)) plugins
     zizmor --offline .github/workflows
     touch $out
   '';
+  # offline half of the GitLab smoke (DF1): the committed CI glue has the shape
+  # the GitLab jobs assume; the network half (pin-toolkit --check, ci/smoke/smoke.sh)
+  # stays out of Nix and runs in the task checks and on gitlab.com
+  gitlab-ci = pkgs.runCommand "pin-toolkit-gitlab-ci-check" {
+    nativeBuildInputs = [ pkgs.shellcheck pkgs.yq-go ];
+    src = lib.fileset.toSource { root = ../.; fileset = lib.fileset.unions [ ../.gitlab-ci.yml ../.pin-toolkit.toml ../ci/smoke ]; };
+  } ''
+    cd $src
+    export HOME=$TMPDIR
+    yq 'select(document_index == 0)' .gitlab-ci.yml > $TMPDIR/head.yml
+    yq 'select(document_index == 1)' .gitlab-ci.yml > $TMPDIR/jobs.yml
+    yq -e '.spec.inputs.release-tag.default == "$CI_COMMIT_TAG"' $TMPDIR/head.yml > /dev/null
+    yq -e '(.workflow.rules | length) == 2 and ([.workflow.rules[].if | test("^\$CI_PIPELINE_SOURCE == \"push\" && ")] | all)' $TMPDIR/jobs.yml > /dev/null
+    yq -e '.release-image.rules[0] | ((.["if"] == "$CI_COMMIT_TAG =~ /^v[0-9]/") and (.when == "delayed") and (.start_in == "45 minutes"))' $TMPDIR/jobs.yml > /dev/null
+    yq -e '.default.interruptible == true and .default.timeout == "5m"' $TMPDIR/jobs.yml > /dev/null
+    # every branch and tag job runs the released image, digest-pinned by pin-toolkit
+    # (the release-image line is the one deliberate exception, see its comment)
+    [ "$(grep -cE '^  image: ghcr\.io/grburst/pin-toolkit:[0-9][^@ ]*@sha256:[0-9a-f]{64}$' .gitlab-ci.yml)" = 2 ]
+    for j in $(yq '.[] | select(tag == "!!map" and has("script")) | key' $TMPDIR/jobs.yml); do
+      yq ".\"$j\".script | join(\"\n\")" $TMPDIR/jobs.yml > $TMPDIR/$j.sh
+      shellcheck -s sh $TMPDIR/$j.sh
+    done
+    shellcheck -s sh ci/smoke/smoke.sh
+    ${pkg}/bin/pin-toolkit --config .pin-toolkit.toml config show | grep -qxF 'plugins.gitlab-ci.files = [".gitlab-ci.yml", ".gitlab/ci/**/*.yml"]'
+    touch $out
+  '';
   # leaf checks keep no cargo artifacts: their outputs would be pushed to Cachix
   # (nextest 89 MB, no-default 13 MB) and could evict the package the consumers pull
   clippy = craneLib.cargoClippy (ca // {
